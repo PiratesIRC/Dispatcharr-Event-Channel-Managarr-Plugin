@@ -1,7 +1,6 @@
 {
   "name": "Event Channel Managarr",
   "key": "event-channel-managarr",
-  "version": "0.1",
   "module": "event_channel_managarr.plugin",
   "class": "Plugin",
   "description": "Automates channel visibility by hiding channels without events and showing those with events, based on EPG data and channel names.",

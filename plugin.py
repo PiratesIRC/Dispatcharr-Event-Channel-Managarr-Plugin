@@ -16,7 +16,7 @@ from datetime import datetime, timedelta
 from django.utils import timezone
 
 # Django model imports
-from apps.channels.models import Channel, ChannelProfileMembership
+from apps.channels.models import Channel, ChannelProfileMembership, ChannelProfile
 from apps.epg.models import ProgramData
 
 # Setup logging using Dispatcharr's format
@@ -36,7 +36,7 @@ class Plugin:
     """Event Channel Managarr Plugin"""
     
     name = "Event Channel Managarr"
-    version = "0.1"
+    version = "0.2.1"
     description = "Automatically manage channel visibility based on EPG data and channel names. Hides channels with no events and shows channels with active events."
     
     # Settings rendered by UI
@@ -115,9 +115,9 @@ class Plugin:
     # Actions for Dispatcharr UI
     actions = [
         {
-        "id": "update_schedule",
-        "label": "Update Schedule",
-        "description": "Save settings and update the scheduled run times. Use this after changing any settings.",
+            "id": "update_schedule",
+            "label": "Update Schedule",
+            "description": "Save settings and update the scheduled run times. Use this after changing any settings.",
         },
         {
             "id": "dry_run",
@@ -129,6 +129,24 @@ class Plugin:
             "label": "Run Now",
             "description": "Immediately scan and update channel visibility based on current EPG data",
             "confirm": { "required": True, "title": "Run Channel Visibility Update?", "message": "This will hide channels without events and show channels with events. Continue?" }
+        },
+        {
+            "id": "remove_epg_from_hidden",
+            "label": "Remove EPG from Hidden Channels",
+            "description": "Remove all EPG data from channels that are disabled/hidden in the selected profile. Results exported to CSV.",
+            "confirm": { "required": True, "title": "Remove EPG Data?", "message": "This will permanently delete all EPG data for channels that are currently hidden/disabled in the selected profile. This action cannot be undone. Continue?" }
+        },
+        {
+            "id": "clear_csv_exports",
+            "label": "Clear CSV Exports",
+            "description": "Delete all CSV export files created by this plugin",
+            "confirm": { "required": True, "title": "Delete All CSV Exports?", "message": "This will permanently delete all CSV files created by Event Channel Managarr. This action cannot be undone. Continue?" }
+        },
+        {
+            "id": "cleanup_periodic_tasks",
+            "label": "Cleanup Orphaned Tasks",
+            "description": "Remove any orphaned Celery periodic tasks from old plugin versions",
+            "confirm": { "required": True, "title": "Cleanup Orphaned Tasks?", "message": "This will remove any old Celery Beat tasks created by previous versions of this plugin. Continue?" }
         },
     ]
     
@@ -167,6 +185,115 @@ class Plugin:
             LOGGER.info("Settings saved successfully")
         except Exception as e:
             LOGGER.error(f"Error saving settings: {e}")
+            
+    def cleanup_periodic_tasks_action(self, settings, logger):
+        """Remove orphaned Celery periodic tasks from old plugin versions"""
+        try:
+            from django_celery_beat.models import PeriodicTask
+            
+            # Find all periodic tasks created by this plugin
+            tasks = PeriodicTask.objects.filter(name__startswith='event_channel_managarr_')
+            task_count = tasks.count()
+            
+            if task_count == 0:
+                return {
+                    "status": "success",
+                    "message": "No orphaned periodic tasks found. Database is clean!"
+                }
+            
+            # Get task names before deletion
+            task_names = list(tasks.values_list('name', flat=True))
+            
+            # Delete the tasks
+            deleted = tasks.delete()
+            
+            logger.info(f"Deleted {deleted[0]} orphaned periodic tasks")
+            
+            message_parts = [
+                f"Successfully removed {task_count} orphaned Celery periodic task(s):",
+                ""
+            ]
+            
+            # Show deleted task names
+            for task_name in task_names[:10]:
+                message_parts.append(f"• {task_name}")
+            
+            if len(task_names) > 10:
+                message_parts.append(f"• ... and {len(task_names) - 10} more tasks")
+            
+            message_parts.append("")
+            message_parts.append("These were leftover from older plugin versions that used Celery scheduling.")
+            message_parts.append("The plugin now uses background threading instead.")
+            
+            return {
+                "status": "success",
+                "message": "\n".join(message_parts)
+            }
+            
+        except ImportError:
+            return {
+                "status": "error",
+                "message": "django_celery_beat not available. No cleanup needed."
+            }
+        except Exception as e:
+            logger.error(f"Error cleaning up periodic tasks: {e}")
+            import traceback
+            logger.error(f"Traceback: {traceback.format_exc()}")
+            return {"status": "error", "message": f"Error cleaning up periodic tasks: {e}"}
+        
+    def clear_csv_exports_action(self, settings, logger):
+        """Delete all CSV export files created by this plugin"""
+        try:
+            export_dir = "/data/exports"
+            
+            if not os.path.exists(export_dir):
+                return {
+                    "status": "success",
+                    "message": "No export directory found. No files to delete."
+                }
+            
+            # Find all CSV files created by this plugin
+            deleted_count = 0
+            deleted_files = []
+            
+            for filename in os.listdir(export_dir):
+                if ((filename.startswith("event_channel_managarr_") or filename.startswith("epg_removal_")) 
+                    and filename.endswith(".csv")):
+                    filepath = os.path.join(export_dir, filename)
+                    try:
+                        os.remove(filepath)
+                        deleted_count += 1
+                        deleted_files.append(filename)
+                        logger.info(f"Deleted CSV file: {filename}")
+                    except Exception as e:
+                        logger.warning(f"Failed to delete {filename}: {e}")
+            
+            if deleted_count == 0:
+                return {
+                    "status": "success",
+                    "message": "No CSV export files found to delete."
+                }
+            
+            message_parts = [
+                f"Successfully deleted {deleted_count} CSV export file(s):",
+                ""
+            ]
+            
+            # Show first 10 deleted files
+            for filename in deleted_files[:10]:
+                message_parts.append(f"• {filename}")
+            
+            if len(deleted_files) > 10:
+                message_parts.append(f"• ... and {len(deleted_files) - 10} more files")
+            
+            return {
+                "status": "success",
+                "message": "\n".join(message_parts)
+            }
+            
+        except Exception as e:
+            logger.error(f"Error clearing CSV exports: {e}")
+            return {"status": "error", "message": f"Error clearing CSV exports: {e}"}
 
     def update_schedule_action(self, settings, logger):
         """Save settings and update scheduled tasks"""
@@ -610,17 +737,20 @@ class Plugin:
             if not profile_id:
                 return {"status": "error", "message": f"Channel Profile '{channel_profile_name}' not found. Please check the profile name in settings."}
             
-            # Fetch profile details to get visible channel IDs
-            profile_details = self._get_api_data(f"/api/channels/profiles/{profile_id}/", token, settings, logger)
-            visible_channel_ids = profile_details.get('channels', [])
+            # Get ALL channels in the profile (both enabled and disabled) via membership
+            memberships = ChannelProfileMembership.objects.filter(
+                channel_profile_id=profile_id
+            ).select_related('channel')
             
-            if not visible_channel_ids:
-                return {"status": "error", "message": f"Channel Profile '{channel_profile_name}' has no visible channels."}
+            all_channel_ids = [m.channel_id for m in memberships]
             
-            logger.info(f"Found {len(visible_channel_ids)} channels in profile '{channel_profile_name}'")
+            if not all_channel_ids:
+                return {"status": "error", "message": f"Channel Profile '{channel_profile_name}' has no channels."}
             
-            # Get channels query
-            channels_query = Channel.objects.filter(id__in=visible_channel_ids).select_related('channel_group', 'epg_data')
+            logger.info(f"Found {len(all_channel_ids)} channels in profile '{channel_profile_name}' (including hidden channels)")
+            
+            # Get channels query - now includes both visible and hidden channels
+            channels_query = Channel.objects.filter(id__in=all_channel_ids).select_related('channel_group', 'epg_data')
             
             # Apply group filter if specified
             channel_groups_str = settings.get("channel_groups", "").strip()
@@ -894,11 +1024,17 @@ class Plugin:
                 return self.dry_run_action(settings, logger)
             elif action == "run_now":
                 return self.run_now_action(settings, logger)
+            elif action == "remove_epg_from_hidden":
+                return self.remove_epg_from_hidden_action(settings, logger)
+            elif action == "clear_csv_exports":
+                return self.clear_csv_exports_action(settings, logger)
+            elif action == "cleanup_periodic_tasks":
+                return self.cleanup_periodic_tasks_action(settings, logger)
             else:
                 return {
                     "status": "error",
                     "message": f"Unknown action: {action}",
-                    "available_actions": ["update_schedule", "dry_run", "run_now"]
+                    "available_actions": ["update_schedule", "dry_run", "run_now", "remove_epg_from_hidden", "clear_csv_exports", "cleanup_periodic_tasks"]
                 }
                 
         except Exception as e:
@@ -921,6 +1057,143 @@ class Plugin:
                 self._trigger_frontend_refresh(settings, logger)
         
         return result
+
+    def remove_epg_from_hidden_action(self, settings, logger):
+        """Remove EPG data from all hidden/disabled channels in the selected profile and set to dummy EPG"""
+        try:
+            logger.info("Starting EPG removal from hidden channels...")
+            
+            # Validate required settings
+            channel_profile_name = settings.get("channel_profile_name", "").strip()
+            if not channel_profile_name:
+                return {
+                    "status": "error",
+                    "message": "Channel Profile Name is required. Please configure it in settings."
+                }
+            
+            # Get channel profile using Django ORM
+            try:
+                profile = ChannelProfile.objects.get(name=channel_profile_name)
+                profile_id = profile.id
+                logger.info(f"Found profile: {channel_profile_name} (ID: {profile_id})")
+            except ChannelProfile.DoesNotExist:
+                return {
+                    "status": "error",
+                    "message": f"Channel profile '{channel_profile_name}' not found"
+                }
+            
+            # Get all channel memberships in this profile that are disabled
+            hidden_memberships = ChannelProfileMembership.objects.filter(
+                channel_profile_id=profile_id,
+                enabled=False
+            ).select_related('channel')
+            
+            if not hidden_memberships.exists():
+                return {
+                    "status": "success",
+                    "message": "No hidden channels found in the selected profile. No EPG data to remove."
+                }
+            
+            hidden_count = hidden_memberships.count()
+            logger.info(f"Found {hidden_count} hidden channels")
+            
+            # Collect EPG removal results
+            results = []
+            total_epg_removed = 0
+            channels_set_to_dummy = 0
+            
+            for membership in hidden_memberships:
+                channel = membership.channel
+                channel_id = channel.id
+                channel_name = channel.name or 'Unknown'
+                channel_number = channel.channel_number or 'N/A'
+                
+                # Query EPG data for this channel
+                epg_count = 0
+                deleted_count = 0
+                had_epg = False
+                
+                if channel.epg_data:
+                    had_epg = True
+                    epg_count = ProgramData.objects.filter(epg=channel.epg_data).count()
+                    
+                    if epg_count > 0:
+                        # Delete all EPG data for this channel
+                        deleted_count = ProgramData.objects.filter(epg=channel.epg_data).delete()[0]
+                        total_epg_removed += deleted_count
+                        logger.info(f"Removed {deleted_count} EPG entries from channel {channel_number} - {channel_name}")
+                    
+                    # Set channel EPG to null (dummy EPG)
+                    channel.epg_data = None
+                    channel.save()
+                    channels_set_to_dummy += 1
+                    logger.info(f"Set channel {channel_number} - {channel_name} to dummy EPG")
+                    
+                    results.append({
+                        'channel_id': channel_id,
+                        'channel_name': channel_name,
+                        'channel_number': channel_number,
+                        'epg_entries_removed': deleted_count,
+                        'status': 'set_to_dummy'
+                    })
+                else:
+                    results.append({
+                        'channel_id': channel_id,
+                        'channel_name': channel_name,
+                        'channel_number': channel_number,
+                        'epg_entries_removed': 0,
+                        'status': 'already_dummy'
+                    })
+            
+            # Export results to CSV
+            timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+            csv_filename = f"epg_removal_{timestamp}.csv"
+            csv_filepath = f"/data/exports/{csv_filename}"
+            
+            os.makedirs("/data/exports", exist_ok=True)
+            
+            with open(csv_filepath, 'w', newline='', encoding='utf-8') as csvfile:
+                fieldnames = ['channel_id', 'channel_name', 'channel_number', 'epg_entries_removed', 'status']
+                writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
+                writer.writeheader()
+                for result in results:
+                    writer.writerow(result)
+            
+            logger.info(f"EPG removal results exported to {csv_filepath}")
+            
+            # Trigger frontend refresh
+            self._trigger_frontend_refresh(settings, logger)
+            
+            # Build summary message
+            message_parts = [
+                f"EPG Removal Complete:",
+                f"• Hidden channels processed: {hidden_count}",
+                f"• Channels set to dummy EPG: {channels_set_to_dummy}",
+                f"• Total EPG entries removed: {total_epg_removed}",
+                f"• Channels already using dummy EPG: {sum(1 for r in results if r['status'] == 'already_dummy')}",
+                f"",
+                f"Results exported to: {csv_filepath}",
+                f"",
+                f"Frontend refresh triggered - GUI should update shortly."
+            ]
+            
+            return {
+                "status": "success",
+                "message": "\n".join(message_parts),
+                "results": {
+                    "hidden_channels": hidden_count,
+                    "channels_set_to_dummy": channels_set_to_dummy,
+                    "total_epg_removed": total_epg_removed,
+                    "csv_file": csv_filepath
+                }
+            }
+            
+        except Exception as e:
+            logger.error(f"Error removing EPG from hidden channels: {str(e)}")
+            import traceback
+            logger.error(f"Traceback: {traceback.format_exc()}")
+            return {"status": "error", "message": f"Error removing EPG: {str(e)}"}
+
 
     def _trigger_frontend_refresh(self, settings, logger):
         """Trigger frontend channel list refresh via WebSocket"""
