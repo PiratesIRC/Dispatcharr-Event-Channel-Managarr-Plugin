@@ -36,7 +36,7 @@ class Plugin:
     """Event Channel Managarr Plugin"""
     
     name = "Event Channel Managarr"
-    version = "0.2.1"
+    version = "0.3.0e"
     description = "Automatically manage channel visibility based on EPG data and channel names. Hides channels with no events and shows channels with active events."
     
     # Settings rendered by UI
@@ -72,11 +72,11 @@ class Plugin:
         },
         {
             "id": "channel_profile_name",
-            "label": "Channel Profile Name (Required)",
+            "label": "Channel Profile Names (Required)",
             "type": "string",
             "default": "",
-            "placeholder": "PPV Events Profile",
-            "help_text": "REQUIRED: The Channel Profile containing channels to monitor. Only channels in this profile will be processed.",
+            "placeholder": "PPV Events Profile, Sports Profile",
+            "help_text": "REQUIRED: Channel Profile(s) containing channels to monitor. Use comma-separated names for multiple profiles. Only channels in these profiles will be processed.",
         },
         {
             "id": "channel_groups",
@@ -85,6 +85,14 @@ class Plugin:
             "default": "",
             "placeholder": "PPV Events, Live Events",
             "help_text": "Specific channel groups to monitor within the profile. Leave blank to monitor all groups in the profile.",
+        },
+        {
+            "id": "hide_rules_priority",
+            "label": "Hide Rules Priority",
+            "type": "string",
+            "default": "[BlankName],[NoEventPattern],[EmptyPlaceholder],[PastDate:0],[FutureDate:2],[ShortDescription],[ShortChannelName]",
+            "placeholder": "[BlankName],[NoEventPattern],[EmptyPlaceholder],[PastDate:0],[FutureDate:2],[ShortDescription],[ShortChannelName]",
+            "help_text": "Define rules for hiding channels in priority order (first match wins). Comma-separated tags. Available tags: [NoEPG], [BlankName], [NoEventPattern], [EmptyPlaceholder], [ShortDescription], [ShortChannelName], [PastDate:days], [FutureDate:days], [InactiveRegex]. Example: [PastDate:0] hides if event date has passed, [FutureDate:14] hides if event is 14+ days away.",
         },
         {
             "id": "regex_channels_to_ignore",
@@ -96,11 +104,11 @@ class Plugin:
         },
         {
             "id": "regex_mark_inactive",
-            "label": "Regex: Mark Channel as Inactive",
+            "label": "Regex: Mark Channel as Inactive (DEPRECATED)",
             "type": "string",
             "default": "",
             "placeholder": "PLACEHOLDER|TBD|COMING SOON",
-            "help_text": "Regular expression to identify inactive channel names (in addition to blank/no event checks). Matching channels will be hidden.",
+            "help_text": "DEPRECATED: Use Hide Rules Priority with [InactiveRegex] tag instead. This field is kept for backward compatibility only.",
         },
         {
             "id": "scheduled_times",
@@ -160,7 +168,7 @@ class Plugin:
         
         # Load saved settings and create scheduled tasks
         self._load_settings()
-
+  
     def _load_settings(self):
         """Load saved settings from disk"""
         try:
@@ -175,6 +183,39 @@ class Plugin:
         except Exception as e:
             LOGGER.error(f"Error loading settings: {e}")
             self.saved_settings = {}
+            
+    def run(self, action, params, context):
+        """Main plugin entry point"""
+        LOGGER.info(f"Event Channel Managarr run called with action: {action}")
+        
+        try:
+            # Get settings from context
+            settings = context.get("settings", {})
+            logger = context.get("logger", LOGGER)
+            
+            if action == "update_schedule":
+                return self.update_schedule_action(settings, logger)
+            elif action == "dry_run":
+                return self.dry_run_action(settings, logger)
+            elif action == "run_now":
+                return self.run_now_action(settings, logger)
+            elif action == "remove_epg_from_hidden":
+                return self.remove_epg_from_hidden_action(settings, logger)
+            elif action == "clear_csv_exports":
+                return self.clear_csv_exports_action(settings, logger)
+            elif action == "cleanup_periodic_tasks":
+                return self.cleanup_periodic_tasks_action(settings, logger)
+            else:
+                return {
+                    "status": "error",
+                    "message": f"Unknown action: {action}",
+                    "available_actions": ["update_schedule", "dry_run", "run_now", "remove_epg_from_hidden", "clear_csv_exports", "cleanup_periodic_tasks"]
+                }
+                
+        except Exception as e:
+            self.scan_progress['status'] = 'idle'
+            LOGGER.error(f"Error in plugin run: {str(e)}")
+            return {"status": "error", "message": str(e)}
 
     def _save_settings(self, settings):
         """Save settings to disk"""
@@ -185,6 +226,323 @@ class Plugin:
             LOGGER.info("Settings saved successfully")
         except Exception as e:
             LOGGER.error(f"Error saving settings: {e}")
+
+    def _parse_hide_rules(self, rules_text, logger):
+        """Parse hide rules priority text into list of rule tuples"""
+        if not rules_text or not rules_text.strip():
+            # Return default rules if none specified
+            default_rules = "[BlankName],[NoEventPattern],[EmptyPlaceholder],[PastDate:0],[FutureDate:2],[ShortDescription],[ShortChannelName]"
+            rules_text = default_rules
+            logger.info("No hide rules specified, using defaults")
+        
+        rules = []
+        
+        # Check if rules are comma-separated or newline-separated
+        # If there are newlines and no commas outside of brackets, use newline splitting
+        # Otherwise, use comma splitting (new format)
+        if '\n' in rules_text and ',' not in rules_text:
+            # Legacy format: newline-separated
+            rule_items = rules_text.strip().split('\n')
+        else:
+            # New format: comma-separated
+            # Split by comma, but need to handle commas that might appear in rule content
+            rule_items = []
+            current_rule = ""
+            bracket_depth = 0
+            
+            for char in rules_text:
+                if char == '[':
+                    bracket_depth += 1
+                    current_rule += char
+                elif char == ']':
+                    bracket_depth -= 1
+                    current_rule += char
+                elif char == ',' and bracket_depth == 0:
+                    # This comma is a separator, not part of rule content
+                    if current_rule.strip():
+                        rule_items.append(current_rule.strip())
+                    current_rule = ""
+                else:
+                    current_rule += char
+            
+            # Add the last rule
+            if current_rule.strip():
+                rule_items.append(current_rule.strip())
+        
+        # Parse each rule item
+        for line in rule_items:
+            line = line.strip()
+            if not line or not line.startswith('[') or not line.endswith(']'):
+                continue
+            
+            # Extract rule name and parameter
+            rule_content = line[1:-1]  # Remove [ and ]
+            
+            if ':' in rule_content:
+                rule_name, param = rule_content.split(':', 1)
+                try:
+                    param = int(param)
+                except ValueError:
+                    logger.warning(f"Invalid parameter in rule '{line}', skipping")
+                    continue
+                rules.append((rule_name, param))
+            else:
+                rules.append((rule_content, None))
+        
+        logger.info(f"Parsed {len(rules)} hide rules: {[r[0] + (f':{r[1]}' if r[1] is not None else '') for r in rules]}")
+        return rules
+
+    def _extract_date_from_channel_name(self, channel_name, logger):
+        """Extract date from channel name using various patterns"""
+        if not channel_name:
+            return None
+        
+        import pytz
+        from dateutil import parser as dateutil_parser
+        
+        # Get current year for patterns without year
+        current_year = datetime.now().year
+        
+        # Pattern 1: MM/DD/YYYY or MM/DD/YY (e.g., "10/27/2025", "10/27/25")
+        pattern1 = re.search(r'\b(\d{1,2})/(\d{1,2})/(\d{2,4})\b', channel_name)
+        if pattern1:
+            month, day, year = pattern1.groups()
+            year = int(year)
+            if year < 100:  # Two-digit year
+                year += 2000
+            try:
+                extracted_date = datetime(year, int(month), int(day))
+                logger.debug(f"Extracted date {extracted_date.date()} from pattern MM/DD/YYYY in '{channel_name}'")
+                return extracted_date
+            except ValueError:
+                pass
+        
+        # Pattern 2: (MMM DD) or (MONTH DD) in parentheses (e.g., "(OCT 25)", "(OCTOBER 25)")
+        pattern2 = re.search(r'\(([A-Z]{3,9})\s+(\d{1,2})\)', channel_name, re.IGNORECASE)
+        if pattern2:
+            month_str, day = pattern2.groups()
+            try:
+                # Try to parse month name
+                temp_date = dateutil_parser.parse(f"{month_str} {day} {current_year}")
+                extracted_date = datetime(temp_date.year, temp_date.month, temp_date.day)
+                logger.debug(f"Extracted date {extracted_date.date()} from pattern (MONTH DD) in '{channel_name}'")
+                return extracted_date
+            except (ValueError, dateutil_parser.ParserError):
+                pass
+
+        # Pattern 2c: DDth/st/nd/rd MMM (e.g., "28th Apr", "1st Oct", "2nd Nov", "29th Oct")
+        # Check this BEFORE Pattern 2b to prioritize day-first formats
+        pattern2c = re.search(r'\b(\d{1,2})(?:st|nd|rd|th)\s+(JAN|FEB|MAR|APR|MAY|JUN|JUL|AUG|SEP|OCT|NOV|DEC)\b', channel_name, re.IGNORECASE)
+        if pattern2c:
+            day, month_str = pattern2c.groups()
+            try:
+                temp_date = dateutil_parser.parse(f"{month_str} {day} {current_year}")
+                extracted_date = datetime(temp_date.year, temp_date.month, temp_date.day)
+                
+                # If the extracted date is more than 6 months in the past, assume next year
+                today = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
+                if (today - extracted_date).days > 180:
+                    extracted_date = datetime(current_year + 1, temp_date.month, temp_date.day)
+                
+                logger.debug(f"Extracted date {extracted_date.date()} from pattern DDth MONTH in '{channel_name}'")
+                return extracted_date
+            except (ValueError, dateutil_parser.ParserError):
+                pass
+
+        # Pattern 2b: MMM DD or MONTH DD WITHOUT parentheses (e.g., "Oct 25", "OCTOBER 25", "Nov 1")
+        # Use a specific list of months to be more accurate
+        month_pattern = r'\b(JAN|FEB|MAR|APR|MAY|JUN|JUL|AUG|SEP|OCT|NOV|DEC)\s+(\d{1,2})(?:\s|$|[^a-z])'
+        pattern2b = re.search(month_pattern, channel_name, re.IGNORECASE)
+        if pattern2b:
+            month_str, day = pattern2b.groups()
+            try:
+                # Try to parse month name
+                temp_date = dateutil_parser.parse(f"{month_str} {day} {current_year}")
+                extracted_date = datetime(temp_date.year, temp_date.month, temp_date.day)
+                
+                # If the extracted date is more than 6 months in the past, assume next year
+                today = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
+                if (today - extracted_date).days > 180:
+                    extracted_date = datetime(current_year + 1, temp_date.month, temp_date.day)
+                
+                logger.debug(f"Extracted date {extracted_date.date()} from pattern MONTH DD in '{channel_name}'")
+                return extracted_date
+            except (ValueError, dateutil_parser.ParserError):
+                pass
+        
+        # Pattern 2d: YYYY MM DD (space-separated, e.g., "2025 09 28", "2025 10 29")
+        # This pattern is common in timestamps like "start:2025 10 29"
+        pattern2d = re.search(r'\b(\d{4})\s+(\d{1,2})\s+(\d{1,2})\b', channel_name)
+        if pattern2d:
+            year, month, day = pattern2d.groups()
+            try:
+                extracted_date = datetime(int(year), int(month), int(day))
+                logger.debug(f"Extracted date {extracted_date.date()} from pattern YYYY MM DD in '{channel_name}'")
+                return extracted_date
+            except ValueError:
+                pass
+
+        # Pattern 3: MM.DD format (e.g., "10.25")
+        pattern3 = re.search(r'\b(\d{1,2})\.(\d{1,2})\b', channel_name)
+        if pattern3:
+            month, day = pattern3.groups()
+            try:
+                extracted_date = datetime(current_year, int(month), int(day))
+                logger.debug(f"Extracted date {extracted_date.date()} from pattern MM.DD in '{channel_name}'")
+                return extracted_date
+            except ValueError:
+                pass
+        
+        # Pattern 4: MM/DD without year (e.g., "10/27")
+        pattern4 = re.search(r'\b(\d{1,2})/(\d{1,2})\b(?!/)', channel_name)
+        if pattern4:
+            month, day = pattern4.groups()
+            try:
+                extracted_date = datetime(current_year, int(month), int(day))
+                logger.debug(f"Extracted date {extracted_date.date()} from pattern MM/DD in '{channel_name}'")
+                return extracted_date
+            except ValueError:
+                pass
+        
+        logger.debug(f"No date found in channel name: '{channel_name}'")
+        return None
+
+    def _check_hide_rule(self, rule_name, rule_param, channel, channel_name, logger):
+        """Check if a single hide rule matches the channel. Returns (matches, reason)"""
+        
+        if rule_name == "NoEPG":
+            # Hide if no EPG assigned at all
+            if not channel.epg_data:
+                return True, "[NoEPG] No EPG assigned to channel"
+            
+            # Hide if EPG is assigned but has no program data for the next 24 hours
+            now = timezone.now()
+            next_24h = now + timedelta(hours=24)
+            has_programs = ProgramData.objects.filter(
+                epg=channel.epg_data,
+                start_time__lt=next_24h,
+                end_time__gte=now
+            ).exists()
+            if not has_programs:
+                return True, "[NoEPG] No EPG program data for next 24 hours"
+            
+            return False, None
+        
+        elif rule_name == "BlankName":
+            if not channel_name.strip():
+                return True, "[BlankName] Channel name is blank"
+            return False, None
+        
+        elif rule_name == "NoEventPattern":
+            # Match variations: no event, no events, offline, no games scheduled, no scheduled event
+            no_event_pattern = re.compile(
+                r'\b(no[_\s-]?events?|offline|no[_\s-]?games?[_\s-]?scheduled|no[_\s-]?scheduled[_\s-]?events?)\b', 
+                re.IGNORECASE
+            )
+            if no_event_pattern.search(channel_name):
+                return True, "[NoEventPattern] Name contains 'no event(s)', 'offline', or 'no games/scheduled'"
+            return False, None
+        
+        elif rule_name == "EmptyPlaceholder":
+            # Ends with colon or pipe with nothing or only whitespace/very short content after
+            colon_match = re.search(r':(.*)$', channel_name)
+            if colon_match:
+                content_after = colon_match.group(1).strip()
+                if not content_after or len(content_after) <= 2:
+                    return True, f"[EmptyPlaceholder] Empty or minimal content after colon ({len(content_after)} chars)"
+            
+            pipe_match = re.search(r'\|(.*)$', channel_name)
+            if pipe_match:
+                content_after = pipe_match.group(1).strip()
+                if not content_after or len(content_after) <= 2:
+                    return True, f"[EmptyPlaceholder] Empty or minimal content after pipe ({len(content_after)} chars)"
+            
+            return False, None
+        
+        elif rule_name == "ShortDescription":
+            # Check description length after separators
+            colon_match = re.search(r':(.+)$', channel_name)
+            if colon_match:
+                description = colon_match.group(1).strip()
+                if len(description) < 15:
+                    return True, f"[ShortDescription] Description after colon too short ({len(description)} chars)"
+            
+            pipe_match = re.search(r'\|(.+)$', channel_name)
+            if pipe_match:
+                description = pipe_match.group(1).strip()
+                if len(description) < 15:
+                    return True, f"[ShortDescription] Description after pipe too short ({len(description)} chars)"
+            
+            return False, None
+        
+        elif rule_name == "ShortChannelName":
+            # Check total name length if no separator
+            colon_match = re.search(r':(.+)$', channel_name)
+            pipe_match = re.search(r'\|(.+)$', channel_name)
+            
+            if not colon_match and not pipe_match:
+                if len(channel_name.strip()) < 25:
+                    return True, f"[ShortChannelName] Name too short without event details ({len(channel_name.strip())} chars)"
+            
+            return False, None
+        
+        elif rule_name == "PastDate":
+            extracted_date = self._extract_date_from_channel_name(channel_name, logger)
+            if extracted_date is None:
+                return False, None  # Skip rule if no date found
+            
+            days_threshold = rule_param if rule_param is not None else 0
+            today = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
+            days_diff = (today - extracted_date).days
+            
+            if days_diff > days_threshold:
+                return True, f"[PastDate:{days_threshold}] Event date {extracted_date.strftime('%m/%d/%Y')} is {days_diff} days in the past"
+            
+            return False, None
+        
+        elif rule_name == "FutureDate":
+            extracted_date = self._extract_date_from_channel_name(channel_name, logger)
+            if extracted_date is None:
+                return False, None  # Skip rule if no date found
+            
+            days_threshold = rule_param if rule_param is not None else 14
+            today = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
+            days_diff = (extracted_date - today).days
+            
+            if days_diff > days_threshold:
+                return True, f"[FutureDate:{days_threshold}] Event date {extracted_date.strftime('%m/%d/%Y')} is {days_diff} days in the future"
+            
+            return False, None
+        
+        elif rule_name == "InactiveRegex":
+            # Check deprecated regex_mark_inactive field for backward compatibility
+            regex_inactive_str = self.saved_settings.get("regex_mark_inactive", "").strip()
+            if regex_inactive_str:
+                try:
+                    regex_inactive = re.compile(regex_inactive_str, re.IGNORECASE)
+                    if regex_inactive.search(channel_name):
+                        return True, f"[InactiveRegex] Matches pattern: {regex_inactive_str}"
+                except re.error as e:
+                    logger.warning(f"Invalid InactiveRegex pattern '{regex_inactive_str}': {e}")
+            
+            return False, None
+        
+        else:
+            logger.warning(f"Unknown hide rule: {rule_name}")
+            return False, None
+
+    def _check_channel_should_hide(self, channel, hide_rules, logger):
+        """Check if channel should be hidden based on hide rules priority. Returns (should_hide, reason)"""
+        channel_name = channel.name or ""
+        
+        # Process rules in order - first match wins
+        for rule_name, rule_param in hide_rules:
+            matches, reason = self._check_hide_rule(rule_name, rule_param, channel, channel_name, logger)
+            if matches:
+                return True, reason
+        
+        # No rules matched - channel should be visible
+        return False, "Has event"
             
     def cleanup_periodic_tasks_action(self, settings, logger):
         """Remove orphaned Celery periodic tasks from old plugin versions"""
@@ -254,7 +612,6 @@ class Plugin:
             
             # Find all CSV files created by this plugin
             deleted_count = 0
-            deleted_files = []
             
             for filename in os.listdir(export_dir):
                 if ((filename.startswith("event_channel_managarr_") or filename.startswith("epg_removal_")) 
@@ -263,7 +620,6 @@ class Plugin:
                     try:
                         os.remove(filepath)
                         deleted_count += 1
-                        deleted_files.append(filename)
                         logger.info(f"Deleted CSV file: {filename}")
                     except Exception as e:
                         logger.warning(f"Failed to delete {filename}: {e}")
@@ -274,21 +630,9 @@ class Plugin:
                     "message": "No CSV export files found to delete."
                 }
             
-            message_parts = [
-                f"Successfully deleted {deleted_count} CSV export file(s):",
-                ""
-            ]
-            
-            # Show first 10 deleted files
-            for filename in deleted_files[:10]:
-                message_parts.append(f"• {filename}")
-            
-            if len(deleted_files) > 10:
-                message_parts.append(f"• ... and {len(deleted_files) - 10} more files")
-            
             return {
                 "status": "success",
-                "message": "\n".join(message_parts)
+                "message": f"Successfully deleted {deleted_count} CSV export file(s)."
             }
             
         except Exception as e:
@@ -350,56 +694,55 @@ class Plugin:
             if len(time_str) == 4 and time_str.isdigit():
                 hour = int(time_str[:2])
                 minute = int(time_str[2:])
-                if 0 <= hour <= 23 and 0 <= minute <= 59:
-                    times.append(datetime.strptime(time_str, "%H%M").time())
-                else:
-                    LOGGER.warning(f"Invalid time format: {time_str} (hour must be 0-23, minute 0-59)")
-            else:
-                LOGGER.warning(f"Invalid time format: {time_str} (expected HHMM format)")
-        
+                if 0 <= hour < 24 and 0 <= minute < 60:
+                    times.append(datetime.strptime(time_str, '%H%M').time())
         return times
 
     def _start_background_scheduler(self, settings):
-        """Start background thread for scheduled scans"""
+        """Start background scheduler thread"""
         global _bg_thread
         
+        # Stop existing scheduler if running
+        self._stop_background_scheduler()
+        
+        # Parse scheduled times
         scheduled_times_str = settings.get("scheduled_times", "").strip()
         if not scheduled_times_str:
-            LOGGER.info("No scheduled times configured")
+            LOGGER.info("No scheduled times configured, scheduler not started")
             return
         
         scheduled_times = self._parse_scheduled_times(scheduled_times_str)
         if not scheduled_times:
+            LOGGER.info("No valid scheduled times, scheduler not started")
             return
-        
-        tz_str = self._get_system_timezone()
-        LOGGER.info(f"Starting background scheduler with timezone: {tz_str}")
-        
-        # Stop existing thread if running
-        if _bg_thread and _bg_thread.is_alive():
-            _stop_event.set()
-            _bg_thread.join(timeout=5)
-            _stop_event.clear()
         
         # Start new scheduler thread
         def scheduler_loop():
-            from zoneinfo import ZoneInfo
-            tz = ZoneInfo(tz_str)
+            import pytz
             last_run_date = None
+            
+            # Get timezone from settings
+            tz_str = self._get_system_timezone()
+            try:
+                local_tz = pytz.timezone(tz_str)
+            except pytz.exceptions.UnknownTimeZoneError:
+                LOGGER.error(f"Unknown timezone: {tz_str}, falling back to America/Chicago")
+                local_tz = pytz.timezone('America/Chicago')
+            
+            LOGGER.info(f"Scheduler timezone: {tz_str}")
             
             while not _stop_event.is_set():
                 try:
-                    now = datetime.now(tz)
-                    current_time = now.time()
+                    now = datetime.now(local_tz)
                     current_date = now.date()
                     
                     # Check each scheduled time
                     for scheduled_time in scheduled_times:
-                        # Calculate seconds until scheduled time
-                        scheduled_dt = datetime.combine(current_date, scheduled_time, tzinfo=tz)
+                        # Create a datetime for the scheduled time today in the local timezone
+                        scheduled_dt = local_tz.localize(datetime.combine(current_date, scheduled_time))
                         time_diff = (scheduled_dt - now).total_seconds()
                         
-                        # Run if within 30 seconds and haven't run today
+                        # Run if within 30 seconds and have not run today
                         if -30 <= time_diff <= 30 and last_run_date != current_date:
                             LOGGER.info(f"Scheduled scan triggered at {now.strftime('%Y-%m-%d %H:%M %Z')}")
                             try:
@@ -559,80 +902,13 @@ class Plugin:
             logger.error(f"API PATCH request failed for {endpoint}: {e}")
             raise Exception(f"API PATCH request failed: {e}")
 
-    def _check_channel_has_event(self, channel, logger):
-        """Check if channel has event based on name and EPG data"""
-        channel_name = channel.name or ""
-        
-        # Check for "no event" variations in channel name (case-insensitive)
-        no_event_pattern = re.compile(r'\bno[_\s-]?event\b', re.IGNORECASE)
-        if no_event_pattern.search(channel_name):
-            return False, "Name contains 'no event'"
-        
-        # Check if channel name is blank or only whitespace
-        if not channel_name.strip():
-            return False, "Channel name is blank"
-        
-        # Check for empty event placeholders (ending with : or | with nothing after)
-        # Pattern 1: Ends with colon and whitespace/nothing (e.g., "PPV EVENT 20:")
-        if re.search(r':\s*$', channel_name):
-            return False, "Empty placeholder (ends with colon)"
-        
-        # Pattern 2: Ends with pipe and whitespace/nothing (e.g., "PPV07 |")
-        if re.search(r'\|\s*$', channel_name):
-            return False, "Empty placeholder (ends with pipe)"
-        
-        # Check minimum event description length after separators
-        # Pattern 3: Has colon separator - check what comes after
-        colon_match = re.search(r':(.+)$', channel_name)
-        if colon_match:
-            description_after_colon = colon_match.group(1).strip()
-            if len(description_after_colon) < 15:
-                return False, f"Insufficient event details after colon ({len(description_after_colon)} chars)"
-        
-        # Pattern 4: Has pipe separator - check what comes after
-        pipe_match = re.search(r'\|(.+)$', channel_name)
-        if pipe_match:
-            description_after_pipe = pipe_match.group(1).strip()
-            if len(description_after_pipe) < 15:
-                return False, f"Insufficient event details after pipe ({len(description_after_pipe)} chars)"
-        
-        # Pattern 5: No separator - check total channel name length
-        if not colon_match and not pipe_match:
-            if len(channel_name.strip()) < 25:
-                return False, f"Channel name too short without event details ({len(channel_name.strip())} chars)"
-        
-        # If channel has EPG assigned, check for program data
-        if channel.epg_data:
-            # Get today's date range
-            today_start = timezone.now().replace(hour=0, minute=0, second=0, microsecond=0)
-            today_end = today_start + timedelta(days=1)
-            
-            # Check if there is any program data for today
-            has_programs = ProgramData.objects.filter(
-                epg=channel.epg_data,
-                start_time__lt=today_end,
-                end_time__gte=today_start
-            ).exists()
-            
-            if not has_programs:
-                return False, "No EPG program data for today"
-        
-        # Channel has event
-        return True, "Has event"
-
     def _normalize_channel_name(self, channel_name):
         """Normalize channel name for duplicate detection by removing event details"""
         if not channel_name:
             return ""
         
         # Extract base name before colon or pipe
-        # "PPV EVENT 20: Some Event" -> "PPV EVENT 20"
-        # "PPV07 | Some Event" -> "PPV07"
-        # "LIVE EVENT 01 6:15PM Event" -> "LIVE EVENT 01"
-        
-        # Remove everything after colon
         name = re.sub(r':.*$', '', channel_name)
-        # Remove everything after pipe
         name = re.sub(r'\|.*$', '', name)
         
         # Normalize whitespace and convert to uppercase for comparison
@@ -640,21 +916,45 @@ class Plugin:
         
         return name
 
+    def _get_event_description(self, channel_name):
+        """Extract event description part of the channel name"""
+        if not channel_name:
+            return ""
+        
+        description = ""
+        # Find description after colon or pipe
+        colon_match = re.search(r':(.+)$', channel_name)
+        if colon_match:
+            description = colon_match.group(1)
+        
+        pipe_match = re.search(r'\|(.+)$', channel_name)
+        if pipe_match:
+            description = pipe_match.group(1)
+            
+        # Normalize whitespace and convert to uppercase for comparison
+        description = re.sub(r'\s+', ' ', description).strip().upper()
+        return description
+    
     def _handle_duplicates(self, channels_to_process, channels_to_hide, channels_to_show, logger):
         """Handle duplicate channels - keep only one visible based on channel_number and name detail"""
-        # Group channels by normalized name
+        # Group channels by normalized name AND event description
         channel_groups = {}
         
         for channel_info in channels_to_process:
             channel_id = channel_info['channel_id']
             channel_name = channel_info['channel_name']
             channel_number = channel_info['channel_number']
+            
             normalized_name = self._normalize_channel_name(channel_name)
+            event_description = self._get_event_description(channel_name)
             
-            if normalized_name not in channel_groups:
-                channel_groups[normalized_name] = []
+            # Group key is now a tuple of (base_name, event_description)
+            group_key = (normalized_name, event_description)
             
-            channel_groups[normalized_name].append({
+            if group_key not in channel_groups:
+                channel_groups[group_key] = []
+            
+            channel_groups[group_key].append({
                 'id': channel_id,
                 'name': channel_name,
                 'number': channel_number,
@@ -664,11 +964,15 @@ class Plugin:
         # Process each group of duplicates
         duplicate_hide_list = []
         
-        for normalized_name, channels in channel_groups.items():
+        for (normalized_name, event_description), channels in channel_groups.items():
             if len(channels) <= 1:
-                continue  # No duplicates, skip
+                continue  # No duplicates in this group, skip
             
-            logger.info(f"Found {len(channels)} duplicate channels for '{normalized_name}'")
+            # Only log if it's a "real" event (has a description)
+            if event_description:
+                 logger.info(f"Found {len(channels)} duplicate channels for '{normalized_name} | {event_description}'")
+            else:
+                 logger.info(f"Found {len(channels)} duplicate channels for base name '{normalized_name}' (no event desc)")
             
             # Sort by channel number first, then by name length (descending)
             channels_sorted = sorted(channels, key=lambda x: (x['number'] if x['number'] is not None else float('inf'), -x['name_length']))
@@ -694,60 +998,87 @@ class Plugin:
         
         return duplicate_hide_list
 
-    def _get_channel_visibility(self, channel_id, profile_id, logger):
-        """Get current visibility status for a channel in a profile"""
+    def _get_channel_visibility(self, channel_id, profile_ids, logger):
+        """Get current visibility status for a channel in profiles - returns True if enabled in ANY profile"""
         try:
+            # Check if channel is enabled in any of the profiles
             membership = ChannelProfileMembership.objects.filter(
                 channel_id=channel_id,
-                channel_profile_id=profile_id
+                channel_profile_id__in=profile_ids,
+                enabled=True
             ).first()
             
-            if membership:
-                return membership.enabled
-            else:
-                # If no membership exists, channel is not visible
-                return False
+            return membership is not None
         except Exception as e:
             logger.warning(f"Error getting visibility for channel {channel_id}: {e}")
             return False
 
     def _scan_and_update_channels(self, settings, logger, dry_run=True):
-        """Scan channels and update visibility based on event data"""
+        """Scan channels and update visibility based on hide rules priority"""
         try:
             # Validate required settings
-            channel_profile_name = settings.get("channel_profile_name", "").strip()
-            if not channel_profile_name:
+            channel_profile_names_str = settings.get("channel_profile_name", "").strip()
+            if not channel_profile_names_str:
                 return {"status": "error", "message": "Channel Profile Name is required. Please configure it in the plugin settings."}
+            
+            # Parse multiple profile names
+            channel_profile_names = [name.strip() for name in channel_profile_names_str.split(',') if name.strip()]
+            if not channel_profile_names:
+                return {"status": "error", "message": "Channel Profile Name is required. Please configure it in the plugin settings."}
+            
+            # Parse hide rules
+            hide_rules_text = settings.get("hide_rules_priority", "").strip()
+            hide_rules = self._parse_hide_rules(hide_rules_text, logger)
+            
+            if not hide_rules:
+                return {"status": "error", "message": "No valid hide rules configured. Please check Hide Rules Priority field."}
+            
+            # Check for deprecated regex_mark_inactive usage
+            regex_inactive_str = settings.get("regex_mark_inactive", "").strip()
+            if regex_inactive_str:
+                logger.warning("DEPRECATION WARNING: 'Regex: Mark Channel as Inactive' field is deprecated. Please use Hide Rules Priority with [InactiveRegex] tag instead.")
             
             # Get API token
             token, error = self._get_api_token(settings, logger)
             if error:
                 return {"status": "error", "message": error}
             
-            # Get Channel Profile
-            logger.info(f"Fetching Channel Profile: {channel_profile_name}")
+            # Get Channel Profiles
+            logger.info(f"Fetching Channel Profile(s): {', '.join(channel_profile_names)}")
             profiles = self._get_api_data("/api/channels/profiles/", token, settings, logger)
             
-            profile_id = None
-            for profile in profiles:
-                if profile.get('name', '').strip().upper() == channel_profile_name.upper():
-                    profile_id = profile.get('id')
-                    break
+            # Find all matching profile IDs
+            profile_ids = []
+            found_profile_names = []
+            for profile_name in channel_profile_names:
+                profile_id = None
+                for profile in profiles:
+                    if profile.get('name', '').strip().upper() == profile_name.upper():
+                        profile_id = profile.get('id')
+                        found_profile_names.append(profile_name)
+                        break
+                
+                if profile_id:
+                    profile_ids.append(profile_id)
+                else:
+                    logger.warning(f"Channel Profile '{profile_name}' not found")
             
-            if not profile_id:
-                return {"status": "error", "message": f"Channel Profile '{channel_profile_name}' not found. Please check the profile name in settings."}
+            if not profile_ids:
+                return {"status": "error", "message": f"None of the specified Channel Profiles were found: {channel_profile_names_str}. Please check the profile names in settings."}
             
-            # Get ALL channels in the profile (both enabled and disabled) via membership
+            logger.info(f"Found {len(profile_ids)} profile(s): {', '.join(found_profile_names)}")
+            
+            # Get ALL channels in the profiles (both enabled and disabled) via membership
             memberships = ChannelProfileMembership.objects.filter(
-                channel_profile_id=profile_id
+                channel_profile_id__in=profile_ids
             ).select_related('channel')
             
             all_channel_ids = [m.channel_id for m in memberships]
             
             if not all_channel_ids:
-                return {"status": "error", "message": f"Channel Profile '{channel_profile_name}' has no channels."}
+                return {"status": "error", "message": f"Channel Profile(s) '{', '.join(found_profile_names)}' have no channels."}
             
-            logger.info(f"Found {len(all_channel_ids)} channels in profile '{channel_profile_name}' (including hidden channels)")
+            logger.info(f"Found {len(all_channel_ids)} channels in profile(s) '{', '.join(found_profile_names)}' (including hidden channels)")
             
             # Get channels query - now includes both visible and hidden channels
             channels_query = Channel.objects.filter(id__in=all_channel_ids).select_related('channel_group', 'epg_data')
@@ -763,11 +1094,11 @@ class Plugin:
             total_channels = len(channels)
             
             if total_channels == 0:
-                return {"status": "error", "message": f"No channels found in profile '{channel_profile_name}' with the specified groups."}
+                return {"status": "error", "message": f"No channels found in profile(s) '{', '.join(found_profile_names)}' with the specified groups."}
             
             logger.info(f"Processing {total_channels} channels...")
             
-            # Compile regex patterns
+            # Compile regex for ignore pattern
             regex_ignore = None
             regex_ignore_str = settings.get("regex_channels_to_ignore", "").strip()
             if regex_ignore_str:
@@ -776,15 +1107,6 @@ class Plugin:
                     logger.info(f"Ignore regex compiled: {regex_ignore_str}")
                 except re.error as e:
                     return {"status": "error", "message": f"Invalid 'Regex: Channel Names to Ignore': {e}"}
-            
-            regex_inactive = None
-            regex_inactive_str = settings.get("regex_mark_inactive", "").strip()
-            if regex_inactive_str:
-                try:
-                    regex_inactive = re.compile(regex_inactive_str, re.IGNORECASE)
-                    logger.info(f"Inactive regex compiled: {regex_inactive_str}")
-                except re.error as e:
-                    return {"status": "error", "message": f"Invalid 'Regex: Mark Channel as Inactive': {e}"}
             
             # Initialize progress
             self.scan_progress = {"current": 0, "total": total_channels, "status": "running", "start_time": time.time()}
@@ -795,12 +1117,15 @@ class Plugin:
             channels_ignored = []
             channels_for_duplicate_check = []
             
+            # Track channel info for enhanced logging
+            channel_info_map = {}
+            
             # Process each channel
             for i, channel in enumerate(channels):
                 self.scan_progress["current"] = i + 1
                 
                 channel_name = channel.name or ""
-                current_visible = self._get_channel_visibility(channel.id, profile_id, logger)
+                current_visible = self._get_channel_visibility(channel.id, profile_ids, logger)
                 
                 # Check if channel should be ignored
                 if regex_ignore and regex_ignore.search(channel_name):
@@ -813,31 +1138,30 @@ class Plugin:
                         "current_visibility": "Visible" if current_visible else "Hidden",
                         "action": "Ignored",
                         "reason": "Matches ignore regex",
+                        "hide_rule": "",
                         "has_epg": "Yes" if channel.epg_data else "No"
                     })
                     continue
                 
-                # Check for additional inactive patterns via regex
+                # Check hide rules
+                should_hide, reason = self._check_channel_should_hide(channel, hide_rules, logger)
+                
                 action_needed = None
-                reason = None
-                
-                if regex_inactive and regex_inactive.search(channel_name):
-                    action_needed = "hide"
-                    reason = "Matches inactive regex"
+                if should_hide:
+                    if current_visible:
+                        action_needed = "hide"
                 else:
-                    # Check if channel has event
-                    has_event, event_reason = self._check_channel_has_event(channel, logger)
-                    
-                    if has_event:
-                        if not current_visible:
-                            action_needed = "show"
-                            reason = event_reason
-                    else:
-                        if current_visible:
-                            action_needed = "hide"
-                            reason = event_reason
+                    if not current_visible:
+                        action_needed = "show"
                 
-                # Store channel info for duplicate detection
+                # Store channel info for duplicate detection and logging
+                channel_info_map[channel.id] = {
+                    'channel_name': channel_name,
+                    'channel_number': float(channel.channel_number) if channel.channel_number else None,
+                    'reason': reason,
+                    'current_visible': current_visible
+                }
+                
                 channels_for_duplicate_check.append({
                     'channel_id': channel.id,
                     'channel_name': channel_name,
@@ -886,7 +1210,19 @@ class Plugin:
                 elif action_needed == "show":
                     final_action = "Show"
                 else:
-                    final_action = "No change"
+                    # No action needed - distinguish between visible and hidden
+                    if channel_info['current_visible']:
+                        final_action = "Visible"
+                    else:
+                        final_action = "No change"
+                
+                # Extract rule tag from reason for easier filtering
+                hide_rule = ""
+                if reason and reason.startswith("["):
+                    # Extract text between brackets, e.g., "[PastDate:0]" from "[PastDate:0] Event date..."
+                    bracket_end = reason.find("]")
+                    if bracket_end > 0:
+                        hide_rule = reason[1:bracket_end]
                 
                 results.append({
                     "channel_id": channel_id,
@@ -895,7 +1231,8 @@ class Plugin:
                     "channel_group": channel_info['channel_group'],
                     "current_visibility": "Visible" if channel_info['current_visible'] else "Hidden",
                     "action": final_action,
-                    "reason": reason or "Has event",
+                    "reason": reason,
+                    "hide_rule": hide_rule,
                     "has_epg": channel_info['has_epg']
                 })
             
@@ -913,7 +1250,7 @@ class Plugin:
             
             with open(csv_filepath, 'w', newline='', encoding='utf-8') as csvfile:
                 fieldnames = ['channel_id', 'channel_name', 'channel_number', 'channel_group', 
-                            'current_visibility', 'action', 'reason', 'has_epg']
+                            'current_visibility', 'action', 'reason', 'hide_rule', 'has_epg']
                 writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
                 writer.writeheader()
                 for result in results:
@@ -926,20 +1263,36 @@ class Plugin:
                 # Build bulk update payload
                 channels_payload = []
                 
+                # Log channels being hidden with reasons
                 for channel_id in channels_to_hide:
                     channels_payload.append({'channel_id': channel_id, 'enabled': False})
+                    if channel_id in channel_info_map:
+                        info = channel_info_map[channel_id]
+                        # Check if this is a duplicate
+                        if channel_id in duplicate_hide_list:
+                            reason = "Duplicate channel (keeping better match)"
+                        else:
+                            reason = info['reason']
+                        logger.info(f"Hiding channel {channel_id} (#{info['channel_number']}) '{info['channel_name']}' - Reason: {reason}")
                 
+                # Log channels being shown with reasons
                 for channel_id in channels_to_show:
                     channels_payload.append({'channel_id': channel_id, 'enabled': True})
+                    if channel_id in channel_info_map:
+                        info = channel_info_map[channel_id]
+                        logger.info(f"Showing channel {channel_id} (#{info['channel_number']}) '{info['channel_name']}' - Reason: {info['reason']}")
                 
                 if channels_payload:
-                    logger.info(f"Applying visibility changes to {len(channels_payload)} channels...")
+                    logger.info(f"Applying visibility changes to {len(channels_payload)} channels across {len(profile_ids)} profile(s)...")
                     payload = {'channels': channels_payload}
-                    self._patch_api_data(f"/api/channels/profiles/{profile_id}/channels/bulk-update/", 
-                                        token, payload, settings, logger)
-                    logger.info("Visibility changes applied successfully")
+                    
+                    # Apply changes to each profile
+                    for profile_id in profile_ids:
+                        self._patch_api_data(f"/api/channels/profiles/{profile_id}/channels/bulk-update/", 
+                                            token, payload, settings, logger)
+                    
+                    logger.info("Visibility changes applied successfully to all profiles")
 
-            # These should be OUTSIDE the if block (fix indentation)
             # Save settings on every run
             self._save_settings(settings)
 
@@ -947,7 +1300,7 @@ class Plugin:
             result_data = {
                 "scan_time": datetime.now().isoformat(),
                 "dry_run": dry_run,
-                "profile_name": channel_profile_name,
+                "profile_names": ', '.join(found_profile_names),
                 "total_channels": total_channels,
                 "channels_to_hide": len(channels_to_hide),
                 "channels_to_show": len(channels_to_show),
@@ -1003,51 +1356,21 @@ class Plugin:
             }
             
         except Exception as e:
-            self.scan_progress['status'] = 'idle'
-            logger.error(f"Error during channel scan: {str(e)}")
+            logger.error(f"Error scanning channels: {str(e)}")
             import traceback
             logger.error(f"Traceback: {traceback.format_exc()}")
-            return {"status": "error", "message": f"Error during channel scan: {str(e)}"}
-
-    def run(self, action, params, context):
-        """Main plugin entry point"""
-        LOGGER.info(f"Event Channel Managarr run called with action: {action}")
-        
-        try:
-            # Get settings from context
-            settings = context.get("settings", {})
-            logger = context.get("logger", LOGGER)
-            
-            if action == "update_schedule":
-                return self.update_schedule_action(settings, logger)
-            elif action == "dry_run":
-                return self.dry_run_action(settings, logger)
-            elif action == "run_now":
-                return self.run_now_action(settings, logger)
-            elif action == "remove_epg_from_hidden":
-                return self.remove_epg_from_hidden_action(settings, logger)
-            elif action == "clear_csv_exports":
-                return self.clear_csv_exports_action(settings, logger)
-            elif action == "cleanup_periodic_tasks":
-                return self.cleanup_periodic_tasks_action(settings, logger)
-            else:
-                return {
-                    "status": "error",
-                    "message": f"Unknown action: {action}",
-                    "available_actions": ["update_schedule", "dry_run", "run_now", "remove_epg_from_hidden", "clear_csv_exports", "cleanup_periodic_tasks"]
-                }
-                
-        except Exception as e:
-            self.scan_progress['status'] = 'idle'
-            LOGGER.error(f"Error in plugin run: {str(e)}")
-            return {"status": "error", "message": str(e)}
+            return {"status": "error", "message": f"Error scanning channels: {str(e)}"}
 
     def dry_run_action(self, settings, logger):
-        """Run scan without applying changes"""
-        return self._scan_and_update_channels(settings, logger, dry_run=True)
+        """Preview channel visibility changes without applying them"""
+        logger.info("Starting dry run scan...")
+        result = self._scan_and_update_channels(settings, logger, dry_run=True)
+        
+        return result
 
     def run_now_action(self, settings, logger):
-        """Run scan and apply changes immediately"""
+        """Immediately scan and update channel visibility"""
+        logger.info("Starting channel visibility update...")
         result = self._scan_and_update_channels(settings, logger, dry_run=False)
         
         # Trigger frontend refresh if changes were applied
@@ -1064,27 +1387,42 @@ class Plugin:
             logger.info("Starting EPG removal from hidden channels...")
             
             # Validate required settings
-            channel_profile_name = settings.get("channel_profile_name", "").strip()
-            if not channel_profile_name:
+            channel_profile_names_str = settings.get("channel_profile_name", "").strip()
+            if not channel_profile_names_str:
                 return {
                     "status": "error",
                     "message": "Channel Profile Name is required. Please configure it in settings."
                 }
             
-            # Get channel profile using Django ORM
-            try:
-                profile = ChannelProfile.objects.get(name=channel_profile_name)
-                profile_id = profile.id
-                logger.info(f"Found profile: {channel_profile_name} (ID: {profile_id})")
-            except ChannelProfile.DoesNotExist:
+            # Parse multiple profile names
+            channel_profile_names = [name.strip() for name in channel_profile_names_str.split(',') if name.strip()]
+            if not channel_profile_names:
                 return {
                     "status": "error",
-                    "message": f"Channel profile '{channel_profile_name}' not found"
+                    "message": "Channel Profile Name is required. Please configure it in settings."
                 }
             
-            # Get all channel memberships in this profile that are disabled
+            # Get channel profiles using Django ORM
+            profile_ids = []
+            found_profile_names = []
+            for profile_name in channel_profile_names:
+                try:
+                    profile = ChannelProfile.objects.get(name=profile_name)
+                    profile_ids.append(profile.id)
+                    found_profile_names.append(profile_name)
+                    logger.info(f"Found profile: {profile_name} (ID: {profile.id})")
+                except ChannelProfile.DoesNotExist:
+                    logger.warning(f"Channel profile '{profile_name}' not found")
+            
+            if not profile_ids:
+                return {
+                    "status": "error",
+                    "message": f"None of the specified Channel Profiles were found: {channel_profile_names_str}"
+                }
+            
+            # Get all channel memberships in these profiles that are disabled
             hidden_memberships = ChannelProfileMembership.objects.filter(
-                channel_profile_id=profile_id,
+                channel_profile_id__in=profile_ids,
                 enabled=False
             ).select_related('channel')
             
@@ -1219,14 +1557,13 @@ class Plugin:
 
 
 # Export for Dispatcharr plugin system
+
+# Create the single plugin instance
+plugin = Plugin()
+
+# Export the components the loader needs
 fields = Plugin.fields
 actions = Plugin.actions
 
-plugin = Plugin()
-plugin_instance = Plugin()
-
-event_channel_managarr = Plugin()
-EVENT_CHANNEL_MANAGARR = Plugin()
-
-# Export the Celery task function
-__all__ = ['Plugin', 'run_event_channel_scan', 'fields', 'actions', 'plugin', 'plugin_instance']
+# Define what this module exports
+__all__ = ['plugin', 'fields', 'actions']

@@ -1,3 +1,3 @@
-from .plugin import Plugin, fields, actions
+from .plugin import plugin, fields, actions
 
-__all__ = ['Plugin', 'fields', 'actions']
+__all__ = ['plugin', 'fields', 'actions']
