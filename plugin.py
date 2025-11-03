@@ -36,7 +36,7 @@ class Plugin:
     """Event Channel Managarr Plugin"""
     
     name = "Event Channel Managarr"
-    version = "0.3.0e"
+    version = "0.3.0f"
     description = "Automatically manage channel visibility based on EPG data and channel names. Hides channels with no events and shows channels with active events."
     
     # Settings rendered by UI
@@ -92,7 +92,7 @@ class Plugin:
             "type": "string",
             "default": "[BlankName],[NoEventPattern],[EmptyPlaceholder],[PastDate:0],[FutureDate:2],[ShortDescription],[ShortChannelName]",
             "placeholder": "[BlankName],[NoEventPattern],[EmptyPlaceholder],[PastDate:0],[FutureDate:2],[ShortDescription],[ShortChannelName]",
-            "help_text": "Define rules for hiding channels in priority order (first match wins). Comma-separated tags. Available tags: [NoEPG], [BlankName], [NoEventPattern], [EmptyPlaceholder], [ShortDescription], [ShortChannelName], [PastDate:days], [FutureDate:days], [InactiveRegex]. Example: [PastDate:0] hides if event date has passed, [FutureDate:14] hides if event is 14+ days away.",
+            "help_text": "Define rules for hiding channels in priority order (first match wins). Comma-separated tags. Available tags: [NoEPG], [BlankName], [WrongDayOfWeek], [NoEventPattern], [EmptyPlaceholder], [ShortDescription], [ShortChannelName], [PastDate:days], [FutureDate:days], [InactiveRegex]. Example: [PastDate:0] hides if event date has passed, [WrongDayOfWeek] hides if channel name contains a day (Mon-Sun) that isn't today.",
         },
         {
             "id": "regex_channels_to_ignore",
@@ -292,6 +292,46 @@ class Plugin:
         logger.info(f"Parsed {len(rules)} hide rules: {[r[0] + (f':{r[1]}' if r[1] is not None else '') for r in rules]}")
         return rules
 
+    def _extract_day_of_week_from_channel_name(self, channel_name, logger):
+        """Extract day of week from channel name if present"""
+        if not channel_name:
+            return None
+
+        # Map day names to day numbers (0 = Monday, 6 = Sunday)
+        day_patterns = {
+            'MONDAY': 0,
+            'TUESDAY': 1,
+            'WEDNESDAY': 2,
+            'THURSDAY': 3,
+            'FRIDAY': 4,
+            'SATURDAY': 5,
+            'SUNDAY': 6,
+            # Short forms
+            'MON': 0,
+            'TUE': 1,
+            'TUES': 1,
+            'WED': 2,
+            'THU': 3,
+            'THUR': 3,
+            'THURS': 3,
+            'FRI': 4,
+            'SAT': 5,
+            'SUN': 6
+        }
+
+        # Search for day names in the channel name
+        # Use word boundaries to avoid matching parts of other words
+        channel_name_upper = channel_name.upper()
+
+        for day_name, day_number in day_patterns.items():
+            # Use word boundary to match whole words only
+            pattern = r'\b' + day_name + r'\b'
+            if re.search(pattern, channel_name_upper):
+                logger.debug(f"Found day name '{day_name}' in channel name: '{channel_name}'")
+                return day_number
+
+        return None
+
     def _extract_date_from_channel_name(self, channel_name, logger):
         """Extract date from channel name using various patterns"""
         if not channel_name:
@@ -432,7 +472,25 @@ class Plugin:
             if not channel_name.strip():
                 return True, "[BlankName] Channel name is blank"
             return False, None
-        
+
+        elif rule_name == "WrongDayOfWeek":
+            # Hide if channel name contains a day of week that is NOT today
+            extracted_day = self._extract_day_of_week_from_channel_name(channel_name, logger)
+            if extracted_day is None:
+                return False, None  # Skip rule if no day found
+
+            # Get today's day of week (0 = Monday, 6 = Sunday)
+            today_day = datetime.now().weekday()
+
+            day_names = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday']
+            extracted_day_name = day_names[extracted_day]
+            today_day_name = day_names[today_day]
+
+            if extracted_day != today_day:
+                return True, f"[WrongDayOfWeek] Channel is for {extracted_day_name}, but today is {today_day_name}"
+
+            return False, None
+
         elif rule_name == "NoEventPattern":
             # Match variations: no event, no events, offline, no games scheduled, no scheduled event
             no_event_pattern = re.compile(
@@ -445,7 +503,8 @@ class Plugin:
         
         elif rule_name == "EmptyPlaceholder":
             # Ends with colon or pipe with nothing or only whitespace/very short content after
-            colon_match = re.search(r':(.*)$', channel_name)
+            # Match colons not preceded by digits (to avoid time patterns like "07:00PM")
+            colon_match = re.search(r'(?<!\d):(.*)$', channel_name)
             if colon_match:
                 content_after = colon_match.group(1).strip()
                 if not content_after or len(content_after) <= 2:
@@ -461,7 +520,8 @@ class Plugin:
         
         elif rule_name == "ShortDescription":
             # Check description length after separators
-            colon_match = re.search(r':(.+)$', channel_name)
+            # Match colons not preceded by digits (to avoid time patterns like "07:00PM")
+            colon_match = re.search(r'(?<!\d):(.+)$', channel_name)
             if colon_match:
                 description = colon_match.group(1).strip()
                 if len(description) < 15:
@@ -477,13 +537,14 @@ class Plugin:
         
         elif rule_name == "ShortChannelName":
             # Check total name length if no separator
-            colon_match = re.search(r':(.+)$', channel_name)
+            # Match colons not preceded by digits (to avoid time patterns like "07:00PM")
+            colon_match = re.search(r'(?<!\d):(.+)$', channel_name)
             pipe_match = re.search(r'\|(.+)$', channel_name)
-            
+
             if not colon_match and not pipe_match:
                 if len(channel_name.strip()) < 25:
                     return True, f"[ShortChannelName] Name too short without event details ({len(channel_name.strip())} chars)"
-            
+
             return False, None
         
         elif rule_name == "PastDate":
@@ -906,31 +967,33 @@ class Plugin:
         """Normalize channel name for duplicate detection by removing event details"""
         if not channel_name:
             return ""
-        
+
         # Extract base name before colon or pipe
-        name = re.sub(r':.*$', '', channel_name)
+        # Match colons not preceded by digits (to avoid time patterns like "07:00PM")
+        name = re.sub(r'(?<!\d):.*$', '', channel_name)
         name = re.sub(r'\|.*$', '', name)
-        
+
         # Normalize whitespace and convert to uppercase for comparison
         name = re.sub(r'\s+', ' ', name).strip().upper()
-        
+
         return name
 
     def _get_event_description(self, channel_name):
         """Extract event description part of the channel name"""
         if not channel_name:
             return ""
-        
+
         description = ""
         # Find description after colon or pipe
-        colon_match = re.search(r':(.+)$', channel_name)
+        # Match colons not preceded by digits (to avoid time patterns like "07:00PM")
+        colon_match = re.search(r'(?<!\d):(.+)$', channel_name)
         if colon_match:
             description = colon_match.group(1)
-        
+
         pipe_match = re.search(r'\|(.+)$', channel_name)
         if pipe_match:
             description = pipe_match.group(1)
-            
+
         # Normalize whitespace and convert to uppercase for comparison
         description = re.sub(r'\s+', ' ', description).strip().upper()
         return description
