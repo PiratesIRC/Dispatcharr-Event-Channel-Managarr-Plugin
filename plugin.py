@@ -34,9 +34,9 @@ _stop_event = threading.Event()
 
 class Plugin:
     """Event Channel Managarr Plugin"""
-    
+
     name = "Event Channel Managarr"
-    version = "0.3.0f"
+    version = "0.3.0g"
     description = "Automatically manage channel visibility based on EPG data and channel names. Hides channels with no events and shows channels with active events."
     
     # Settings rendered by UI
@@ -502,46 +502,63 @@ class Plugin:
             return False, None
         
         elif rule_name == "EmptyPlaceholder":
-            # Ends with colon or pipe with nothing or only whitespace/very short content after
+            # Ends with colon, pipe, or dash with nothing or only whitespace/very short content after
             # Match colons not preceded by digits (to avoid time patterns like "07:00PM")
             colon_match = re.search(r'(?<!\d):(.*)$', channel_name)
             if colon_match:
                 content_after = colon_match.group(1).strip()
                 if not content_after or len(content_after) <= 2:
                     return True, f"[EmptyPlaceholder] Empty or minimal content after colon ({len(content_after)} chars)"
-            
+
             pipe_match = re.search(r'\|(.*)$', channel_name)
             if pipe_match:
                 content_after = pipe_match.group(1).strip()
                 if not content_after or len(content_after) <= 2:
                     return True, f"[EmptyPlaceholder] Empty or minimal content after pipe ({len(content_after)} chars)"
-            
+
+            # Match dash as separator (whitespace followed by dash near end of string)
+            dash_match = re.search(r'\s-\s*$', channel_name)
+            if dash_match:
+                # Get content after the last dash
+                content_after = channel_name[dash_match.end():].strip()
+                if not content_after or len(content_after) <= 2:
+                    return True, f"[EmptyPlaceholder] Empty or minimal content after dash ({len(content_after)} chars)"
+
             return False, None
         
         elif rule_name == "ShortDescription":
-            # Check description length after separators
+            # Check description length after separators (colon, pipe, or dash)
             # Match colons not preceded by digits (to avoid time patterns like "07:00PM")
             colon_match = re.search(r'(?<!\d):(.+)$', channel_name)
             if colon_match:
                 description = colon_match.group(1).strip()
                 if len(description) < 15:
                     return True, f"[ShortDescription] Description after colon too short ({len(description)} chars)"
-            
+
             pipe_match = re.search(r'\|(.+)$', channel_name)
             if pipe_match:
                 description = pipe_match.group(1).strip()
                 if len(description) < 15:
                     return True, f"[ShortDescription] Description after pipe too short ({len(description)} chars)"
-            
+
+            # Match dash as separator (whitespace followed by dash)
+            # Find the rightmost occurrence to get the actual description
+            dash_match = re.search(r'\s-\s*(.*)$', channel_name)
+            if dash_match:
+                description = dash_match.group(1).strip()
+                if len(description) < 15:
+                    return True, f"[ShortDescription] Description after dash too short ({len(description)} chars)"
+
             return False, None
         
         elif rule_name == "ShortChannelName":
-            # Check total name length if no separator
+            # Check total name length if no separator (colon, pipe, or dash)
             # Match colons not preceded by digits (to avoid time patterns like "07:00PM")
             colon_match = re.search(r'(?<!\d):(.+)$', channel_name)
             pipe_match = re.search(r'\|(.+)$', channel_name)
+            dash_match = re.search(r'\s-\s', channel_name)  # Dash with surrounding spaces
 
-            if not colon_match and not pipe_match:
+            if not colon_match and not pipe_match and not dash_match:
                 if len(channel_name.strip()) < 25:
                     return True, f"[ShortChannelName] Name too short without event details ({len(channel_name.strip())} chars)"
 
@@ -968,10 +985,11 @@ class Plugin:
         if not channel_name:
             return ""
 
-        # Extract base name before colon or pipe
+        # Extract base name before colon, pipe, or dash separators
         # Match colons not preceded by digits (to avoid time patterns like "07:00PM")
         name = re.sub(r'(?<!\d):.*$', '', channel_name)
         name = re.sub(r'\|.*$', '', name)
+        name = re.sub(r'\s-\s.*$', '', name)  # Remove dash separator and everything after
 
         # Normalize whitespace and convert to uppercase for comparison
         name = re.sub(r'\s+', ' ', name).strip().upper()
@@ -984,7 +1002,7 @@ class Plugin:
             return ""
 
         description = ""
-        # Find description after colon or pipe
+        # Find description after colon, pipe, or dash
         # Match colons not preceded by digits (to avoid time patterns like "07:00PM")
         colon_match = re.search(r'(?<!\d):(.+)$', channel_name)
         if colon_match:
@@ -993,6 +1011,11 @@ class Plugin:
         pipe_match = re.search(r'\|(.+)$', channel_name)
         if pipe_match:
             description = pipe_match.group(1)
+
+        # Match dash as separator (whitespace followed by dash)
+        dash_match = re.search(r'\s-\s*(.*)$', channel_name)
+        if dash_match:
+            description = dash_match.group(1)
 
         # Normalize whitespace and convert to uppercase for comparison
         description = re.sub(r'\s+', ' ', description).strip().upper()
