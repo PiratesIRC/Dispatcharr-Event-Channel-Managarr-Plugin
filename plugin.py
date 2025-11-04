@@ -563,8 +563,7 @@ class Plugin:
         
         elif rule_name == "EmptyPlaceholder":
             # Ends with colon, pipe, or dash with nothing or only whitespace/very short content after
-            # Match colons not preceded by digits (to avoid time patterns like "07:00PM")
-            colon_match = re.search(r'(?<!\d):(.*)$', channel_name)
+            colon_match = re.search(r':(.*)$', channel_name)
             if colon_match:
                 content_after = colon_match.group(1).strip()
                 if not content_after or len(content_after) <= 2:
@@ -588,8 +587,7 @@ class Plugin:
         
         elif rule_name == "ShortDescription":
             # Check description length after separators (colon, pipe, or dash)
-            # Match colons not preceded by digits (to avoid time patterns like "07:00PM")
-            colon_match = re.search(r'(?<!\d):(.+)$', channel_name)
+            colon_match = re.search(r':(.+)$', channel_name)
             if colon_match:
                 description = colon_match.group(1).strip()
                 if len(description) < 15:
@@ -613,8 +611,7 @@ class Plugin:
         
         elif rule_name == "ShortChannelName":
             # Check total name length if no separator (colon, pipe, or dash)
-            # Match colons not preceded by digits (to avoid time patterns like "07:00PM")
-            colon_match = re.search(r'(?<!\d):(.+)$', channel_name)
+            colon_match = re.search(r':(.+)$', channel_name)
             pipe_match = re.search(r'\|(.+)$', channel_name)
             dash_match = re.search(r'\s-\s', channel_name)  # Dash with surrounding spaces
 
@@ -1073,8 +1070,7 @@ class Plugin:
             return ""
 
         # Extract base name before colon, pipe, or dash separators
-        # Match colons not preceded by digits (to avoid time patterns like "07:00PM")
-        name = re.sub(r'(?<!\d):.*$', '', channel_name)
+        name = re.sub(r':.*$', '', channel_name)
         name = re.sub(r'\|.*$', '', name)
         name = re.sub(r'\s-\s.*$', '', name)  # Remove dash separator and everything after
 
@@ -1090,8 +1086,7 @@ class Plugin:
 
         description = ""
         # Find description after colon, pipe, or dash
-        # Match colons not preceded by digits (to avoid time patterns like "07:00PM")
-        colon_match = re.search(r'(?<!\d):(.+)$', channel_name)
+        colon_match = re.search(r':(.+)$', channel_name)
         if colon_match:
             description = colon_match.group(1)
 
