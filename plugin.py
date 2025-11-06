@@ -1444,7 +1444,7 @@ class Plugin:
             csv_filepath = None
             should_create_csv = False
             if is_scheduled_run:
-                should_create_csv = settings.get("enable_scheduled_csv_export", True)
+                should_create_csv = settings.get("enable_scheduled_csv_export", False)
             else:
                 # For manual runs (Dry Run, Run Now), always create the CSV
                 should_create_csv = True
