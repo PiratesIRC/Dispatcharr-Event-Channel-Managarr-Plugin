@@ -81,7 +81,7 @@ The plugin checks channels against the **Hide Rules Priority** list in the order
 
 | Rule | Parameter | Description |
 | :--- | :--- | :--- |
-| **[NoEPG]** | - | Hides if no EPG is assigned OR if the assigned EPG has no program data for the next 24 hours. |
+| **[NoEPG]** | - | Hides if no EPG is assigned OR if the assigned EPG has no program data for the next 24 hours. (Skips custom dummy EPG) |
 | **[BlankName]** | - | Hides if the channel name is blank. |
 | **[WrongDayOfWeek]** | - | Hides if the name contains a day (e.g., "Saturday") and today is not that day. |
 | **[NoEventPattern]** | - | Hides if the name contains patterns like "no event", "offline", "no games scheduled". |
