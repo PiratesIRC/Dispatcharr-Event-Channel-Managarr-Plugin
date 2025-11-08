@@ -107,7 +107,7 @@ Available Tags:
 
 [NoEPG]
  - Hides the channel if it has no EPG data assigned, OR if it has EPG data but no programs scheduled for the next 24 hours.
- - Note: This rule does not work for custom dummy EPGs.
+ - Note: Channels using custom dummy EPG are automatically excluded from this check (as they generate programs on-demand).
 
 [BlankName]
  - Hides the channel if its name is empty or contains only whitespace.

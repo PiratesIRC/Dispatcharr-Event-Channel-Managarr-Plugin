@@ -638,7 +638,24 @@ class Plugin:
             # Hide if no EPG assigned at all
             if not channel.epg_data:
                 return True, "[NoEPG] No EPG assigned to channel"
-            
+
+            # Skip check for custom dummy EPG sources (they generate programs on-demand, not stored in DB)
+            # Check common attributes that indicate custom dummy EPG
+            is_custom_dummy = False
+            if hasattr(channel.epg_data, 'is_custom_dummy'):
+                is_custom_dummy = channel.epg_data.is_custom_dummy
+            elif hasattr(channel.epg_data, 'is_dummy') and hasattr(channel.epg_data, 'source_url'):
+                # If it has is_dummy=True and source_url is empty/None, it's likely custom dummy
+                is_custom_dummy = channel.epg_data.is_dummy
+            elif hasattr(channel.epg_data, 'epg_type'):
+                is_custom_dummy = channel.epg_data.epg_type in ['custom_dummy', 'dummy']
+            elif hasattr(channel.epg_data, 'source_type'):
+                is_custom_dummy = channel.epg_data.source_type in ['custom_dummy', 'dummy']
+
+            if is_custom_dummy:
+                logger.debug(f"Skipping NoEPG check for custom dummy EPG on channel: {channel_name}")
+                return False, None
+
             # Hide if EPG is assigned but has no program data for the next 24 hours
             now = timezone.now()
             next_24h = now + timedelta(hours=24)
@@ -649,7 +666,7 @@ class Plugin:
             ).exists()
             if not has_programs:
                 return True, "[NoEPG] No EPG program data for next 24 hours"
-            
+
             return False, None
         
         elif rule_name == "BlankName":
