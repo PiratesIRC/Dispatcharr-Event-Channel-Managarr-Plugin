@@ -38,7 +38,7 @@ class Plugin:
     """Event Channel Managarr Plugin"""
 
     name = "Event Channel Managarr"
-    version = "0.3.2"
+    version = "0.3.3"
     description = "Automatically manage channel visibility based on EPG data and channel names. Hides channels with no events and shows channels with active events.\n\nGitHub: https://github.com/PiratesIRC/Dispatcharr-Event-Channel-Managarr-Plugin"
     
     # Settings rendered by UI
@@ -246,18 +246,23 @@ class Plugin:
     def run(self, action, params, context):
         """Main plugin entry point"""
         LOGGER.info(f"Event Channel Managarr run called with action: {action}")
-        
+        LOGGER.debug(f"Params: {params}")
+        LOGGER.debug(f"Context settings: {context.get('settings', {})}")
+
         try:
-            # Get live settings from context
+            # Get live settings from context and params
             live_settings = context.get("settings", {})
             logger = context.get("logger", LOGGER)
 
-            # Create a merged settings view, prioritizing live settings over saved ones.
-            # This handles cases where the UI may not send all settings for certain actions.
+            # Create a merged settings view, prioritizing current form values over saved ones.
+            # Priority order: params (current form) > live_settings (context) > saved_settings (disk)
             merged_settings = {}
             if self.saved_settings:
                 merged_settings.update(self.saved_settings)
             merged_settings.update(live_settings)
+            # Params may contain current form values when action is triggered
+            if params:
+                merged_settings.update(params)
 
             if action == "load_settings":
                 return self.load_settings_action(merged_settings, logger)
@@ -1637,6 +1642,9 @@ class Plugin:
                         for rule, count in sorted(rule_stats.items(), key=lambda x: x[1], reverse=True):
                             csvfile.write(f"#   {rule}: {count} channels\n")
 
+                    # Write hide rules priority configuration
+                    hide_rules_priority = settings.get("hide_rules_priority", "")
+                    csvfile.write(f"# Hide Rules Priority: {hide_rules_priority}\n")
                     csvfile.write("#\n")
 
                     fieldnames = ['channel_id', 'channel_name', 'channel_number', 'channel_group',
