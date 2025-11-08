@@ -494,7 +494,30 @@ class Plugin:
         
         # Get current year for patterns without year
         current_year = datetime.now().year
-        
+
+        # Pattern 0: start:YYYY-MM-DD HH:MM:SS or stop:YYYY-MM-DD HH:MM:SS
+        # Example: "start:2025-10-28 02:20:00" or "stop:2025-10-28 06:20:10"
+        # Prioritize "start:" over "stop:" if both are present
+        pattern0_start = re.search(r'start:(\d{4})-(\d{2})-(\d{2})\s+(\d{2}):(\d{2}):(\d{2})', channel_name)
+        if pattern0_start:
+            year, month, day, hour, minute, second = pattern0_start.groups()
+            try:
+                extracted_date = datetime(int(year), int(month), int(day), int(hour), int(minute), int(second))
+                logger.debug(f"Extracted datetime {extracted_date} from pattern start:YYYY-MM-DD HH:MM:SS in '{channel_name}'")
+                return extracted_date
+            except ValueError:
+                pass
+
+        pattern0_stop = re.search(r'stop:(\d{4})-(\d{2})-(\d{2})\s+(\d{2}):(\d{2}):(\d{2})', channel_name)
+        if pattern0_stop:
+            year, month, day, hour, minute, second = pattern0_stop.groups()
+            try:
+                extracted_date = datetime(int(year), int(month), int(day), int(hour), int(minute), int(second))
+                logger.debug(f"Extracted datetime {extracted_date} from pattern stop:YYYY-MM-DD HH:MM:SS in '{channel_name}'")
+                return extracted_date
+            except ValueError:
+                pass
+
         # Pattern 1: MM/DD/YYYY or MM/DD/YY (e.g., "10/27/2025", "10/27/25")
         pattern1 = re.search(r'\b(\d{1,2})/(\d{1,2})/(\d{2,4})\b', channel_name)
         if pattern1:
