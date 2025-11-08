@@ -38,7 +38,7 @@ class Plugin:
     """Event Channel Managarr Plugin"""
 
     name = "Event Channel Managarr"
-    version = "0.3.0"
+    version = "0.3.2"
     description = "Automatically manage channel visibility based on EPG data and channel names. Hides channels with no events and shows channels with active events.\n\nGitHub: https://github.com/PiratesIRC/Dispatcharr-Event-Channel-Managarr-Plugin"
     
     # Settings rendered by UI
@@ -103,7 +103,7 @@ class Plugin:
             "type": "string",
             "default": "[InactiveRegex],[BlankName],[NoEventPattern],[EmptyPlaceholder],[PastDate:0],[FutureDate:2],[ShortDescription],[ShortChannelName]",
             "placeholder": "[BlankName],[NoEventPattern],[EmptyPlaceholder],[PastDate:0],[FutureDate:2],[ShortDescription],[ShortChannelName]",
-            "help_text": "Define rules for hiding channels in priority order (first match wins). Comma-separated tags. Available tags: [NoEPG], [BlankName], [WrongDayOfWeek], [NoEventPattern], [EmptyPlaceholder], [ShortDescription], [ShortChannelName], [PastDate:days], [FutureDate:days], [InactiveRegex]. Example: [PastDate:0] hides if event date has passed, [WrongDayOfWeek] hides if channel name contains a day (Mon-Sun) that isn't today.",
+            "help_text": "Define rules for hiding channels in priority order (first match wins). Comma-separated tags. Available tags: [NoEPG], [BlankName], [WrongDayOfWeek], [NoEventPattern], [EmptyPlaceholder], [ShortDescription], [ShortChannelName], [NumberOnly], [PastDate:days], [PastDate:days:Xh], [FutureDate:days], [InactiveRegex]. Example: [PastDate:0] hides if event date has passed, [PastDate:0:4h] adds 4 hour grace period, [NumberOnly] hides channels with just prefix+number like 'PPV 12'.",
         },
         {
             "id": "regex_channels_to_ignore",
@@ -175,6 +175,12 @@ class Plugin:
     
     # Actions for Dispatcharr UI
     actions = [
+        {
+            "id": "validate_configuration",
+            "label": "✅ Validate Configuration",
+            "description": "Test and validate all plugin settings (regex patterns, rules, API connectivity)",
+            "confirm": { "required": False }
+        },
         {
             "id": "update_schedule",
             "label": "💾 Update Schedule",
@@ -267,17 +273,86 @@ class Plugin:
                 return self.clear_csv_exports_action(merged_settings, logger)
             elif action == "cleanup_periodic_tasks":
                 return self.cleanup_periodic_tasks_action(merged_settings, logger)
+            elif action == "validate_configuration":
+                return self.validate_configuration_action(merged_settings, logger)
             else:
                 return {
                     "status": "error",
                     "message": f"Unknown action: {action}",
-                    "available_actions": ["update_schedule", "dry_run", "run_now", "remove_epg_from_hidden", "clear_csv_exports", "cleanup_periodic_tasks"]
+                    "available_actions": ["validate_configuration", "update_schedule", "dry_run", "run_now", "remove_epg_from_hidden", "clear_csv_exports", "cleanup_periodic_tasks"]
                 }
                 
         except Exception as e:
             self.scan_progress['status'] = 'idle'
             LOGGER.error(f"Error in plugin run: {str(e)}")
             return {"status": "error", "message": str(e)}
+
+    def validate_configuration_action(self, settings, logger):
+        """Validate all plugin configuration settings"""
+        validation_results = []
+        has_errors = False
+
+        # 1. Validate hide rules
+        try:
+            hide_rules_text = settings.get("hide_rules_priority", "").strip()
+            hide_rules = self._parse_hide_rules(hide_rules_text, logger)
+            if hide_rules:
+                validation_results.append(f"✅ Hide Rules: Parsed {len(hide_rules)} rules successfully")
+            else:
+                validation_results.append("⚠️ Hide Rules: No rules configured (will use defaults)")
+        except Exception as e:
+            validation_results.append(f"❌ Hide Rules: Parse error - {str(e)}")
+            has_errors = True
+
+        # 2. Validate regex patterns
+        patterns_to_check = [
+            ("regex_mark_inactive", "Inactive Regex"),
+            ("regex_channels_to_ignore", "Ignore Channels Regex"),
+            ("regex_force_visible", "Force Visible Regex")
+        ]
+
+        for setting_key, label in patterns_to_check:
+            try:
+                pattern = settings.get(setting_key, "").strip()
+                if pattern:
+                    re.compile(pattern, re.IGNORECASE)
+                    validation_results.append(f"✅ {label}: Valid pattern")
+                else:
+                    validation_results.append(f"ℹ️ {label}: Not configured")
+            except re.error as e:
+                validation_results.append(f"❌ {label}: Invalid - {str(e)}")
+                has_errors = True
+
+        # 3. Validate API connectivity
+        try:
+            token, error = self._get_api_token(settings, logger)
+            if error:
+                validation_results.append(f"❌ API Authentication: {error}")
+                has_errors = True
+            else:
+                validation_results.append("✅ API Authentication: Success")
+        except Exception as e:
+            validation_results.append(f"❌ API Connection: {str(e)}")
+            has_errors = True
+
+        # 4. Validate schedule
+        scheduled_times = settings.get("scheduled_times", "").strip()
+        if scheduled_times:
+            times_list = [t.strip() for t in scheduled_times.split(',') if t.strip()]
+            invalid = [t for t in times_list if len(t) != 4 or not t.isdigit()]
+            if invalid:
+                validation_results.append(f"❌ Scheduled Times: Invalid format - {', '.join(invalid)}")
+                has_errors = True
+            else:
+                validation_results.append(f"✅ Scheduled Times: {len(times_list)} valid times")
+        else:
+            validation_results.append("ℹ️ Scheduled Times: Not configured")
+
+        message = "\n".join(validation_results)
+        return {
+            "status": "warning" if has_errors else "success",
+            "message": f"Configuration Validation:\n\n{message}"
+        }
 
     def _save_settings(self, settings):
         """Save settings to disk"""
@@ -306,30 +381,32 @@ class Plugin:
             # Legacy format: newline-separated
             rule_items = rules_text.strip().split('\n')
         else:
-                    # New format: comma-separated
-                    # Split by comma, but need to handle commas that might appear in rule content
-                    rule_items = []
+            # New format: comma-separated
+            # Split by comma, but need to handle commas that might appear in rule content
+            rule_items = []
+            current_rule = ""
+            bracket_depth = 0
+
+            for char in rules_text:
+                if char == '[':
+                    bracket_depth += 1
+                    current_rule += char
+                elif char == ']':
+                    bracket_depth -= 1
+                    current_rule += char
+                elif char == ',' and bracket_depth == 0:
+                    # This comma is a separator, not part of rule content
+                    if current_rule.strip():
+                        rule_items.append(current_rule.strip())
                     current_rule = ""
-                    bracket_depth = 0
-                    
-                    for char in rules_text:
-                        if char == '[':
-                            bracket_depth += 1
-                            current_rule += char
-                        elif char == ']':
-                            bracket_depth -= 1
-                            current_rule += char
-                        elif char == ',' and bracket_depth == 0:
-                            # This comma is a separator, not part of rule content
-                            if current_rule.strip():
-                                rule_items.append(current_rule.strip())
-                            current_rule = ""
-                        else:
-                            current_rule += char
-                    
-                    # Add the last rule
-                            if current_rule.strip():
-                                rule_items.append(current_rule.strip())        # Parse each rule item
+                else:
+                    current_rule += char
+
+            # Add the last rule
+            if current_rule.strip():
+                rule_items.append(current_rule.strip())
+
+        # Parse each rule item
         for line in rule_items:
             line = line.strip()
             if not line or not line.startswith('[') or not line.endswith(']'):
@@ -337,15 +414,30 @@ class Plugin:
             
             # Extract rule name and parameter
             rule_content = line[1:-1]  # Remove [ and ]
-            
+
             if ':' in rule_content:
-                rule_name, param = rule_content.split(':', 1)
-                try:
-                    param = int(param)
-                except ValueError:
-                    logger.warning(f"Invalid parameter in rule '{line}', skipping")
+                parts = rule_content.split(':')
+                rule_name = parts[0]
+
+                # Support format: [PastDate:0:4h] for days:grace_hours
+                if len(parts) == 3 and parts[2].endswith('h'):
+                    try:
+                        days_param = int(parts[1])
+                        grace_hours = int(parts[2][:-1])  # Remove 'h' and convert
+                        rules.append((rule_name, (days_param, grace_hours)))
+                    except ValueError:
+                        logger.warning(f"Invalid multi-parameter in rule '{line}', skipping")
+                        continue
+                elif len(parts) == 2:
+                    try:
+                        param = int(parts[1])
+                        rules.append((rule_name, param))
+                    except ValueError:
+                        logger.warning(f"Invalid parameter in rule '{line}', skipping")
+                        continue
+                else:
+                    logger.warning(f"Invalid rule format '{line}', skipping")
                     continue
-                rules.append((rule_name, param))
             else:
                 rules.append((rule_content, None))
         
@@ -509,7 +601,16 @@ class Plugin:
 
     def _check_hide_rule(self, rule_name, rule_param, channel, channel_name, logger, settings):
         """Check if a single hide rule matches the channel. Returns (matches, reason)"""
-        
+
+        # Safety checks for malformed channel names
+        if not channel_name:
+            return False, None
+
+        # Truncate extremely long channel names to prevent performance issues
+        if len(channel_name) > 500:
+            channel_name = channel_name[:500]
+            logger.warning(f"Channel name truncated (too long): {channel_name[:50]}...")
+
         if rule_name == "NoEPG":
             # Hide if no EPG assigned at all
             if not channel.epg_data:
@@ -611,29 +712,53 @@ class Plugin:
         
         elif rule_name == "ShortChannelName":
             # Check total name length if no separator (colon, pipe, or dash)
-            colon_match = re.search(r':(.+)$', channel_name)
-            pipe_match = re.search(r'\|(.+)$', channel_name)
-            dash_match = re.search(r'\s-\s', channel_name)  # Dash with surrounding spaces
+            # Normalize whitespace first to handle multiple spaces, tabs, etc.
+            normalized_name = re.sub(r'\s+', ' ', channel_name.strip())
+
+            colon_match = re.search(r':(.+)$', normalized_name)
+            pipe_match = re.search(r'\|(.+)$', normalized_name)
+            dash_match = re.search(r'\s-\s', normalized_name)  # Dash with surrounding spaces
 
             if not colon_match and not pipe_match and not dash_match:
-                if len(channel_name.strip()) < 25:
-                    return True, f"[ShortChannelName] Name too short without event details ({len(channel_name.strip())} chars)"
+                if len(normalized_name) < 25:
+                    return True, f"[ShortChannelName] Name too short without event details ({len(normalized_name)} chars)"
 
             return False, None
-        
+
+        elif rule_name == "NumberOnly":
+            # Hide channels that are just prefix + number (e.g., "PPV 12", "EVENT 15")
+            # Match pattern: word(s) followed by whitespace and number(s) only
+            try:
+                normalized_name = re.sub(r'\s+', ' ', channel_name.strip())
+
+                # Pattern: One or more words, then space(s), then only digits
+                number_only_pattern = r'^[A-Za-z\s]+\d+\s*$'
+
+                if re.match(number_only_pattern, normalized_name):
+                    # Additional check: make sure there's no colon, pipe, or dash separators
+                    if ':' not in normalized_name and '|' not in normalized_name and ' - ' not in normalized_name:
+                        return True, f"[NumberOnly] Channel name is just prefix + number: '{normalized_name}'"
+            except Exception as e:
+                logger.warning(f"Error in NumberOnly rule for '{channel_name}': {str(e)}")
+
+            return False, None
+
         elif rule_name == "PastDate":
             extracted_date = self._extract_date_from_channel_name(channel_name, logger)
             if extracted_date is None:
                 return False, None  # Skip rule if no date found
-            
-            days_threshold = rule_param if rule_param is not None else 0
 
-            # Factor in the grace period
-            grace_hours_str = settings.get("past_date_grace_hours", "0")
-            try:
-                grace_hours = int(grace_hours_str)
-            except (ValueError, TypeError):
-                grace_hours = 0
+            # Handle both single param (days) and tuple param (days, grace_hours)
+            if isinstance(rule_param, tuple):
+                days_threshold, grace_hours = rule_param
+            else:
+                days_threshold = rule_param if rule_param is not None else 0
+                # Fall back to global grace period setting
+                grace_hours_str = settings.get("past_date_grace_hours", "0")
+                try:
+                    grace_hours = int(grace_hours_str)
+                except (ValueError, TypeError):
+                    grace_hours = 0
 
             # Adjust the current time by the grace period and user's timezone
             tz_str = self._get_system_timezone(settings)
@@ -694,13 +819,13 @@ class Plugin:
     def _check_channel_should_hide(self, channel, hide_rules, logger, settings):
         """Check if channel should be hidden based on hide rules priority. Returns (should_hide, reason)"""
         channel_name = channel.name or ""
-        
+
         # Process rules in order - first match wins
         for rule_name, rule_param in hide_rules:
             matches, reason = self._check_hide_rule(rule_name, rule_param, channel, channel_name, logger, settings)
             if matches:
                 return True, reason
-        
+
         # No rules matched - channel should be visible
         return False, "Has event"
             
@@ -1454,15 +1579,40 @@ class Plugin:
                 csv_filename = f"event_channel_managarr_{'dryrun' if dry_run else 'applied'}_{timestamp}.csv"
                 csv_filepath = os.path.join("/data/exports", csv_filename)
                 os.makedirs("/data/exports", exist_ok=True)
-                
+
+                # Calculate statistics by rule
+                rule_stats = {}
+                for result in results:
+                    rule = result.get('hide_rule', 'N/A')
+                    if result.get('action') == 'Hide':
+                        rule_stats[rule] = rule_stats.get(rule, 0) + 1
+
                 with open(csv_filepath, 'w', newline='', encoding='utf-8') as csvfile:
-                    fieldnames = ['channel_id', 'channel_name', 'channel_number', 'channel_group', 
+                    # Write version header as first line
+                    csvfile.write(f"# Event Channel Managarr v{self.version} - {'Dry Run' if dry_run else 'Applied'} - {timestamp}\n")
+
+                    # Write statistics
+                    csvfile.write(f"# Total Channels Processed: {len(results)}\n")
+                    csvfile.write(f"# Channels to Hide: {len(channels_to_hide)}\n")
+                    csvfile.write(f"# Channels to Show: {len(channels_to_show)}\n")
+                    csvfile.write(f"# Channels Ignored: {len(channels_ignored)}\n")
+                    csvfile.write(f"# Duplicates Hidden: {total_duplicates_hidden}\n")
+
+                    # Write rule effectiveness stats
+                    if rule_stats:
+                        csvfile.write("# Rule Effectiveness:\n")
+                        for rule, count in sorted(rule_stats.items(), key=lambda x: x[1], reverse=True):
+                            csvfile.write(f"#   {rule}: {count} channels\n")
+
+                    csvfile.write("#\n")
+
+                    fieldnames = ['channel_id', 'channel_name', 'channel_number', 'channel_group',
                                 'current_visibility', 'action', 'reason', 'hide_rule', 'has_epg']
                     writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
                     writer.writeheader()
                     for result in results:
                         writer.writerow(result)
-                
+
                 logger.info(f"Results exported to {csv_filepath}")
             
             # Apply changes if not dry run
@@ -1799,4 +1949,5 @@ fields = Plugin.fields
 actions = Plugin.actions
 
 # Define what this module exports
+
 __all__ = ['plugin', 'fields', 'actions']
