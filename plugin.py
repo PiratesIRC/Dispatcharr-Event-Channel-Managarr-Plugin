@@ -38,7 +38,7 @@ class Plugin:
     """Event Channel Managarr Plugin"""
 
     name = "Event Channel Managarr"
-    version = "0.3.3"
+    version = "0.4"
     description = "Automatically manage channel visibility based on EPG data and channel names. Hides channels with no events and shows channels with active events.\n\nGitHub: https://github.com/PiratesIRC/Dispatcharr-Event-Channel-Managarr-Plugin"
     
     # Settings rendered by UI
@@ -101,7 +101,7 @@ class Plugin:
             "id": "hide_rules_priority",
             "label": "📜 Hide Rules Priority",
             "type": "string",
-            "default": "[InactiveRegex],[BlankName],[NoEventPattern],[EmptyPlaceholder],[PastDate:0],[FutureDate:2],[ShortDescription],[ShortChannelName]",
+            "default": "[InactiveRegex],[BlankName],[WrongDayOfWeek],[NoEventPattern],[EmptyPlaceholder],[PastDate:0],[FutureDate:2],[ShortDescription],[ShortChannelName]",
             "placeholder": "[BlankName],[NoEventPattern],[EmptyPlaceholder],[PastDate:0],[FutureDate:2],[ShortDescription],[ShortChannelName]",
             "help_text": "Define rules for hiding channels in priority order (first match wins). Comma-separated tags. Available tags: [NoEPG], [BlankName], [WrongDayOfWeek], [NoEventPattern], [EmptyPlaceholder], [ShortDescription], [ShortChannelName], [NumberOnly], [PastDate:days], [PastDate:days:Xh], [FutureDate:days], [InactiveRegex]. Example: [PastDate:0] hides if event date has passed, [PastDate:0:4h] adds 4 hour grace period, [NumberOnly] hides channels with just prefix+number like 'PPV 12'.",
         },
