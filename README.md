@@ -75,7 +75,7 @@ A Dispatcharr plugin that automatically manages channel visibility based on EPG 
 The plugin checks channels against the **Hide Rules Priority** list in the order you define. The first rule that matches is applied, and the channel is marked to be hidden. If no rules match, the channel is marked to be shown.
 
 **Default Rules:**
-`[InactiveRegex],[BlankName],[NoEventPattern],[EmptyPlaceholder],[PastDate:0],[FutureDate:2],[ShortDescription],[ShortChannelName]`
+`[InactiveRegex],[BlankName],[WrongDayOfWeek],[NoEventPattern],[EmptyPlaceholder],[PastDate:0],[FutureDate:2],[ShortDescription],[ShortChannelName]`
 
 **Available Rule Tags:**
 
@@ -83,12 +83,13 @@ The plugin checks channels against the **Hide Rules Priority** list in the order
 | :--- | :--- | :--- |
 | **[NoEPG]** | - | Hides if no EPG is assigned OR if the assigned EPG has no program data for the next 24 hours. (Skips custom dummy EPG) |
 | **[BlankName]** | - | Hides if the channel name is blank. |
-| **[WrongDayOfWeek]** | - | Hides if the name contains a day (e.g., "Saturday") and today is not that day. |
+| **[WrongDayOfWeek]** | - | Hides if the name contains a day name (e.g., "MONDAY", "Mon", "Saturday", "Sat") and today is not that day. Recognizes full and abbreviated day names. |
 | **[NoEventPattern]** | - | Hides if the name contains patterns like "no event", "offline", "no games scheduled". |
 | **[EmptyPlaceholder]** | - | Hides if the name ends with a separator (`:`, `\|`, `-`) and has no event title after it. |
 | **[ShortDescription]** | - | Hides if the event title (text after a separator) is less than 15 characters long. |
 | **[ShortChannelName]**| - | Hides if the *entire name* is less than 25 characters long and has *no* separator. |
-| **[PastDate:days]** | `days` (int) | Hides if the name contains a date that is more than `days` in the past (e.g., `[PastDate:0]` hides yesterday's events). Obeys the grace period setting. |
+| **[NumberOnly]** | - | Hides if the channel name is just a prefix followed by a number (e.g., "PPV 12", "EVENT 15") with no event details. |
+| **[PastDate:days]** or **[PastDate:days:Xh]** | `days` (int), optional `Xh` (grace hours) | Hides if the name contains a date that is more than `days` in the past (e.g., `[PastDate:0]` hides yesterday's events). Optionally specify grace period inline like `[PastDate:0:4h]` to override the global grace period setting. |
 | **[FutureDate:days]**| `days` (int) | Hides if the name contains a date that is more than `days` in the future (e.g., `[FutureDate:2]` hides events 3+ days from now). |
 | **[InactiveRegex]** | - | Hides if the name matches the `Regex: Mark Channel as Inactive` setting. |
 
@@ -97,6 +98,23 @@ To prevent multiple versions of the same event from being visible, the plugin:
 1.  Normalizes channel names *and* event descriptions (e.g., "PPV 1: UFC" and "PPV 2: UFC" are duplicates, but "PPV 1: UFC" and "PPV 1: Boxing" are not).
 2.  Groups all channels with the same normalized event.
 3.  Within a group, it keeps only one channel visible based on your selected **Duplicate Handling Strategy** and hides all others.
+
+### Supported Date Formats
+The plugin can extract dates from channel names in the following formats (checked in priority order):
+
+| Format | Example | Notes |
+| :--- | :--- | :--- |
+| **start:YYYY-MM-DD HH:MM:SS** | `start:2024-12-25 20:00:00` | Highest priority. Matches exact datetime in channel name. |
+| **stop:YYYY-MM-DD HH:MM:SS** | `stop:2024-12-25 23:00:00` | Matches end datetime in channel name. |
+| **MM/DD/YYYY** or **MM/DD/YY** | `12/25/2024` or `12/25/24` | Standard slash-separated date format. |
+| **(MONTH DD)** | `(Dec 25)` or `(December 25)` | Month name and day in parentheses. |
+| **DDth/st/nd/rd MONTH** | `25th Dec` or `1st January` | Day with ordinal suffix followed by month name. |
+| **MONTH DD** | `Dec 25` or `December 25` | Month name followed by day (no parentheses). |
+| **YYYY MM DD** | `2024 12 25` | Space-separated year, month, day. |
+| **MM.DD** | `12.25` | Dot-separated month and day (assumes current year). |
+| **MM/DD** | `12/25` | Slash-separated month and day (assumes current year). |
+
+**Note:** When using `[PastDate]` or `[FutureDate]` rules, the plugin will attempt to extract a date using these formats. If no date is found, the rule will not match and the next rule in your priority list will be checked.
 
 ## Action Reference
 
