@@ -373,7 +373,7 @@ class Plugin:
         """Parse hide rules priority text into list of rule tuples"""
         if not rules_text or not rules_text.strip():
             # Return default rules if none specified
-            default_rules = "[InactiveRegex],[BlankName],[NoEventPattern],[EmptyPlaceholder],[PastDate:0],[FutureDate:2],[ShortDescription],[ShortChannelName]"
+            default_rules = "[InactiveRegex],[BlankName],[WrongDayOfWeek],[NoEventPattern],[EmptyPlaceholder],[PastDate:0],[FutureDate:2],[ShortDescription],[ShortChannelName]"
             rules_text = default_rules
             logger.info("No hide rules specified, using defaults")
         
@@ -1363,9 +1363,17 @@ class Plugin:
             # Parse hide rules
             hide_rules_text = settings.get("hide_rules_priority", "").strip()
             hide_rules = self._parse_hide_rules(hide_rules_text, logger)
-            
+
             if not hide_rules:
                 return {"status": "error", "message": "No valid hide rules configured. Please check Hide Rules Priority field."}
+
+            # Reconstruct rules text for CSV export (includes defaults if original was empty)
+            hide_rules_text_for_export = ','.join([
+                f'[{r[0]}:{r[1]}]' if r[1] is not None and not isinstance(r[1], tuple)
+                else f'[{r[0]}:{r[1][0]}:{r[1][1]}h]' if isinstance(r[1], tuple)
+                else f'[{r[0]}]'
+                for r in hide_rules
+            ])
             
 
             
@@ -1643,8 +1651,7 @@ class Plugin:
                             csvfile.write(f"#   {rule}: {count} channels\n")
 
                     # Write hide rules priority configuration
-                    hide_rules_priority = settings.get("hide_rules_priority", "")
-                    csvfile.write(f"# Hide Rules Priority: {hide_rules_priority}\n")
+                    csvfile.write(f"# Hide Rules Priority: {hide_rules_text_for_export}\n")
                     csvfile.write("#\n")
 
                     fieldnames = ['channel_id', 'channel_name', 'channel_number', 'channel_group',
