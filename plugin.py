@@ -14,6 +14,8 @@ import requests
 import time
 import threading
 import pytz
+import urllib.request
+import urllib.error
 
 from datetime import datetime, timedelta
 from django.utils import timezone
@@ -41,9 +43,59 @@ class Plugin:
     name = "Event Channel Managarr"
     version = "0.4"
     description = "Automatically manage channel visibility based on EPG data and channel names. Hides channels with no events and shows channels with active events.\n\nGitHub: https://github.com/PiratesIRC/Dispatcharr-Event-Channel-Managarr-Plugin"
-    
-    # Settings rendered by UI
-    fields = [
+
+    @property
+    def fields(self):
+        """Dynamically generate fields list with version check"""
+        # Check for updates from GitHub
+        version_message = "Checking for updates..."
+        try:
+            # Check if we should perform a version check (once per day)
+            if self._should_check_for_updates():
+                # Perform the version check
+                latest_version = self._get_latest_version("PiratesIRC", "Dispatcharr-Event-Channel-Managarr-Plugin")
+
+                # Check if it's an error message
+                if latest_version.startswith("Error"):
+                    version_message = f"⚠️ Could not check for updates: {latest_version}"
+                else:
+                    # Save the check result
+                    self._save_version_check(latest_version)
+
+                    # Compare versions
+                    current = self.version
+                    # Remove 'v' prefix if present in latest_version
+                    latest_clean = latest_version.lstrip('v')
+
+                    if current == latest_clean:
+                        version_message = f"✅ You are up to date (v{current})"
+                    else:
+                        version_message = f"🔔 Update available! Current: v{current} → Latest: {latest_version}"
+            else:
+                # Use cached version info
+                if self.cached_version_info:
+                    latest_version = self.cached_version_info['latest_version']
+                    current = self.version
+                    latest_clean = latest_version.lstrip('v')
+
+                    if current == latest_clean:
+                        version_message = f"✅ You are up to date (v{current})"
+                    else:
+                        version_message = f"🔔 Update available! Current: v{current} → Latest: {latest_version}"
+                else:
+                    version_message = "ℹ️ Version check will run on next page load"
+        except Exception as e:
+            LOGGER.debug(f"Error during version check: {e}")
+            version_message = f"⚠️ Error checking for updates: {str(e)}"
+
+        # Build the fields list dynamically
+        fields_list = [
+            {
+                "id": "version_status",
+                "label": "📦 Plugin Version Status",
+                "type": "info",
+                "help_text": version_message
+            },
         {
             "id": "dispatcharr_url",
             "label": "🌐 Dispatcharr URL",
@@ -176,14 +228,16 @@ class Plugin:
             "placeholder": "0600,1300,1800",
             "help_text": "Comma-separated times to run automatically each day (24-hour format). Example: 0600,1300,1800 runs at 6 AM, 1 PM, and 6 PM daily. Leave blank to disable scheduling.",
         },
-        {
-            "id": "enable_scheduled_csv_export",
-            "label": "📄 Enable Scheduled CSV Export",
-            "type": "boolean",
-            "default": False,
-            "help_text": "If enabled, a CSV file of the scan results will be created when the plugin runs on a schedule. If disabled, no CSV will be created for scheduled runs.",
-        },
-    ]
+            {
+                "id": "enable_scheduled_csv_export",
+                "label": "📄 Enable Scheduled CSV Export",
+                "type": "boolean",
+                "default": False,
+                "help_text": "If enabled, a CSV file of the scan results will be created when the plugin runs on a schedule. If disabled, no CSV will be created for scheduled runs.",
+            },
+        ]
+
+        return fields_list
     
     # Actions for Dispatcharr UI
     actions = [
@@ -232,11 +286,15 @@ class Plugin:
     def __init__(self):
         self.results_file = "/data/event_channel_managarr_results.json"
         self.settings_file = "/data/event_channel_managarr_settings.json"
+        self.version_check_file = "/data/event_channel_managarr_version_check.json"
         self.last_results = []
         self.scan_progress = {"current": 0, "total": 0, "status": "idle", "start_time": None}
-        
+
+        # Version check cache
+        self.cached_version_info = None
+
         LOGGER.info(f"{self.name} Plugin v{self.version} initialized")
-        
+
         # Load saved settings and create scheduled tasks
         self._load_settings()
   
@@ -254,7 +312,95 @@ class Plugin:
         except Exception as e:
             LOGGER.error(f"Error loading settings: {e}")
             self.saved_settings = {}
-            
+
+    def _get_latest_version(self, owner, repo):
+        """
+        Fetches the latest release tag name from GitHub using only Python's standard library.
+        Returns the version string or an error message.
+        """
+        url = f"https://api.github.com/repos/{owner}/{repo}/releases/latest"
+
+        # Add a user-agent to avoid potential 403 Forbidden errors
+        headers = {
+            'User-Agent': 'Dispatcharr-Plugin-Version-Checker'
+        }
+
+        try:
+            # Create a request object with headers
+            req = urllib.request.Request(url, headers=headers)
+
+            # Make the request and open the URL with a timeout
+            with urllib.request.urlopen(req, timeout=5) as response:
+                # Read the response and decode it as UTF-8
+                data = response.read().decode('utf-8')
+
+                # Parse the JSON string
+                json_data = json.loads(data)
+
+                # Get the tag name
+                latest_version = json_data.get("tag_name")
+
+                if latest_version:
+                    return latest_version
+                else:
+                    return "Error: 'tag_name' key not found."
+
+        except urllib.error.HTTPError as http_err:
+            if http_err.code == 404:
+                return f"Error: Repo not found or has no releases."
+            else:
+                return f"HTTP error: {http_err.code}"
+        except Exception as e:
+            # Catch other errors like timeouts
+            return f"Error: {str(e)}"
+
+    def _should_check_for_updates(self):
+        """
+        Check if we should perform a version check (once per day).
+        Returns True if we should check, False otherwise.
+        Also loads and caches the last check data.
+        """
+        try:
+            if os.path.exists(self.version_check_file):
+                with open(self.version_check_file, 'r') as f:
+                    data = json.load(f)
+                    last_check_time = data.get('last_check_time')
+                    cached_latest_version = data.get('latest_version')
+
+                    if last_check_time and cached_latest_version:
+                        # Check if last check was within 24 hours
+                        last_check_dt = datetime.fromisoformat(last_check_time)
+                        now = datetime.now()
+                        time_diff = now - last_check_dt
+
+                        if time_diff.total_seconds() < 86400:  # 24 hours in seconds
+                            # Use cached data
+                            self.cached_version_info = {
+                                'latest_version': cached_latest_version,
+                                'last_check_time': last_check_time
+                            }
+                            return False  # Don't check again
+
+            # Either file doesn't exist, or it's been more than 24 hours
+            return True
+
+        except Exception as e:
+            LOGGER.debug(f"Error checking version check time: {e}")
+            return True  # Check if there's an error
+
+    def _save_version_check(self, latest_version):
+        """Save the version check result to disk with timestamp"""
+        try:
+            data = {
+                'latest_version': latest_version,
+                'last_check_time': datetime.now().isoformat()
+            }
+            with open(self.version_check_file, 'w') as f:
+                json.dump(data, f, indent=2)
+            LOGGER.debug(f"Saved version check: {latest_version}")
+        except Exception as e:
+            LOGGER.debug(f"Error saving version check: {e}")
+
     def run(self, action, params, context):
         """Main plugin entry point"""
         LOGGER.info(f"Event Channel Managarr run called with action: {action}")
@@ -1997,7 +2143,8 @@ class Plugin:
 plugin = Plugin()
 
 # Export the components the loader needs
-fields = Plugin.fields
+# Note: fields is now a property on the instance, not the class
+fields = plugin.fields
 actions = Plugin.actions
 
 # Define what this module exports
