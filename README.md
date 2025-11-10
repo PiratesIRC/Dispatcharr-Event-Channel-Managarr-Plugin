@@ -5,13 +5,16 @@ A Dispatcharr plugin that automatically manages channel visibility based on EPG 
 ## Features
 * **Automatic Visibility Control**: Hides channels without active events and shows channels that have them. Scans ALL channels in the profile (both visible and hidden) to ensure channels with new events are always shown.
 * **Prioritized Hide Rules**: A fully customizable, priority-based rule system. You define the order of rules (e.g., `[BlankName]`, `[PastDate:0]`, `[ShortDescription]`) to determine *why* and *when* a channel should be hidden.
+* **Stream Name Selection**: Choose between using the channel name or the stream name for rule matching. When stream name is selected, the plugin uses the first stream in the channel for all rule evaluations.
 * **Date-Based Logic**: Use rules like `[PastDate:days]` and `[FutureDate:days]` to hide events that are over or too far in the future. Includes a **grace period** for events that run past midnight.
+* **Enhanced Date Format Support**: Recognizes a wide variety of date formats in channel names, including dates with optional times (e.g., "Nov 8 16:00"), slash-separated dates, ISO formats, and more.
 * **Day-of-Week Logic**: Use the `[WrongDayOfWeek]` rule to hide channels named for a specific day (e.g., "Saturday Night Fights") when it's not that day.
 * **Multi-Profile Support**: Monitor and manage channels across **multiple Channel Profiles** at once (e.g., "PPV Events, Sports Profile").
 * **Configurable Duplicate Handling**: Choose your strategy for handling duplicate events: keep the one with the **lowest number**, **highest number**, or **longest name**.
 * **Force Visibility**: Use a regular expression to **force specific channels** (like news or weather) to remain visible, overriding all hide rules.
 * **Flexible Scheduling**: Run scans automatically at specific times each day (e.g., `0600,1300,1800`) with a simple dropdown for timezone selection.
 * **Auto-EPG Management**: When a channel is hidden, the plugin can automatically remove its EPG assignment to keep your guide clean.
+* **Automatic Update Notifications**: Displays a notification in the plugin settings when a new version is available on GitHub, keeping you informed of the latest features and fixes.
 * **Safe Dry Run Mode**: Preview all proposed visibility changes in a CSV export without modifying your channel lineup.
 * **Maintenance Actions**: Clear accumulated CSV exports and cleanup orphaned tasks from older plugin versions.
 * **Detailed Reporting**: Both dry runs and applied changes generate a CSV report detailing the action taken for each channel, the reason, and which hide rule was triggered.
@@ -36,6 +39,7 @@ A Dispatcharr plugin that automatically manages channel visibility based on EPG 
 | **🌍 Timezone** | `select` | `America/Chicago` | Timezone for scheduled runs. Select from the dropdown. |
 | **📺 Channel Profile Names (Required)** | `string` | - | Channel Profile(s) to monitor. Use comma-separated names for multiple profiles. |
 | **📂 Channel Groups** | `string` | - | Comma-separated group names to monitor. Leave empty for all groups in the profile(s). |
+| **📝 Name Source** | `select` | `Channel_Name` | Choose the source for rule matching: `Channel_Name` uses the channel name, `Stream_Name` uses the first stream's name in the channel. |
 | **📜 Hide Rules Priority** | `string` | (see default) | Define rules for hiding channels in priority order. First match wins. See "Hide Rule Logic" below. |
 | **🚫 Regex: Channel Names to Ignore** | `string` | - | Regular expression to match channel names that should be skipped entirely. |
 | **💤 Regex: Mark Channel as Inactive** | `string` | - | Regular expression to hide channels. Processed as part of the `[InactiveRegex]` hide rule. |
