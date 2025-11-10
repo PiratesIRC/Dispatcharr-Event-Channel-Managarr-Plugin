@@ -1,3 +1,4 @@
+
 """
 Event Channel Managarr Plugin
 Manages channel visibility based on EPG data and channel names
@@ -28,7 +29,7 @@ if not LOGGER.handlers:
     formatter = logging.Formatter("%(levelname)s %(name)s %(message)s")
     handler.setFormatter(formatter)
     LOGGER.addHandler(handler)
-LOGGER.setLevel(logging.INFO)
+LOGGER.setLevel(logging.DEBUG)
 
 # Background scheduling globals
 _bg_thread = None
@@ -96,6 +97,17 @@ class Plugin:
             "default": "",
             "placeholder": "PPV Events, Live Events",
             "help_text": "Specific channel groups to monitor within the profile. Leave blank to monitor all groups in the profile.",
+        },
+        {
+            "id": "name_source",
+            "label": "Name Source",
+            "type": "select",
+            "default": "Channel_Name",
+            "help_text": "Select the source of the names to monitor. Only one can be selected.",
+            "options": [
+                {"label": "Channel Name", "value": "Channel_Name"},
+                {"label": "Stream Name", "value": "Stream_Name"}
+            ]
         },
         {
             "id": "hide_rules_priority",
@@ -490,146 +502,100 @@ class Plugin:
         return None
 
     def _extract_date_from_channel_name(self, channel_name, logger):
-        """Extract date from channel name using various patterns"""
+        """Extract date from channel name using various patterns, including hour if present"""
         if not channel_name:
             return None
-        
+
         import pytz
         from dateutil import parser as dateutil_parser
-        
-        # Get current year for patterns without year
+
         current_year = datetime.now().year
+        today = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
 
         # Pattern 0: start:YYYY-MM-DD HH:MM:SS or stop:YYYY-MM-DD HH:MM:SS
-        # Example: "start:2025-10-28 02:20:00" or "stop:2025-10-28 06:20:10"
-        # Prioritize "start:" over "stop:" if both are present
-        pattern0_start = re.search(r'start:(\d{4})-(\d{2})-(\d{2})\s+(\d{2}):(\d{2}):(\d{2})', channel_name)
-        if pattern0_start:
-            year, month, day, hour, minute, second = pattern0_start.groups()
-            try:
-                extracted_date = datetime(int(year), int(month), int(day), int(hour), int(minute), int(second))
-                logger.debug(f"Extracted datetime {extracted_date} from pattern start:YYYY-MM-DD HH:MM:SS in '{channel_name}'")
-                return extracted_date
-            except ValueError:
-                pass
+        for prefix in ["start:", "stop:"]:
+            pattern0 = re.search(rf'{prefix}(\d{{4}})-(\d{{2}})-(\d{{2}})\s+(\d{{2}}):(\d{{2}}):(\d{{2}})', channel_name)
+            if pattern0:
+                year, month, day, hour, minute, second = map(int, pattern0.groups())
+                try:
+                    extracted_date = datetime(year, month, day, hour, minute, second)
+                    logger.debug(f"Extracted datetime {extracted_date} from pattern {prefix}YYYY-MM-DD HH:MM:SS in '{channel_name}'")
+                    return extracted_date
+                except ValueError:
+                    pass
 
-        pattern0_stop = re.search(r'stop:(\d{4})-(\d{2})-(\d{2})\s+(\d{2}):(\d{2}):(\d{2})', channel_name)
-        if pattern0_stop:
-            year, month, day, hour, minute, second = pattern0_stop.groups()
-            try:
-                extracted_date = datetime(int(year), int(month), int(day), int(hour), int(minute), int(second))
-                logger.debug(f"Extracted datetime {extracted_date} from pattern stop:YYYY-MM-DD HH:MM:SS in '{channel_name}'")
-                return extracted_date
-            except ValueError:
-                pass
-
-        # Pattern 1: MM/DD/YYYY or MM/DD/YY (e.g., "10/27/2025", "10/27/25")
+        # Pattern 1: MM/DD/YYYY or MM/DD/YY
         pattern1 = re.search(r'\b(\d{1,2})/(\d{1,2})/(\d{2,4})\b', channel_name)
         if pattern1:
-            month, day, year = pattern1.groups()
-            year = int(year)
-            if year < 100:  # Two-digit year
+            month, day, year = map(int, pattern1.groups())
+            if year < 100:
                 year += 2000
             try:
-                extracted_date = datetime(year, int(month), int(day))
+                extracted_date = datetime(year, month, day)
                 logger.debug(f"Extracted date {extracted_date.date()} from pattern MM/DD/YYYY in '{channel_name}'")
                 return extracted_date
             except ValueError:
                 pass
-        
-        # Pattern 2: (MMM DD) or (MONTH DD) in parentheses (e.g., "(OCT 25)", "(OCTOBER 25)")
-        pattern2 = re.search(r'\(([A-Z]{3,9})\s+(\d{1,2})\)', channel_name, re.IGNORECASE)
-        if pattern2:
-            month_str, day = pattern2.groups()
-            try:
-                # Try to parse month name
-                temp_date = dateutil_parser.parse(f"{month_str} {day} {current_year}")
-                extracted_date = datetime(temp_date.year, temp_date.month, temp_date.day)
-                logger.debug(f"Extracted date {extracted_date.date()} from pattern (MONTH DD) in '{channel_name}'")
-                return extracted_date
-            except (ValueError, dateutil_parser.ParserError):
-                pass
 
-        # Pattern 2c: DDth/st/nd/rd MMM (e.g., "28th Apr", "1st Oct", "2nd Nov", "29th Oct")
-        # Check this BEFORE Pattern 2b to prioritize day-first formats
-        pattern2c = re.search(r'\b(\d{1,2})(?:st|nd|rd|th)\s+(JAN|FEB|MAR|APR|MAY|JUN|JUL|AUG|SEP|OCT|NOV|DEC)\b', channel_name, re.IGNORECASE)
+        # Pattern 2c: DDth MONTH e.g., "28th Apr"
+        pattern2c = re.search(r'\b(\d{1,2})(?:st|nd|rd|th)?\s+(JAN|FEB|MAR|APR|MAY|JUN|JUL|AUG|SEP|OCT|NOV|DEC)\b', channel_name, re.IGNORECASE)
         if pattern2c:
             day, month_str = pattern2c.groups()
             try:
                 temp_date = dateutil_parser.parse(f"{month_str} {day} {current_year}")
                 extracted_date = datetime(temp_date.year, temp_date.month, temp_date.day)
-                
-                # If the extracted date is more than 6 months in the past, assume next year
-                today = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
                 if (today - extracted_date).days > 180:
                     extracted_date = datetime(current_year + 1, temp_date.month, temp_date.day)
-                
                 logger.debug(f"Extracted date {extracted_date.date()} from pattern DDth MONTH in '{channel_name}'")
                 return extracted_date
             except (ValueError, dateutil_parser.ParserError):
                 pass
 
-        # Pattern 2b: MMM DD or MONTH DD WITHOUT parentheses (e.g., "Oct 25", "OCTOBER 25", "Nov 1")
-        # Use a specific list of months to be more accurate
-        month_pattern = r'\b(JAN|FEB|MAR|APR|MAY|JUN|JUL|AUG|SEP|OCT|NOV|DEC)\s+(\d{1,2})(?:\s|$|[^a-z])'
-        pattern2b = re.search(month_pattern, channel_name, re.IGNORECASE)
+        # Pattern 2b: MONTH DD e.g., "Nov 8" or "Nov 8 16:00"
+        pattern2b = re.search(r'\b(JAN|FEB|MAR|APR|MAY|JUN|JUL|AUG|SEP|OCT|NOV|DEC)\s+(\d{1,2})(?:\s+(\d{1,2}:\d{2}))?', channel_name, re.IGNORECASE)
         if pattern2b:
-            month_str, day = pattern2b.groups()
+            month_str, day, hour_minute = pattern2b.groups()
             try:
-                # Try to parse month name
-                temp_date = dateutil_parser.parse(f"{month_str} {day} {current_year}")
-                extracted_date = datetime(temp_date.year, temp_date.month, temp_date.day)
-                
-                # If the extracted date is more than 6 months in the past, assume next year
-                today = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
+                date_str = f"{month_str} {day} {current_year}"
+                if hour_minute:
+                    date_str += f" {hour_minute}"
+                temp_date = dateutil_parser.parse(date_str)
+                extracted_date = datetime(temp_date.year, temp_date.month, temp_date.day, temp_date.hour, temp_date.minute)
                 if (today - extracted_date).days > 180:
-                    extracted_date = datetime(current_year + 1, temp_date.month, temp_date.day)
-                
-                logger.debug(f"Extracted date {extracted_date.date()} from pattern MONTH DD in '{channel_name}'")
+                    extracted_date = datetime(current_year + 1, temp_date.month, temp_date.day, temp_date.hour, temp_date.minute)
+                logger.debug(f"Extracted date {extracted_date} from pattern MONTH DD[ HH:MM] in '{channel_name}'")
                 return extracted_date
             except (ValueError, dateutil_parser.ParserError):
                 pass
-        
-        # Pattern 2d: YYYY MM DD (space-separated, e.g., "2025 09 28", "2025 10 29")
-        # This pattern is common in timestamps like "start:2025 10 29"
-        pattern2d = re.search(r'\b(\d{4})\s+(\d{1,2})\s+(\d{1,2})\b', channel_name)
-        if pattern2d:
-            year, month, day = pattern2d.groups()
-            try:
-                extracted_date = datetime(int(year), int(month), int(day))
-                logger.debug(f"Extracted date {extracted_date.date()} from pattern YYYY MM DD in '{channel_name}'")
-                return extracted_date
-            except ValueError:
-                pass
 
-        # Pattern 3: MM.DD format (e.g., "10.25")
+        # Pattern 3: MM.DD e.g., "10.25"
         pattern3 = re.search(r'\b(\d{1,2})\.(\d{1,2})\b', channel_name)
         if pattern3:
-            month, day = pattern3.groups()
+            month, day = map(int, pattern3.groups())
             try:
-                extracted_date = datetime(current_year, int(month), int(day))
+                extracted_date = datetime(current_year, month, day)
                 logger.debug(f"Extracted date {extracted_date.date()} from pattern MM.DD in '{channel_name}'")
                 return extracted_date
             except ValueError:
                 pass
-        
-        # Pattern 4: MM/DD without year (e.g., "10/27")
+
+        # Pattern 4: MM/DD without year e.g., "10/27"
         pattern4 = re.search(r'\b(\d{1,2})/(\d{1,2})\b(?!/)', channel_name)
         if pattern4:
-            month, day = pattern4.groups()
+            month, day = map(int, pattern4.groups())
             try:
-                extracted_date = datetime(current_year, int(month), int(day))
+                extracted_date = datetime(current_year, month, day)
                 logger.debug(f"Extracted date {extracted_date.date()} from pattern MM/DD in '{channel_name}'")
                 return extracted_date
             except ValueError:
                 pass
-        
+
         logger.debug(f"No date found in channel name: '{channel_name}'")
         return None
 
+
     def _check_hide_rule(self, rule_name, rule_param, channel, channel_name, logger, settings):
         """Check if a single hide rule matches the channel. Returns (matches, reason)"""
-
         # Safety checks for malformed channel names
         if not channel_name:
             return False, None
@@ -854,9 +820,44 @@ class Plugin:
             logger.warning(f"Unknown hide rule: {rule_name}")
             return False, None
 
+    def _get_effective_name(self, channel, settings, logger):
+        """
+        Returns the correct name to use for pattern matching.
+        If 'Stream Name' is selected in settings, it retrieves the associated stream name.
+        Otherwise, it uses the channel name.
+        """
+
+        try:
+            name_source = settings.get("name_source", "Channel_Name")
+            effective_name = channel.name or ""
+
+            if name_source == "Stream_Name":
+                streams = getattr(channel, "streams", None)
+                if streams:
+                    ordered_streams = streams.order_by("channelstream__order")
+                    if ordered_streams.exists():
+                        first_stream = ordered_streams.first()
+                        if first_stream and getattr(first_stream, "name", None):
+                            effective_name = first_stream.name
+                            logger.debug(f"Using stream name for channel {channel.id}: {effective_name}")
+                        else:
+                            logger.debug(f"Channel {channel.id} has streams but no valid stream.name")
+                    else:
+                        logger.debug(f"Channel {channel.id} has no ordered streams")
+                else:
+                    logger.debug(f"Channel {channel.id} has no 'streams' relation")
+
+            return effective_name
+
+        except Exception as e:
+            logger.warning(f"Error fetching effective name for channel {getattr(channel, 'id', '?')}: {e}")
+            return channel.name or ""
+
+
+
     def _check_channel_should_hide(self, channel, hide_rules, logger, settings):
         """Check if channel should be hidden based on hide rules priority. Returns (should_hide, reason)"""
-        channel_name = channel.name or ""
+        channel_name = self._get_effective_name(channel, settings, logger)
 
         # Process rules in order - first match wins
         for rule_name, rule_param in hide_rules:
@@ -1470,11 +1471,14 @@ class Plugin:
             
             # Process each channel
             for i, channel in enumerate(channels):
+
                 self.scan_progress["current"] = i + 1
                 
-                channel_name = channel.name or ""
+                channel_name = self._get_effective_name(channel, settings, logger)
                 current_visible = self._get_channel_visibility(channel.id, profile_ids, logger)
                 
+                logger.debug(f"Processing channel {channel.id} using name '{channel_name}' (source={settings.get('name_source', 'Channel_Name')})")
+
                 # Check if channel should be ignored
                 if regex_ignore and regex_ignore.search(channel_name):
                     channels_ignored.append(channel.id)
@@ -1583,7 +1587,7 @@ class Plugin:
                     else:
                         final_action = "No change"
                 
-                logger.debug(f"Decision for Channel {channel_id} ('{channel_info['channel_name']}'): Action={final_action}, Reason='{reason}'")
+                logger.info(f"Decision for Channel {channel_id} ('{channel_info['channel_name']}'): Action={final_action}, Reason='{reason}'")
 
                 # Extract rule tag from reason for easier filtering
                 hide_rule = ""
@@ -1874,7 +1878,7 @@ class Plugin:
             for membership in hidden_memberships:
                 channel = membership.channel
                 channel_id = channel.id
-                channel_name = channel.name or 'Unknown'
+                channel_name = self._get_effective_name(channel, settings, logger) or 'Unknown'
                 channel_number = channel.channel_number or 'N/A'
                 
                 # Query EPG data for this channel
