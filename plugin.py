@@ -31,7 +31,7 @@ if not LOGGER.handlers:
     formatter = logging.Formatter("%(levelname)s %(name)s %(message)s")
     handler.setFormatter(formatter)
     LOGGER.addHandler(handler)
-LOGGER.setLevel(logging.DEBUG)
+LOGGER.setLevel(logging.INFO)
 
 # Background scheduling globals
 _bg_thread = None
@@ -208,7 +208,7 @@ class Plugin:
         {
             "id": "keep_duplicates",
             "label": "🔄 Keep Duplicate Channels",
-            "type": "checkbox",
+            "type": "boolean",
             "default": False,
             "help_text": "If enabled, duplicate channels will be kept visible instead of being hidden. The duplicate strategy above will be ignored.",
         },

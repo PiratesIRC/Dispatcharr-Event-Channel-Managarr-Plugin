@@ -46,7 +46,7 @@ A Dispatcharr plugin that automatically manages channel visibility based on EPG 
 | **💤 Regex: Mark Channel as Inactive** | `string` | - | Regular expression to hide channels. Processed as part of the `[InactiveRegex]` hide rule. |
 | **✅ Regex: Force Visible Channels** | `string` | - | Regular expression to match channels that should ALWAYS be visible, overriding any hide rules. |
 | **🎭 Duplicate Handling Strategy**| `select` | `lowest_number` | Strategy to use when multiple channels have the same event. |
-| **🔄 Keep Duplicate Channels** | `checkbox` | `False` | If enabled, duplicate channels will be kept visible instead of being hidden. The duplicate strategy above will be ignored. |
+| **🔄 Keep Duplicate Channels** | `boolean` | `False` | If enabled, duplicate channels will be kept visible instead of being hidden. The duplicate strategy above will be ignored. |
 | **📅 Past Date Grace Period (Hours)**| `string` | `4` | Hours to wait after midnight before hiding past events. Used by the `[PastDate]` rule. |
 | **🔌 Auto-Remove EPG on Hide** | `boolean` | `True` | If enabled, automatically removes EPG data from a channel when it is hidden by the plugin. |
 | **⏰ Scheduled Run Times** | `string` | - | Comma-separated times (24-hour HHMM format) to run daily. Leave blank to disable. |
