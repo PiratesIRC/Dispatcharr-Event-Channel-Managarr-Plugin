@@ -426,7 +426,8 @@ class Plugin:
             if action == "update_schedule":
                 saved_times = self.saved_settings.get("scheduled_times", "") if self.saved_settings else ""
                 live_times = live_settings.get("scheduled_times", "")
-                logger.info(f"Saved scheduled_times: '{saved_times}', Live scheduled_times: '{live_times}'")
+                has_key = "scheduled_times" in live_settings
+                logger.info(f"[Update Schedule] Saved: '{saved_times}', Live: '{live_times}', Key exists in live_settings: {has_key}")
 
             # Create a merged settings view
             # Priority order: live_settings (current form) > params (action-specific) > saved_settings (disk cache)
@@ -441,6 +442,12 @@ class Plugin:
             # This ensures that if a field is cleared in the form, the blank value is used
             if live_settings:
                 merged_settings.update(live_settings)
+
+                # WORKAROUND: Dispatcharr may not send empty string fields in live_settings
+                # For update_schedule, if scheduled_times is not in live_settings, treat it as blank
+                if action == "update_schedule" and "scheduled_times" not in live_settings:
+                    logger.info("[Update Schedule] scheduled_times not in live_settings - treating as blank")
+                    merged_settings["scheduled_times"] = ""
 
             # Params may contain action-specific overrides
             if params:
@@ -1227,8 +1234,7 @@ class Plugin:
         # Start new scheduler thread
         def scheduler_loop():
             import pytz
-            last_run_date = None
-            
+
             # Get timezone from settings
             tz_str = self._get_system_timezone(settings)
             try:
@@ -1236,8 +1242,13 @@ class Plugin:
             except pytz.exceptions.UnknownTimeZoneError:
                 LOGGER.error(f"Unknown timezone: {tz_str}, falling back to America/Chicago")
                 local_tz = pytz.timezone('America/Chicago')
-            
+
+            # Initialize last_run_date to current date to prevent immediate execution
+            # when scheduler starts at a time that matches a scheduled time
+            last_run_date = datetime.now(local_tz).date()
+
             LOGGER.info(f"Scheduler timezone: {tz_str}")
+            LOGGER.info(f"Scheduler initialized - will run at next scheduled time (not immediately)")
             
             while not _stop_event.is_set():
                 try:
