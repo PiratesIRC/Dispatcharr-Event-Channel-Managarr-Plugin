@@ -1296,10 +1296,10 @@ class Plugin:
         if self.cached_api_token and self.token_cache_time:
             elapsed_time = time.time() - self.token_cache_time
             if elapsed_time < self.token_cache_duration:
-                logger.debug(f"Using cached API token (age: {int(elapsed_time)}s)")
+                logger.info("Successfully obtained API access via CACHED token")
                 return self.cached_api_token, None
             else:
-                logger.debug("Cached API token expired, requesting new token")
+                logger.info("Cached API token expired, requesting new token")
 
         dispatcharr_url = settings.get("dispatcharr_url", "").strip().rstrip('/')
         username = settings.get("dispatcharr_username", "")
@@ -1338,7 +1338,7 @@ class Plugin:
             self.cached_api_token = access_token
             self.token_cache_time = time.time()
 
-            logger.info("Successfully obtained API access token (cached for 30 minutes)")
+            logger.info("Successfully obtained new API access token (cached for 30 minutes)")
             return access_token, None
             
         except requests.exceptions.ConnectionError as e:
