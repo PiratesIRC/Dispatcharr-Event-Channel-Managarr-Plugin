@@ -416,21 +416,33 @@ class Plugin:
     def run(self, action, params, context):
         """Main plugin entry point"""
         LOGGER.info(f"Event Channel Managarr run called with action: {action}")
-        LOGGER.debug(f"Params: {params}")
-        LOGGER.debug(f"Context settings: {context.get('settings', {})}")
 
         try:
             # Get live settings from context and params
             live_settings = context.get("settings", {})
             logger = context.get("logger", LOGGER)
 
-            # Create a merged settings view, prioritizing current form values over saved ones.
-            # Priority order: params (current form) > live_settings (context) > saved_settings (disk)
+            # Log settings for debugging cached values issue
+            if action == "update_schedule":
+                saved_times = self.saved_settings.get("scheduled_times", "") if self.saved_settings else ""
+                live_times = live_settings.get("scheduled_times", "")
+                logger.info(f"Saved scheduled_times: '{saved_times}', Live scheduled_times: '{live_times}'")
+
+            # Create a merged settings view
+            # Priority order: live_settings (current form) > params (action-specific) > saved_settings (disk cache)
+            # Live settings represents the current state of the form, so it should take precedence
             merged_settings = {}
+
+            # Start with saved settings as defaults for any missing keys
             if self.saved_settings:
                 merged_settings.update(self.saved_settings)
-            merged_settings.update(live_settings)
-            # Params may contain current form values when action is triggered
+
+            # Override with live settings (current form state)
+            # This ensures that if a field is cleared in the form, the blank value is used
+            if live_settings:
+                merged_settings.update(live_settings)
+
+            # Params may contain action-specific overrides
             if params:
                 merged_settings.update(params)
 
@@ -1137,10 +1149,11 @@ class Plugin:
     def update_schedule_action(self, settings, logger):
         """Save settings and update scheduled tasks"""
         try:
+            scheduled_times_str = settings.get("scheduled_times", "").strip()
+            logger.info(f"Update Schedule - scheduled_times value: '{scheduled_times_str}'")
+
             self._save_settings(settings)
             self._start_background_scheduler(settings)
-            
-            scheduled_times_str = settings.get("scheduled_times", "").strip()
             
             if scheduled_times_str:
                 times = self._parse_scheduled_times(scheduled_times_str)
