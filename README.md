@@ -10,7 +10,8 @@ A Dispatcharr plugin that automatically manages channel visibility based on EPG 
 * **Enhanced Date Format Support**: Recognizes a wide variety of date formats in channel names, including dates with optional times (e.g., "Nov 8 16:00"), slash-separated dates, ISO formats, and more.
 * **Day-of-Week Logic**: Use the `[WrongDayOfWeek]` rule to hide channels named for a specific day (e.g., "Saturday Night Fights") when it's not that day.
 * **Multi-Profile Support**: Monitor and manage channels across **multiple Channel Profiles** at once (e.g., "PPV Events, Sports Profile").
-* **Configurable Duplicate Handling**: Choose your strategy for handling duplicate events: keep the one with the **lowest number**, **highest number**, or **longest name**.
+* **Configurable Duplicate Handling**: Choose your strategy for handling duplicate events: keep the one with the **lowest number**, **highest number**, or **longest name**. Optionally keep all duplicate channels visible.
+* **API Token Caching**: Automatically caches authentication tokens for 30 minutes to reduce API overhead and improve performance.
 * **Force Visibility**: Use a regular expression to **force specific channels** (like news or weather) to remain visible, overriding all hide rules.
 * **Flexible Scheduling**: Run scans automatically at specific times each day (e.g., `0600,1300,1800`) with a simple dropdown for timezone selection.
 * **Auto-EPG Management**: When a channel is hidden, the plugin can automatically remove its EPG assignment to keep your guide clean.
@@ -45,6 +46,7 @@ A Dispatcharr plugin that automatically manages channel visibility based on EPG 
 | **💤 Regex: Mark Channel as Inactive** | `string` | - | Regular expression to hide channels. Processed as part of the `[InactiveRegex]` hide rule. |
 | **✅ Regex: Force Visible Channels** | `string` | - | Regular expression to match channels that should ALWAYS be visible, overriding any hide rules. |
 | **🎭 Duplicate Handling Strategy**| `select` | `lowest_number` | Strategy to use when multiple channels have the same event. |
+| **🔄 Keep Duplicate Channels** | `boolean` | `False` | If enabled, duplicate channels will be kept visible instead of being hidden. The duplicate strategy above will be ignored. |
 | **📅 Past Date Grace Period (Hours)**| `string` | `4` | Hours to wait after midnight before hiding past events. Used by the `[PastDate]` rule. |
 | **🔌 Auto-Remove EPG on Hide** | `boolean` | `True` | If enabled, automatically removes EPG data from a channel when it is hidden by the plugin. |
 | **⏰ Scheduled Run Times** | `string` | - | Comma-separated times (24-hour HHMM format) to run daily. Leave blank to disable. |
@@ -110,6 +112,7 @@ The plugin can extract dates from channel names in the following formats (checke
 | :--- | :--- | :--- |
 | **start:YYYY-MM-DD HH:MM:SS** | `start:2024-12-25 20:00:00` | Highest priority. Matches exact datetime in channel name. |
 | **stop:YYYY-MM-DD HH:MM:SS** | `stop:2024-12-25 23:00:00` | Matches end datetime in channel name. |
+| **(YYYY-MM-DD HH:MM:SS)** | `(2025-11-22 15:10:00)` | Matches datetime within parentheses. |
 | **MM/DD/YYYY** or **MM/DD/YY** | `12/25/2024` or `12/25/24` | Standard slash-separated date format. |
 | **(MONTH DD)** | `(Dec 25)` or `(December 25)` | Month name and day in parentheses. |
 | **DDth/st/nd/rd MONTH** | `25th Dec` or `1st January` | Day with ordinal suffix followed by month name. |

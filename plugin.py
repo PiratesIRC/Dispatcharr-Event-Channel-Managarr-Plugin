@@ -31,7 +31,7 @@ if not LOGGER.handlers:
     formatter = logging.Formatter("%(levelname)s %(name)s %(message)s")
     handler.setFormatter(formatter)
     LOGGER.addHandler(handler)
-LOGGER.setLevel(logging.DEBUG)
+LOGGER.setLevel(logging.INFO)
 
 # Background scheduling globals
 _bg_thread = None
@@ -41,7 +41,7 @@ class Plugin:
     """Event Channel Managarr Plugin"""
 
     name = "Event Channel Managarr"
-    version = "0.4.1"
+    version = "0.4.2"
     description = "Automatically manage channel visibility based on EPG data and channel names. Hides channels with no events and shows channels with active events.\n\nGitHub: https://github.com/PiratesIRC/Dispatcharr-Event-Channel-Managarr-Plugin"
 
     @property
@@ -206,6 +206,13 @@ class Plugin:
             ]
         },
         {
+            "id": "keep_duplicates",
+            "label": "🔄 Keep Duplicate Channels",
+            "type": "boolean",
+            "default": False,
+            "help_text": "If enabled, duplicate channels will be kept visible instead of being hidden. The duplicate strategy above will be ignored.",
+        },
+        {
             "id": "past_date_grace_hours",
             "label": "📅 Past Date Grace Period (Hours)",
             "type": "string",
@@ -292,6 +299,11 @@ class Plugin:
 
         # Version check cache
         self.cached_version_info = None
+
+        # API token cache
+        self.cached_api_token = None
+        self.token_cache_time = None
+        self.token_cache_duration = 1800  # 30 minutes in seconds
 
         LOGGER.info(f"{self.name} Plugin v{self.version} initialized")
 
@@ -404,21 +416,40 @@ class Plugin:
     def run(self, action, params, context):
         """Main plugin entry point"""
         LOGGER.info(f"Event Channel Managarr run called with action: {action}")
-        LOGGER.debug(f"Params: {params}")
-        LOGGER.debug(f"Context settings: {context.get('settings', {})}")
 
         try:
             # Get live settings from context and params
             live_settings = context.get("settings", {})
             logger = context.get("logger", LOGGER)
 
-            # Create a merged settings view, prioritizing current form values over saved ones.
-            # Priority order: params (current form) > live_settings (context) > saved_settings (disk)
+            # Log settings for debugging cached values issue
+            if action == "update_schedule":
+                saved_times = self.saved_settings.get("scheduled_times", "") if self.saved_settings else ""
+                live_times = live_settings.get("scheduled_times", "")
+                has_key = "scheduled_times" in live_settings
+                logger.info(f"[Update Schedule] Saved: '{saved_times}', Live: '{live_times}', Key exists in live_settings: {has_key}")
+
+            # Create a merged settings view
+            # Priority order: live_settings (current form) > params (action-specific) > saved_settings (disk cache)
+            # Live settings represents the current state of the form, so it should take precedence
             merged_settings = {}
+
+            # Start with saved settings as defaults for any missing keys
             if self.saved_settings:
                 merged_settings.update(self.saved_settings)
-            merged_settings.update(live_settings)
-            # Params may contain current form values when action is triggered
+
+            # Override with live settings (current form state)
+            # This ensures that if a field is cleared in the form, the blank value is used
+            if live_settings:
+                merged_settings.update(live_settings)
+
+                # WORKAROUND: Dispatcharr may not send empty string fields in live_settings
+                # For update_schedule, if scheduled_times is not in live_settings, treat it as blank
+                if action == "update_schedule" and "scheduled_times" not in live_settings:
+                    logger.info("[Update Schedule] scheduled_times not in live_settings - treating as blank")
+                    merged_settings["scheduled_times"] = ""
+
+            # Params may contain action-specific overrides
             if params:
                 merged_settings.update(params)
 
@@ -669,6 +700,17 @@ class Plugin:
                     return extracted_date
                 except ValueError:
                     pass
+
+        # Pattern 0a: (YYYY-MM-DD HH:MM:SS) in parentheses
+        pattern0a = re.search(r'\((\d{4})-(\d{2})-(\d{2})\s+(\d{2}):(\d{2}):(\d{2})\)', channel_name)
+        if pattern0a:
+            year, month, day, hour, minute, second = map(int, pattern0a.groups())
+            try:
+                extracted_date = datetime(year, month, day, hour, minute, second)
+                logger.debug(f"Extracted datetime {extracted_date} from pattern (YYYY-MM-DD HH:MM:SS) in '{channel_name}'")
+                return extracted_date
+            except ValueError:
+                pass
 
         # Pattern 1: MM/DD/YYYY or MM/DD/YY
         pattern1 = re.search(r'\b(\d{1,2})/(\d{1,2})/(\d{2,4})\b', channel_name)
@@ -1114,10 +1156,11 @@ class Plugin:
     def update_schedule_action(self, settings, logger):
         """Save settings and update scheduled tasks"""
         try:
+            scheduled_times_str = settings.get("scheduled_times", "").strip()
+            logger.info(f"Update Schedule - scheduled_times value: '{scheduled_times_str}'")
+
             self._save_settings(settings)
             self._start_background_scheduler(settings)
-            
-            scheduled_times_str = settings.get("scheduled_times", "").strip()
             
             if scheduled_times_str:
                 times = self._parse_scheduled_times(scheduled_times_str)
@@ -1191,8 +1234,7 @@ class Plugin:
         # Start new scheduler thread
         def scheduler_loop():
             import pytz
-            last_run_date = None
-            
+
             # Get timezone from settings
             tz_str = self._get_system_timezone(settings)
             try:
@@ -1200,8 +1242,13 @@ class Plugin:
             except pytz.exceptions.UnknownTimeZoneError:
                 LOGGER.error(f"Unknown timezone: {tz_str}, falling back to America/Chicago")
                 local_tz = pytz.timezone('America/Chicago')
-            
+
+            # Initialize last_run_date to current date to prevent immediate execution
+            # when scheduler starts at a time that matches a scheduled time
+            last_run_date = datetime.now(local_tz).date()
+
             LOGGER.info(f"Scheduler timezone: {tz_str}")
+            LOGGER.info(f"Scheduler initialized - will run at next scheduled time (not immediately)")
             
             while not _stop_event.is_set():
                 try:
@@ -1254,6 +1301,17 @@ class Plugin:
 
     def _get_api_token(self, settings, logger):
         """Get an API access token using username and password."""
+        import time
+
+        # Check if we have a valid cached token
+        if self.cached_api_token and self.token_cache_time:
+            elapsed_time = time.time() - self.token_cache_time
+            if elapsed_time < self.token_cache_duration:
+                logger.info("Successfully obtained API access via CACHED token")
+                return self.cached_api_token, None
+            else:
+                logger.info("Cached API token expired, requesting new token")
+
         dispatcharr_url = settings.get("dispatcharr_url", "").strip().rstrip('/')
         username = settings.get("dispatcharr_username", "")
         password = settings.get("dispatcharr_password", "")
@@ -1264,7 +1322,7 @@ class Plugin:
         try:
             url = f"{dispatcharr_url}/api/accounts/token/"
             payload = {"username": username, "password": password}
-            
+
             logger.info(f"Attempting to authenticate with Dispatcharr at: {url}")
             response = requests.post(url, json=payload, timeout=15)
 
@@ -1285,8 +1343,13 @@ class Plugin:
             if not access_token:
                 logger.error("No access token returned from API")
                 return None, "Login successful, but no access token was returned by the API."
-            
-            logger.info("Successfully obtained API access token")
+
+            # Cache the token
+            import time
+            self.cached_api_token = access_token
+            self.token_cache_time = time.time()
+
+            logger.info("Successfully obtained new API access token (cached for 30 minutes)")
             return access_token, None
             
         except requests.exceptions.ConnectionError as e:
@@ -1310,12 +1373,15 @@ class Plugin:
         dispatcharr_url = settings.get("dispatcharr_url", "").strip().rstrip('/')
         url = f"{dispatcharr_url}{endpoint}"
         headers = {'Authorization': f'Bearer {token}', 'Accept': 'application/json'}
-        
+
         try:
             response = requests.get(url, headers=headers, timeout=30)
-            
+
             if response.status_code == 401:
                 logger.error("API token expired or invalid")
+                # Invalidate cached token
+                self.cached_api_token = None
+                self.token_cache_time = None
                 raise Exception("API authentication failed. Token may have expired.")
             elif response.status_code == 403:
                 logger.error("API access forbidden")
@@ -1352,13 +1418,16 @@ class Plugin:
         dispatcharr_url = settings.get("dispatcharr_url", "").strip().rstrip('/')
         url = f"{dispatcharr_url}{endpoint}"
         headers = {'Authorization': f'Bearer {token}', 'Content-Type': 'application/json'}
-        
+
         try:
             logger.info(f"Making API PATCH request to: {endpoint}")
             response = requests.patch(url, headers=headers, json=payload, timeout=60)
-            
+
             if response.status_code == 401:
                 logger.error("API token expired or invalid")
+                # Invalidate cached token
+                self.cached_api_token = None
+                self.token_cache_time = None
                 raise Exception("API authentication failed. Token may have expired.")
             elif response.status_code == 403:
                 logger.error("API access forbidden")
@@ -1413,8 +1482,13 @@ class Plugin:
         description = re.sub(r'\s+', ' ', description).strip().upper()
         return description
     
-    def _handle_duplicates(self, channels_to_process, channels_to_hide, channels_to_show, logger, strategy="lowest_number"):
+    def _handle_duplicates(self, channels_to_process, channels_to_hide, channels_to_show, logger, strategy="lowest_number", keep_duplicates=False):
         """Handle duplicate channels - keep only one visible based on the selected strategy."""
+        # If keep_duplicates is enabled, skip duplicate handling entirely
+        if keep_duplicates:
+            logger.info("Keep duplicates is enabled - skipping duplicate detection")
+            return []
+
         # Group channels by normalized name AND event description
         channel_groups = {}
         
@@ -1705,11 +1779,12 @@ class Plugin:
             ]
             
             duplicate_hide_list = self._handle_duplicates(
-                potentially_visible_channels, 
-                channels_to_hide, 
-                channels_to_show, 
+                potentially_visible_channels,
+                channels_to_hide,
+                channels_to_show,
                 logger,
-                strategy=settings.get("duplicate_strategy", "lowest_number")
+                strategy=settings.get("duplicate_strategy", "lowest_number"),
+                keep_duplicates=settings.get("keep_duplicates", False)
             )
             
             # Build final results with duplicate information
