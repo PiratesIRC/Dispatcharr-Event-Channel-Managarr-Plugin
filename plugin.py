@@ -41,7 +41,7 @@ class Plugin:
     """Event Channel Managarr Plugin"""
 
     name = "Event Channel Managarr"
-    version = "0.4.1"
+    version = "0.4.2"
     description = "Automatically manage channel visibility based on EPG data and channel names. Hides channels with no events and shows channels with active events.\n\nGitHub: https://github.com/PiratesIRC/Dispatcharr-Event-Channel-Managarr-Plugin"
 
     @property
@@ -206,6 +206,13 @@ class Plugin:
             ]
         },
         {
+            "id": "keep_duplicates",
+            "label": "🔄 Keep Duplicate Channels",
+            "type": "checkbox",
+            "default": False,
+            "help_text": "If enabled, duplicate channels will be kept visible instead of being hidden. The duplicate strategy above will be ignored.",
+        },
+        {
             "id": "past_date_grace_hours",
             "label": "📅 Past Date Grace Period (Hours)",
             "type": "string",
@@ -292,6 +299,11 @@ class Plugin:
 
         # Version check cache
         self.cached_version_info = None
+
+        # API token cache
+        self.cached_api_token = None
+        self.token_cache_time = None
+        self.token_cache_duration = 1800  # 30 minutes in seconds
 
         LOGGER.info(f"{self.name} Plugin v{self.version} initialized")
 
@@ -1265,6 +1277,17 @@ class Plugin:
 
     def _get_api_token(self, settings, logger):
         """Get an API access token using username and password."""
+        import time
+
+        # Check if we have a valid cached token
+        if self.cached_api_token and self.token_cache_time:
+            elapsed_time = time.time() - self.token_cache_time
+            if elapsed_time < self.token_cache_duration:
+                logger.debug(f"Using cached API token (age: {int(elapsed_time)}s)")
+                return self.cached_api_token, None
+            else:
+                logger.debug("Cached API token expired, requesting new token")
+
         dispatcharr_url = settings.get("dispatcharr_url", "").strip().rstrip('/')
         username = settings.get("dispatcharr_username", "")
         password = settings.get("dispatcharr_password", "")
@@ -1275,7 +1298,7 @@ class Plugin:
         try:
             url = f"{dispatcharr_url}/api/accounts/token/"
             payload = {"username": username, "password": password}
-            
+
             logger.info(f"Attempting to authenticate with Dispatcharr at: {url}")
             response = requests.post(url, json=payload, timeout=15)
 
@@ -1296,8 +1319,13 @@ class Plugin:
             if not access_token:
                 logger.error("No access token returned from API")
                 return None, "Login successful, but no access token was returned by the API."
-            
-            logger.info("Successfully obtained API access token")
+
+            # Cache the token
+            import time
+            self.cached_api_token = access_token
+            self.token_cache_time = time.time()
+
+            logger.info("Successfully obtained API access token (cached for 30 minutes)")
             return access_token, None
             
         except requests.exceptions.ConnectionError as e:
@@ -1321,12 +1349,15 @@ class Plugin:
         dispatcharr_url = settings.get("dispatcharr_url", "").strip().rstrip('/')
         url = f"{dispatcharr_url}{endpoint}"
         headers = {'Authorization': f'Bearer {token}', 'Accept': 'application/json'}
-        
+
         try:
             response = requests.get(url, headers=headers, timeout=30)
-            
+
             if response.status_code == 401:
                 logger.error("API token expired or invalid")
+                # Invalidate cached token
+                self.cached_api_token = None
+                self.token_cache_time = None
                 raise Exception("API authentication failed. Token may have expired.")
             elif response.status_code == 403:
                 logger.error("API access forbidden")
@@ -1363,13 +1394,16 @@ class Plugin:
         dispatcharr_url = settings.get("dispatcharr_url", "").strip().rstrip('/')
         url = f"{dispatcharr_url}{endpoint}"
         headers = {'Authorization': f'Bearer {token}', 'Content-Type': 'application/json'}
-        
+
         try:
             logger.info(f"Making API PATCH request to: {endpoint}")
             response = requests.patch(url, headers=headers, json=payload, timeout=60)
-            
+
             if response.status_code == 401:
                 logger.error("API token expired or invalid")
+                # Invalidate cached token
+                self.cached_api_token = None
+                self.token_cache_time = None
                 raise Exception("API authentication failed. Token may have expired.")
             elif response.status_code == 403:
                 logger.error("API access forbidden")
@@ -1424,8 +1458,13 @@ class Plugin:
         description = re.sub(r'\s+', ' ', description).strip().upper()
         return description
     
-    def _handle_duplicates(self, channels_to_process, channels_to_hide, channels_to_show, logger, strategy="lowest_number"):
+    def _handle_duplicates(self, channels_to_process, channels_to_hide, channels_to_show, logger, strategy="lowest_number", keep_duplicates=False):
         """Handle duplicate channels - keep only one visible based on the selected strategy."""
+        # If keep_duplicates is enabled, skip duplicate handling entirely
+        if keep_duplicates:
+            logger.info("Keep duplicates is enabled - skipping duplicate detection")
+            return []
+
         # Group channels by normalized name AND event description
         channel_groups = {}
         
@@ -1716,11 +1755,12 @@ class Plugin:
             ]
             
             duplicate_hide_list = self._handle_duplicates(
-                potentially_visible_channels, 
-                channels_to_hide, 
-                channels_to_show, 
+                potentially_visible_channels,
+                channels_to_hide,
+                channels_to_show,
                 logger,
-                strategy=settings.get("duplicate_strategy", "lowest_number")
+                strategy=settings.get("duplicate_strategy", "lowest_number"),
+                keep_duplicates=settings.get("keep_duplicates", False)
             )
             
             # Build final results with duplicate information
