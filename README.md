@@ -110,6 +110,7 @@ The plugin can extract dates from channel names in the following formats (checke
 | :--- | :--- | :--- |
 | **start:YYYY-MM-DD HH:MM:SS** | `start:2024-12-25 20:00:00` | Highest priority. Matches exact datetime in channel name. |
 | **stop:YYYY-MM-DD HH:MM:SS** | `stop:2024-12-25 23:00:00` | Matches end datetime in channel name. |
+| **(YYYY-MM-DD HH:MM:SS)** | `(2025-11-22 15:10:00)` | Matches datetime within parentheses. |
 | **MM/DD/YYYY** or **MM/DD/YY** | `12/25/2024` or `12/25/24` | Standard slash-separated date format. |
 | **(MONTH DD)** | `(Dec 25)` or `(December 25)` | Month name and day in parentheses. |
 | **DDth/st/nd/rd MONTH** | `25th Dec` or `1st January` | Day with ordinal suffix followed by month name. |

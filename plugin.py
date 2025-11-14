@@ -670,6 +670,17 @@ class Plugin:
                 except ValueError:
                     pass
 
+        # Pattern 0a: (YYYY-MM-DD HH:MM:SS) in parentheses
+        pattern0a = re.search(r'\((\d{4})-(\d{2})-(\d{2})\s+(\d{2}):(\d{2}):(\d{2})\)', channel_name)
+        if pattern0a:
+            year, month, day, hour, minute, second = map(int, pattern0a.groups())
+            try:
+                extracted_date = datetime(year, month, day, hour, minute, second)
+                logger.debug(f"Extracted datetime {extracted_date} from pattern (YYYY-MM-DD HH:MM:SS) in '{channel_name}'")
+                return extracted_date
+            except ValueError:
+                pass
+
         # Pattern 1: MM/DD/YYYY or MM/DD/YY
         pattern1 = re.search(r'\b(\d{1,2})/(\d{1,2})/(\d{2,4})\b', channel_name)
         if pattern1:
