@@ -1245,7 +1245,7 @@ class Plugin:
 
             # Initialize last_run_date to current date to prevent immediate execution
             # when scheduler starts at a time that matches a scheduled time
-            last_run_date = datetime.now(local_tz).date()
+            last_run_date = None
 
             LOGGER.info(f"Scheduler timezone: {tz_str}")
             LOGGER.info(f"Scheduler initialized - will run at next scheduled time (not immediately)")
@@ -2225,3 +2225,4 @@ actions = Plugin.actions
 # Define what this module exports
 
 __all__ = ['plugin', 'fields', 'actions']
+
