@@ -1341,78 +1341,84 @@ class Plugin:
         return times
 
     def _start_background_scheduler(self, settings):
-        """Start background scheduler thread"""
-        global _bg_thread
-        
-        # Stop existing scheduler if running
-        self._stop_background_scheduler()
-        
-        # Parse scheduled times
-        scheduled_times_str = settings.get("scheduled_times", "").strip()
-        if not scheduled_times_str:
-            LOGGER.info("No scheduled times configured, scheduler not started")
-            return
-        
-        scheduled_times = self._parse_scheduled_times(scheduled_times_str)
-        if not scheduled_times:
-            LOGGER.info("No valid scheduled times, scheduler not started")
-            return
-        
-        # Start new scheduler thread
-        def scheduler_loop():
-            import pytz
+    """Start background scheduler thread"""
+    global _bg_thread
+    
+    # Stop existing scheduler if running
+    self._stop_background_scheduler()
+    
+    # Parse scheduled times
+    scheduled_times_str = settings.get("scheduled_times", "").strip()
+    if not scheduled_times_str:
+        LOGGER.info("No scheduled times configured, scheduler not started")
+        return
+    
+    scheduled_times = self._parse_scheduled_times(scheduled_times_str)
+    if not scheduled_times:
+        LOGGER.info("No valid scheduled times, scheduler not started")
+        return
+    
+    # Start new scheduler thread
+    def scheduler_loop():
+        import pytz
 
-            # Get timezone from settings
-            tz_str = self._get_system_timezone(settings)
+        # Get timezone from settings
+        tz_str = self._get_system_timezone(settings)
+        try:
+            local_tz = pytz.timezone(tz_str)
+        except pytz.exceptions.UnknownTimeZoneError:
+            LOGGER.error(f"Unknown timezone: {tz_str}, falling back to America/Chicago")
+            local_tz = pytz.timezone('America/Chicago')
+
+        # Initialize last run tracker to prevent immediate execution
+        # when scheduler starts at a time that matches a scheduled time
+        last_run = {}
+
+        LOGGER.info(f"Scheduler timezone: {tz_str}")
+        LOGGER.info(f"Scheduler initialized - will run at next scheduled time (not immediately)")
+        
+        while not _stop_event.is_set():
             try:
-                local_tz = pytz.timezone(tz_str)
-            except pytz.exceptions.UnknownTimeZoneError:
-                LOGGER.error(f"Unknown timezone: {tz_str}, falling back to America/Chicago")
-                local_tz = pytz.timezone('America/Chicago')
-
-            last_run_date = None
-
-            LOGGER.info(f"Scheduler timezone: {tz_str}")
-            LOGGER.info(f"Scheduler initialized - will run at next scheduled time (not immediately)")
-            
-            while not _stop_event.is_set():
-                try:
-                    now = datetime.now(local_tz)
-                    current_date = now.date()
+                now = datetime.now(local_tz)
+                current_date = now.date()
+                
+                # Check each scheduled time
+                for scheduled_time in scheduled_times:
+                    # Create a datetime for the scheduled time today in the local timezone
+                    scheduled_dt = local_tz.localize(datetime.combine(current_date, scheduled_time))
+                    time_diff = (scheduled_dt - now).total_seconds()
                     
-                    # Check each scheduled time
-                    for scheduled_time in scheduled_times:
-                        # Create a datetime for the scheduled time today in the local timezone
-                        scheduled_dt = local_tz.localize(datetime.combine(current_date, scheduled_time))
-                        time_diff = (scheduled_dt - now).total_seconds()
-                        
-                        # Run if within 30 seconds and have not run today
-                        if -30 <= time_diff <= 30 and last_run_date != current_date:
-                            LOGGER.info(f"Scheduled scan triggered at {now.strftime('%Y-%m-%d %H:%M %Z')}")
-                            try:
-                                result = self._scan_and_update_channels(settings, LOGGER, dry_run=False, is_scheduled_run=True)
-                                LOGGER.info(f"Scheduled scan completed: {result.get('message', 'Done')}")
+                    # Run if within 30 seconds and have not run today for this time
+                    if -30 <= time_diff <= 30 and last_run.get(scheduled_time) != current_date:
+                        LOGGER.info(f"Scheduled scan triggered at {now.strftime('%Y-%m-%d %H:%M %Z')}")
+                        try:
+                            result = self._scan_and_update_channels(settings, LOGGER, dry_run=False, is_scheduled_run=True)
+                            LOGGER.info(f"Scheduled scan completed: {result.get('message', 'Done')}")
 
-                                # Trigger frontend refresh if changes were made
-                                if result.get("status") == "success":
-                                    results_data = result.get("results", {})
-                                    if results_data.get("to_hide", 0) > 0 or results_data.get("to_show", 0) > 0:
-                                        self._trigger_frontend_refresh(settings, LOGGER)
-                            except Exception as e:
-                                LOGGER.error(f"Error in scheduled scan: {e}")
-                            last_run_date = current_date
-                            break
-                    
-                    # Sleep for 30 seconds
-                    _stop_event.wait(30)
-                    
-                except Exception as e:
-                    LOGGER.error(f"Error in scheduler loop: {e}")
-                    _stop_event.wait(60)
-        
-        _bg_thread = threading.Thread(target=scheduler_loop, name="event-channel-managarr-scheduler", daemon=True)
-        _bg_thread.start()
-        LOGGER.info(f"Background scheduler started for times: {[t.strftime('%H:%M') for t in scheduled_times]}")
+                            # Trigger frontend refresh if changes were made
+                            if result.get("status") == "success":
+                                results_data = result.get("results", {})
+                                if results_data.get("to_hide", 0) > 0 or results_data.get("to_show", 0) > 0:
+                                    self._trigger_frontend_refresh(settings, LOGGER)
+                        except Exception as e:
+                            LOGGER.error(f"Error in scheduled scan: {e}")
+
+                        # Mark as executed for today's date
+                        last_run[scheduled_time] = current_date
+                        break
+                
+                # Sleep for 30 seconds
+                _stop_event.wait(30)
+                
+            except Exception as e:
+                LOGGER.error(f"Error in scheduler loop: {e}")
+                _stop_event.wait(60)
+    
+    _bg_thread = threading.Thread(target=scheduler_loop, name="event-channel-managarr-scheduler", daemon=True)
+    _bg_thread.start()
+    LOGGER.info(f"Background scheduler started for times: {[t.strftime('%H:%M') for t in scheduled_times]}")
+
+
 
     def _stop_background_scheduler(self):
         """Stop background scheduler thread"""
