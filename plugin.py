@@ -428,6 +428,15 @@ class Plugin:
                 live_times = live_settings.get("scheduled_times", "")
                 has_key = "scheduled_times" in live_settings
                 logger.info(f"[Update Schedule] Saved: '{saved_times}', Live: '{live_times}', Key exists in live_settings: {has_key}")
+            elif action == "validate_configuration":
+                saved_profiles = self.saved_settings.get("channel_profile_names", "") if self.saved_settings else ""
+                live_profiles = live_settings.get("channel_profile_names", "")
+                has_profiles_key = "channel_profile_names" in live_settings
+                saved_groups = self.saved_settings.get("channel_groups", "") if self.saved_settings else ""
+                live_groups = live_settings.get("channel_groups", "")
+                has_groups_key = "channel_groups" in live_settings
+                logger.info(f"[Validate Config] Profiles - Saved: '{saved_profiles}', Live: '{live_profiles}', Key in live: {has_profiles_key}")
+                logger.info(f"[Validate Config] Groups - Saved: '{saved_groups}', Live: '{live_groups}', Key in live: {has_groups_key}")
 
             # Create a merged settings view
             # Priority order: live_settings (current form) > params (action-specific) > saved_settings (disk cache)
@@ -448,6 +457,15 @@ class Plugin:
                 if action == "update_schedule" and "scheduled_times" not in live_settings:
                     logger.info("[Update Schedule] scheduled_times not in live_settings - treating as blank")
                     merged_settings["scheduled_times"] = ""
+
+                # WORKAROUND: For validate_configuration, preserve saved settings for fields not in live_settings
+                # Dispatcharr may not send all fields when the form is displayed (only changed fields)
+                if action == "validate_configuration":
+                    fields_to_preserve = ["channel_profile_names", "channel_groups"]
+                    for field in fields_to_preserve:
+                        if field not in live_settings and self.saved_settings and field in self.saved_settings:
+                            merged_settings[field] = self.saved_settings[field]
+                            logger.info(f"[Validate Config] Preserving saved value for '{field}': '{self.saved_settings[field]}'")
 
             # Params may contain action-specific overrides
             if params:
