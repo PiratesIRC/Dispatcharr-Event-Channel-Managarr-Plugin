@@ -429,9 +429,9 @@ class Plugin:
                 has_key = "scheduled_times" in live_settings
                 logger.info(f"[Update Schedule] Saved: '{saved_times}', Live: '{live_times}', Key exists in live_settings: {has_key}")
             elif action == "validate_configuration":
-                saved_profiles = self.saved_settings.get("channel_profile_names", "") if self.saved_settings else ""
-                live_profiles = live_settings.get("channel_profile_names", "")
-                has_profiles_key = "channel_profile_names" in live_settings
+                saved_profiles = self.saved_settings.get("channel_profile_name", "") if self.saved_settings else ""
+                live_profiles = live_settings.get("channel_profile_name", "")
+                has_profiles_key = "channel_profile_name" in live_settings
                 saved_groups = self.saved_settings.get("channel_groups", "") if self.saved_settings else ""
                 live_groups = live_settings.get("channel_groups", "")
                 has_groups_key = "channel_groups" in live_settings
@@ -461,7 +461,7 @@ class Plugin:
                 # WORKAROUND: For validate_configuration, preserve saved settings for fields not in live_settings
                 # Dispatcharr may not send all fields when the form is displayed (only changed fields)
                 if action == "validate_configuration":
-                    fields_to_preserve = ["channel_profile_names", "channel_groups"]
+                    fields_to_preserve = ["channel_profile_name", "channel_groups"]
                     for field in fields_to_preserve:
                         if field not in live_settings and self.saved_settings and field in self.saved_settings:
                             merged_settings[field] = self.saved_settings[field]
@@ -549,7 +549,7 @@ class Plugin:
             has_errors = True
 
         # 4. Validate channel profile names
-        channel_profile_names_str = settings.get("channel_profile_names", "").strip()
+        channel_profile_names_str = settings.get("channel_profile_name", "").strip()
         if channel_profile_names_str and token:
             try:
                 # Parse profile names from settings
