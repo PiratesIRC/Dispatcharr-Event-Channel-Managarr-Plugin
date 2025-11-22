@@ -1243,8 +1243,6 @@ class Plugin:
                 LOGGER.error(f"Unknown timezone: {tz_str}, falling back to America/Chicago")
                 local_tz = pytz.timezone('America/Chicago')
 
-            # Initialize last_run_date to current date to prevent immediate execution
-            # when scheduler starts at a time that matches a scheduled time
             last_run_date = None
 
             LOGGER.info(f"Scheduler timezone: {tz_str}")
@@ -2225,5 +2223,3 @@ actions = Plugin.actions
 # Define what this module exports
 
 __all__ = ['plugin', 'fields', 'actions']
-
-
