@@ -41,7 +41,7 @@ class Plugin:
     """Event Channel Managarr Plugin"""
 
     name = "Event Channel Managarr"
-    version = "0.4.2"
+    version = "0.4.6"
     description = "Automatically manage channel visibility based on EPG data and channel names. Hides channels with no events and shows channels with active events.\n\nGitHub: https://github.com/PiratesIRC/Dispatcharr-Event-Channel-Managarr-Plugin"
 
     @property
@@ -2225,4 +2225,5 @@ actions = Plugin.actions
 # Define what this module exports
 
 __all__ = ['plugin', 'fields', 'actions']
+
 
