@@ -1370,7 +1370,9 @@ class Plugin:
                 LOGGER.error(f"Unknown timezone: {tz_str}, falling back to America/Chicago")
                 local_tz = pytz.timezone('America/Chicago')
 
-            last_run_date = None
+            # Initialize last run tracker to prevent immediate execution
+            # when scheduler starts at a time that matches a scheduled time
+            last_run = {}
 
             LOGGER.info(f"Scheduler timezone: {tz_str}")
             LOGGER.info(f"Scheduler initialized - will run at next scheduled time (not immediately)")
@@ -1386,8 +1388,8 @@ class Plugin:
                         scheduled_dt = local_tz.localize(datetime.combine(current_date, scheduled_time))
                         time_diff = (scheduled_dt - now).total_seconds()
                         
-                        # Run if within 30 seconds and have not run today
-                        if -30 <= time_diff <= 30 and last_run_date != current_date:
+                        # Run if within 30 seconds and have not run today for this time
+                        if -30 <= time_diff <= 30 and last_run.get(scheduled_time) != current_date:
                             LOGGER.info(f"Scheduled scan triggered at {now.strftime('%Y-%m-%d %H:%M %Z')}")
                             try:
                                 result = self._scan_and_update_channels(settings, LOGGER, dry_run=False, is_scheduled_run=True)
@@ -1400,7 +1402,9 @@ class Plugin:
                                         self._trigger_frontend_refresh(settings, LOGGER)
                             except Exception as e:
                                 LOGGER.error(f"Error in scheduled scan: {e}")
-                            last_run_date = current_date
+
+                            # Mark as executed for today's date
+                            last_run[scheduled_time] = current_date
                             break
                     
                     # Sleep for 30 seconds
@@ -1413,6 +1417,8 @@ class Plugin:
         _bg_thread = threading.Thread(target=scheduler_loop, name="event-channel-managarr-scheduler", daemon=True)
         _bg_thread.start()
         LOGGER.info(f"Background scheduler started for times: {[t.strftime('%H:%M') for t in scheduled_times]}")
+
+
 
     def _stop_background_scheduler(self):
         """Stop background scheduler thread"""
