@@ -518,6 +518,7 @@ class Plugin:
                 has_errors = True
 
         # 3. Validate API connectivity
+        token = None
         try:
             token, error = self._get_api_token(settings, logger)
             if error:
@@ -529,7 +530,115 @@ class Plugin:
             validation_results.append(f"❌ API Connection: {str(e)}")
             has_errors = True
 
-        # 4. Validate schedule
+        # 4. Validate channel profile names
+        channel_profile_names_str = settings.get("channel_profile_names", "").strip()
+        if channel_profile_names_str and token:
+            try:
+                # Parse profile names from settings
+                channel_profile_names = [p.strip() for p in channel_profile_names_str.split(',') if p.strip()]
+
+                # Fetch all profiles from API
+                profiles = self._get_api_data("/api/channels/profiles/", token, settings, logger)
+
+                # Check which profiles exist
+                found_profiles = []
+                missing_profiles = []
+
+                for profile_name in channel_profile_names:
+                    profile_found = False
+                    for profile in profiles:
+                        if profile.get('name', '').strip().upper() == profile_name.upper():
+                            found_profiles.append(profile_name)
+                            profile_found = True
+                            break
+
+                    if not profile_found:
+                        missing_profiles.append(profile_name)
+
+                # Report results
+                if missing_profiles:
+                    validation_results.append(f"❌ Channel Profiles: Not found - {', '.join(missing_profiles)}")
+                    has_errors = True
+
+                if found_profiles:
+                    validation_results.append(f"✅ Channel Profiles: Found {len(found_profiles)} of {len(channel_profile_names)} - {', '.join(found_profiles)}")
+
+            except Exception as e:
+                validation_results.append(f"❌ Channel Profiles: Validation error - {str(e)}")
+                has_errors = True
+        elif channel_profile_names_str and not token:
+            validation_results.append("⚠️ Channel Profiles: Cannot validate (API authentication failed)")
+        else:
+            validation_results.append("❌ Channel Profiles: Not configured (REQUIRED)")
+            has_errors = True
+
+        # 5. Validate channel groups
+        channel_groups_str = settings.get("channel_groups", "").strip()
+        if channel_groups_str and token and channel_profile_names_str:
+            try:
+                # Parse group names from settings
+                group_names = [g.strip() for g in channel_groups_str.split(',') if g.strip()]
+
+                # Parse profile names from settings
+                channel_profile_names = [p.strip() for p in channel_profile_names_str.split(',') if p.strip()]
+
+                # Fetch profiles from API
+                profiles = self._get_api_data("/api/channels/profiles/", token, settings, logger)
+
+                # Find matching profile IDs
+                profile_ids = []
+                for profile_name in channel_profile_names:
+                    for profile in profiles:
+                        if profile.get('name', '').strip().upper() == profile_name.upper():
+                            profile_ids.append(profile.get('id'))
+                            break
+
+                if profile_ids:
+                    # Get all channels in the profiles
+                    memberships = ChannelProfileMembership.objects.filter(
+                        channel_profile_id__in=profile_ids
+                    ).select_related('channel', 'channel__channel_group')
+
+                    # Get unique group names
+                    available_groups = set()
+                    for membership in memberships:
+                        if membership.channel.channel_group:
+                            available_groups.add(membership.channel.channel_group.name)
+
+                    # Check which groups exist
+                    found_groups = []
+                    missing_groups = []
+
+                    for group_name in group_names:
+                        if group_name in available_groups:
+                            found_groups.append(group_name)
+                        else:
+                            missing_groups.append(group_name)
+
+                    # Report results
+                    if missing_groups:
+                        validation_results.append(f"❌ Channel Groups: Not found - {', '.join(missing_groups)}")
+                        has_errors = True
+
+                    if found_groups:
+                        validation_results.append(f"✅ Channel Groups: Found {len(found_groups)} of {len(group_names)} - {', '.join(found_groups)}")
+
+                    if available_groups:
+                        validation_results.append(f"ℹ️ Available Groups: {', '.join(sorted(available_groups))}")
+                else:
+                    validation_results.append("⚠️ Channel Groups: Cannot validate (no valid profiles found)")
+
+            except Exception as e:
+                validation_results.append(f"❌ Channel Groups: Validation error - {str(e)}")
+                has_errors = True
+        elif channel_groups_str and not token:
+            validation_results.append("⚠️ Channel Groups: Cannot validate (API authentication failed)")
+        elif channel_groups_str and not channel_profile_names_str:
+            validation_results.append("⚠️ Channel Groups: Cannot validate (no channel profiles configured)")
+        else:
+            validation_results.append("ℹ️ Channel Groups: Not configured (optional)")
+
+        # 6. Validate schedule
         scheduled_times = settings.get("scheduled_times", "").strip()
         if scheduled_times:
             times_list = [t.strip() for t in scheduled_times.split(',') if t.strip()]
