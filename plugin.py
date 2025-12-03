@@ -26,24 +26,102 @@ from apps.epg.models import ProgramData
 
 # Setup logging using Dispatcharr's format
 LOGGER = logging.getLogger("plugins.event_channel_managarr")
-if not LOGGER.handlers:
-    handler = logging.StreamHandler()
-    formatter = logging.Formatter("%(levelname)s %(name)s %(message)s")
-    handler.setFormatter(formatter)
-    LOGGER.addHandler(handler)
 LOGGER.setLevel(logging.INFO)
 
 # Background scheduling globals
 _bg_thread = None
 _stop_event = threading.Event()
+_last_run = {}  # Shared execution tracking across all scheduler instances
+_scheduler_lock = threading.Lock()  # Prevent concurrent scheduler starts
 
 class Plugin:
     """Event Channel Managarr Plugin"""
 
     name = "Event Channel Managarr"
-    version = "0.4.7"
+    version = "0.4.8"
     description = "Automatically manage channel visibility based on EPG data and channel names. Hides channels with no events and shows channels with active events.\n\nGitHub: https://github.com/PiratesIRC/Dispatcharr-Event-Channel-Managarr-Plugin"
+    
+    # ============================================================================
+    # DEVELOPER CONFIGURATION - Default Settings
+    # ============================================================================
+    # All configurable default values are centralized here for easy modification
+    
+    # Default timezone for scheduling
+    DEFAULT_TIMEZONE = "America/Chicago"
+    
+    # Default name source for channel matching
+    DEFAULT_NAME_SOURCE = "Channel_Name"  # Options: "Channel_Name" or "Stream_Name"
+    
+    # Default hide rules priority (comma-separated)
+    DEFAULT_HIDE_RULES = "[InactiveRegex],[BlankName],[WrongDayOfWeek],[NoEventPattern],[EmptyPlaceholder],[PastDate:0],[FutureDate:2],[ShortDescription],[ShortChannelName]"
+    
+    # Default duplicate handling strategy
+    DEFAULT_DUPLICATE_STRATEGY = "lowest_number"  # Options: "lowest_number", "highest_number", "longest_name"
+    
+    # Default grace period for past date rule (in hours)
+    DEFAULT_PAST_DATE_GRACE_HOURS = "4"
+    
+    # Default automatic EPG removal on hide
+    DEFAULT_AUTO_REMOVE_EPG = True
+    
+    # Default CSV export for scheduled runs
+    DEFAULT_SCHEDULED_CSV_EXPORT = False
+    
+    # Default keep duplicates setting
+    DEFAULT_KEEP_DUPLICATES = False
+    
+    # API token cache duration (in seconds)
+    TOKEN_CACHE_DURATION = 1800  # 30 minutes
+    
+    # Version check interval (in seconds)
+    VERSION_CHECK_INTERVAL = 86400  # 24 hours
+    
+    # Scheduler check interval (in seconds)
+    SCHEDULER_CHECK_INTERVAL = 30
+    
+    # Scheduler stop timeout (in seconds)
+    SCHEDULER_STOP_TIMEOUT = 10
+    
+    # ============================================================================
+    # END DEVELOPER CONFIGURATION
+    # ============================================================================
 
+    @staticmethod
+    def _load_timezones_from_file():
+        """Load timezone list from zone1970.tab file"""
+        try:
+            timezone_file = "/usr/share/zoneinfo/zone1970.tab"
+            timezones = []
+            
+            with open(timezone_file, 'r') as f:
+                for line in f:
+                    # Skip comments and empty lines
+                    if line.startswith('#') or not line.strip():
+                        continue
+                    
+                    # Parse the tab-delimited format
+                    parts = line.strip().split('\t')
+                    if len(parts) >= 3:
+                        timezone_name = parts[2]
+                        timezones.append({"label": timezone_name, "value": timezone_name})
+            
+            # Sort alphabetically by timezone name
+            timezones.sort(key=lambda x: x['label'])
+            return timezones
+        
+        except Exception as e:
+            LOGGER.warning(f"Could not load timezones from zone1970.tab: {e}, using fallback list")
+            # Fallback to a minimal list if file cannot be read
+            return [
+                {"label": "America/New_York", "value": "America/New_York"},
+                {"label": "America/Los_Angeles", "value": "America/Los_Angeles"},
+                {"label": "America/Chicago", "value": "America/Chicago"},
+                {"label": "Europe/London", "value": "Europe/London"},
+                {"label": "Europe/Berlin", "value": "Europe/Berlin"},
+                {"label": "Asia/Tokyo", "value": "Asia/Tokyo"},
+                {"label": "Australia/Sydney", "value": "Australia/Sydney"}
+            ]
+    
     @property
     def fields(self):
         """Dynamically generate fields list with version check"""
@@ -122,17 +200,9 @@ class Plugin:
             "id": "timezone",
             "label": "🌍 Timezone",
             "type": "select",
-            "default": "America/Chicago",
+            "default": self.DEFAULT_TIMEZONE,
             "help_text": "Timezone for scheduled runs. Select the timezone for scheduling. Only one can be selected.",
-            "options": [
-                {"label": "America/New_York", "value": "America/New_York"},
-                {"label": "America/Los_Angeles", "value": "America/Los_Angeles"},
-                {"label": "America/Chicago", "value": "America/Chicago"},
-                {"label": "Europe/London", "value": "Europe/London"},
-                {"label": "Europe/Berlin", "value": "Europe/Berlin"},
-                {"label": "Asia/Tokyo", "value": "Asia/Tokyo"},
-                {"label": "Australia/Sydney", "value": "Australia/Sydney"}
-            ]
+            "options": self._load_timezones_from_file()
         },
         {
             "id": "channel_profile_name",
@@ -154,7 +224,7 @@ class Plugin:
             "id": "name_source",
             "label": "Name Source",
             "type": "select",
-            "default": "Channel_Name",
+            "default": self.DEFAULT_NAME_SOURCE,
             "help_text": "Select the source of the names to monitor. Only one can be selected.",
             "options": [
                 {"label": "Channel Name", "value": "Channel_Name"},
@@ -165,7 +235,7 @@ class Plugin:
             "id": "hide_rules_priority",
             "label": "📜 Hide Rules Priority",
             "type": "string",
-            "default": "[InactiveRegex],[BlankName],[WrongDayOfWeek],[NoEventPattern],[EmptyPlaceholder],[PastDate:0],[FutureDate:2],[ShortDescription],[ShortChannelName]",
+            "default": self.DEFAULT_HIDE_RULES,
             "placeholder": "[BlankName],[NoEventPattern],[EmptyPlaceholder],[PastDate:0],[FutureDate:2],[ShortDescription],[ShortChannelName]",
             "help_text": "Define rules for hiding channels in priority order (first match wins). Comma-separated tags. Available tags: [NoEPG], [BlankName], [WrongDayOfWeek], [NoEventPattern], [EmptyPlaceholder], [ShortDescription], [ShortChannelName], [NumberOnly], [PastDate:days], [PastDate:days:Xh], [FutureDate:days], [InactiveRegex]. Example: [PastDate:0] hides if event date has passed, [PastDate:0:4h] adds 4 hour grace period, [NumberOnly] hides channels with just prefix+number like 'PPV 12'.",
         },
@@ -197,7 +267,7 @@ class Plugin:
             "id": "duplicate_strategy",
             "label": "🎭 Duplicate Handling Strategy",
             "type": "select",
-            "default": "lowest_number",
+            "default": self.DEFAULT_DUPLICATE_STRATEGY,
             "help_text": "Strategy to use when multiple channels have the same event.",
             "options": [
                 {"label": "Keep Lowest Channel Number", "value": "lowest_number"},
@@ -209,14 +279,14 @@ class Plugin:
             "id": "keep_duplicates",
             "label": "🔄 Keep Duplicate Channels",
             "type": "boolean",
-            "default": False,
+            "default": self.DEFAULT_KEEP_DUPLICATES,
             "help_text": "If enabled, duplicate channels will be kept visible instead of being hidden. The duplicate strategy above will be ignored.",
         },
         {
             "id": "past_date_grace_hours",
             "label": "📅 Past Date Grace Period (Hours)",
             "type": "string",
-            "default": "4",
+            "default": self.DEFAULT_PAST_DATE_GRACE_HOURS,
             "placeholder": "e.g., 6",
             "help_text": "Hours to wait after midnight before hiding past events. Useful for events that run late.",
         },
@@ -224,7 +294,7 @@ class Plugin:
             "id": "auto_set_dummy_epg_on_hide",
             "label": "🔌 Auto-Remove EPG on Hide",
             "type": "boolean",
-            "default": True,
+            "default": self.DEFAULT_AUTO_REMOVE_EPG,
             "help_text": "If enabled, automatically removes EPG data from a channel when it is hidden by the plugin.",
         },
         {
@@ -239,7 +309,7 @@ class Plugin:
                 "id": "enable_scheduled_csv_export",
                 "label": "📄 Enable Scheduled CSV Export",
                 "type": "boolean",
-                "default": False,
+                "default": self.DEFAULT_SCHEDULED_CSV_EXPORT,
                 "help_text": "If enabled, a CSV file of the scan results will be created when the plugin runs on a schedule. If disabled, no CSV will be created for scheduled runs.",
             },
         ]
@@ -288,6 +358,12 @@ class Plugin:
             "description": "Remove any orphaned Celery periodic tasks from old plugin versions",
             "confirm": { "required": True, "title": "Cleanup Orphaned Tasks?", "message": "This will remove any old Celery Beat tasks created by previous versions of this plugin. Continue?" }
         },
+        {
+            "id": "check_scheduler_status",
+            "label": "🔍 Check Scheduler Status",
+            "description": "Display scheduler thread status and diagnostic information",
+            "confirm": { "required": False }
+        },
     ]
     
     def __init__(self):
@@ -303,12 +379,24 @@ class Plugin:
         # API token cache
         self.cached_api_token = None
         self.token_cache_time = None
-        self.token_cache_duration = 1800  # 30 minutes in seconds
+        self.token_cache_duration = self.TOKEN_CACHE_DURATION
 
         LOGGER.info(f"{self.name} Plugin v{self.version} initialized")
 
         # Load saved settings and create scheduled tasks
         self._load_settings()
+
+    def _get_bool_setting(self, settings, key, default=False):
+        """Safely get a boolean setting that might be stored as a string"""
+        val = settings.get(key, default)
+        LOGGER.debug(f"_get_bool_setting('{key}'): raw_value={val} (type={type(val).__name__}), default={default}")
+        if isinstance(val, str):
+            result = val.lower() == "true"
+            LOGGER.debug(f"  String value '{val}' -> {result}")
+            return result
+        result = bool(val)
+        LOGGER.debug(f"  Non-string value {val} -> {result}")
+        return result
   
     def _load_settings(self):
         """Load saved settings from disk"""
@@ -385,7 +473,7 @@ class Plugin:
                         now = datetime.now()
                         time_diff = now - last_check_dt
 
-                        if time_diff.total_seconds() < 86400:  # 24 hours in seconds
+                        if time_diff.total_seconds() < self.VERSION_CHECK_INTERVAL:
                             # Use cached data
                             self.cached_version_info = {
                                 'latest_version': cached_latest_version,
@@ -487,11 +575,13 @@ class Plugin:
                 return self.cleanup_periodic_tasks_action(merged_settings, logger)
             elif action == "validate_configuration":
                 return self.validate_configuration_action(merged_settings, logger)
+            elif action == "check_scheduler_status":
+                return self.check_scheduler_status_action(merged_settings, logger)
             else:
                 return {
                     "status": "error",
                     "message": f"Unknown action: {action}",
-                    "available_actions": ["validate_configuration", "update_schedule", "dry_run", "run_now", "remove_epg_from_hidden", "clear_csv_exports", "cleanup_periodic_tasks"]
+                    "available_actions": ["validate_configuration", "update_schedule", "dry_run", "run_now", "remove_epg_from_hidden", "clear_csv_exports", "cleanup_periodic_tasks", "check_scheduler_status"]
                 }
                 
         except Exception as e:
@@ -501,6 +591,9 @@ class Plugin:
 
     def validate_configuration_action(self, settings, logger):
         """Validate all plugin configuration settings"""
+        # Save settings first to ensure any changes in the UI are persisted
+        self._save_settings(settings)
+        
         validation_results = []
         has_errors = False
 
@@ -509,18 +602,18 @@ class Plugin:
             hide_rules_text = settings.get("hide_rules_priority", "").strip()
             hide_rules = self._parse_hide_rules(hide_rules_text, logger)
             if hide_rules:
-                validation_results.append(f"✅ Hide Rules: Parsed {len(hide_rules)} rules successfully")
+                validation_results.append(f"✅ Hide Rules: {len(hide_rules)} rules")
             else:
-                validation_results.append("⚠️ Hide Rules: No rules configured (will use defaults)")
+                validation_results.append("⚠️ Hide Rules: Using defaults")
         except Exception as e:
-            validation_results.append(f"❌ Hide Rules: Parse error - {str(e)}")
+            validation_results.append(f"❌ Hide Rules: {str(e)}")
             has_errors = True
 
         # 2. Validate regex patterns
         patterns_to_check = [
-            ("regex_mark_inactive", "Inactive Regex"),
-            ("regex_channels_to_ignore", "Ignore Channels Regex"),
-            ("regex_force_visible", "Force Visible Regex")
+            ("regex_mark_inactive", "Inactive"),
+            ("regex_channels_to_ignore", "Ignore"),
+            ("regex_force_visible", "Force Visible")
         ]
 
         for setting_key, label in patterns_to_check:
@@ -528,11 +621,11 @@ class Plugin:
                 pattern = settings.get(setting_key, "").strip()
                 if pattern:
                     re.compile(pattern, re.IGNORECASE)
-                    validation_results.append(f"✅ {label}: Valid pattern")
+                    validation_results.append(f"✅ {label}: Valid")
                 else:
-                    validation_results.append(f"ℹ️ {label}: Not configured")
+                    validation_results.append(f"ℹ️ {label}: Not set")
             except re.error as e:
-                validation_results.append(f"❌ {label}: Invalid - {str(e)}")
+                validation_results.append(f"❌ {label}: {str(e)}")
                 has_errors = True
 
         # 3. Validate API connectivity
@@ -540,12 +633,12 @@ class Plugin:
         try:
             token, error = self._get_api_token(settings, logger)
             if error:
-                validation_results.append(f"❌ API Authentication: {error}")
+                validation_results.append(f"❌ API Auth: {error}")
                 has_errors = True
             else:
-                validation_results.append("✅ API Authentication: Success")
+                validation_results.append("✅ API Auth: OK")
         except Exception as e:
-            validation_results.append(f"❌ API Connection: {str(e)}")
+            validation_results.append(f"❌ API: {str(e)}")
             has_errors = True
 
         # 4. Validate channel profile names
@@ -575,19 +668,19 @@ class Plugin:
 
                 # Report results
                 if missing_profiles:
-                    validation_results.append(f"❌ Channel Profiles: Not found - {', '.join(missing_profiles)}")
+                    validation_results.append(f"❌ Profiles: Not found - {', '.join(missing_profiles)}")
                     has_errors = True
 
                 if found_profiles:
-                    validation_results.append(f"✅ Channel Profiles: Found {len(found_profiles)} of {len(channel_profile_names)} - {', '.join(found_profiles)}")
+                    validation_results.append(f"✅ Profiles: {len(found_profiles)}/{len(channel_profile_names)} - {', '.join(found_profiles)}")
 
             except Exception as e:
-                validation_results.append(f"❌ Channel Profiles: Validation error - {str(e)}")
+                validation_results.append(f"❌ Profiles: {str(e)}")
                 has_errors = True
         elif channel_profile_names_str and not token:
-            validation_results.append("⚠️ Channel Profiles: Cannot validate (API authentication failed)")
+            validation_results.append("⚠️ Profiles: Cannot validate (API failed)")
         else:
-            validation_results.append("❌ Channel Profiles: Not configured (REQUIRED)")
+            validation_results.append("❌ Profiles: Required")
             has_errors = True
 
         # 5. Validate channel groups
@@ -635,26 +728,23 @@ class Plugin:
 
                     # Report results
                     if missing_groups:
-                        validation_results.append(f"❌ Channel Groups: Not found - {', '.join(missing_groups)}")
+                        validation_results.append(f"❌ Groups: Not found - {', '.join(missing_groups)}")
                         has_errors = True
 
                     if found_groups:
-                        validation_results.append(f"✅ Channel Groups: Found {len(found_groups)} of {len(group_names)} - {', '.join(found_groups)}")
-
-                    if available_groups:
-                        validation_results.append(f"ℹ️ Available Groups: {', '.join(sorted(available_groups))}")
+                        validation_results.append(f"✅ Groups: {len(found_groups)}/{len(group_names)} - {', '.join(found_groups)}")
                 else:
-                    validation_results.append("⚠️ Channel Groups: Cannot validate (no valid profiles found)")
+                    validation_results.append("⚠️ Groups: Cannot validate (no valid profiles)")
 
             except Exception as e:
-                validation_results.append(f"❌ Channel Groups: Validation error - {str(e)}")
+                validation_results.append(f"❌ Groups: {str(e)}")
                 has_errors = True
         elif channel_groups_str and not token:
-            validation_results.append("⚠️ Channel Groups: Cannot validate (API authentication failed)")
+            validation_results.append("⚠️ Groups: Cannot validate (API failed)")
         elif channel_groups_str and not channel_profile_names_str:
-            validation_results.append("⚠️ Channel Groups: Cannot validate (no channel profiles configured)")
+            validation_results.append("⚠️ Groups: Cannot validate (no profiles)")
         else:
-            validation_results.append("ℹ️ Channel Groups: Not configured (optional)")
+            validation_results.append("ℹ️ Groups: Not set (optional)")
 
         # 6. Validate schedule
         scheduled_times = settings.get("scheduled_times", "").strip()
@@ -662,26 +752,40 @@ class Plugin:
             times_list = [t.strip() for t in scheduled_times.split(',') if t.strip()]
             invalid = [t for t in times_list if len(t) != 4 or not t.isdigit()]
             if invalid:
-                validation_results.append(f"❌ Scheduled Times: Invalid format - {', '.join(invalid)}")
+                validation_results.append(f"❌ Schedule: Invalid - {', '.join(invalid)}")
                 has_errors = True
             else:
-                validation_results.append(f"✅ Scheduled Times: {len(times_list)} valid times")
+                validation_results.append(f"✅ Schedule: {len(times_list)} times")
         else:
-            validation_results.append("ℹ️ Scheduled Times: Not configured")
+            validation_results.append("ℹ️ Schedule: Not set")
 
         message = "\n".join(validation_results)
         return {
             "status": "warning" if has_errors else "success",
-            "message": f"Configuration Validation:\n\n{message}"
+            "message": f"Validation:\n{message}"
         }
 
     def _save_settings(self, settings):
         """Save settings to disk"""
         try:
+            # Log what we're about to save
+            LOGGER.info("Saving settings to disk:")
+            LOGGER.info(f"  enable_scheduled_csv_export: {settings.get('enable_scheduled_csv_export', 'NOT SET')}")
+            
+            # Ensure boolean defaults are explicitly set if missing
+            if "enable_scheduled_csv_export" not in settings:
+                LOGGER.info(f"  Setting missing 'enable_scheduled_csv_export', adding default: {self.DEFAULT_SCHEDULED_CSV_EXPORT}")
+                settings["enable_scheduled_csv_export"] = self.DEFAULT_SCHEDULED_CSV_EXPORT
+            if "keep_duplicates" not in settings:
+                settings["keep_duplicates"] = self.DEFAULT_KEEP_DUPLICATES
+            if "auto_set_dummy_epg_on_hide" not in settings:
+                settings["auto_set_dummy_epg_on_hide"] = self.DEFAULT_AUTO_REMOVE_EPG
+            
             with open(self.settings_file, 'w') as f:
                 json.dump(settings, f, indent=2)
             self.saved_settings = settings
-            LOGGER.info("Settings saved successfully")
+            LOGGER.info(f"Settings saved successfully to {self.settings_file}")
+            LOGGER.info(f"  Final value of enable_scheduled_csv_export: {settings.get('enable_scheduled_csv_export')}")
         except Exception as e:
             LOGGER.error(f"Error saving settings: {e}")
 
@@ -689,8 +793,7 @@ class Plugin:
         """Parse hide rules priority text into list of rule tuples"""
         if not rules_text or not rules_text.strip():
             # Return default rules if none specified
-            default_rules = "[InactiveRegex],[BlankName],[WrongDayOfWeek],[NoEventPattern],[EmptyPlaceholder],[PastDate:0],[FutureDate:2],[ShortDescription],[ShortChannelName]"
-            rules_text = default_rules
+            rules_text = self.DEFAULT_HIDE_RULES
             logger.info("No hide rules specified, using defaults")
         
         rules = []
@@ -1084,7 +1187,7 @@ class Plugin:
             try:
                 local_tz = pytz.timezone(tz_str)
             except pytz.exceptions.UnknownTimeZoneError:
-                local_tz = pytz.timezone('America/Chicago')
+                local_tz = pytz.timezone(self.DEFAULT_TIMEZONE)
 
             now_in_tz = datetime.now(local_tz)
             now_adjusted = now_in_tz - timedelta(hours=grace_hours)
@@ -1278,6 +1381,54 @@ class Plugin:
             logger.error(f"Error clearing CSV exports: {e}")
             return {"status": "error", "message": f"Error clearing CSV exports: {e}"}
 
+    def check_scheduler_status_action(self, settings, logger):
+        """Display scheduler thread status and diagnostic information"""
+        global _bg_thread, _last_run
+        try:
+            # Count all threads with our scheduler name
+            all_threads = threading.enumerate()
+            scheduler_threads = [t for t in all_threads if "event-channel-managarr-scheduler" in t.name]
+
+            status_lines = []
+
+            # Main scheduler thread status
+            if _bg_thread and _bg_thread.is_alive():
+                status_lines.append("✅ Scheduler: Running")
+            else:
+                status_lines.append("❌ Scheduler: Not running")
+
+            # Check for multiple scheduler threads (this would be a bug)
+            if len(scheduler_threads) > 1:
+                status_lines.append(f"⚠️  WARNING: {len(scheduler_threads)} threads detected! May cause duplicates.")
+
+            # Configured scheduled times
+            scheduled_times_str = settings.get("scheduled_times", "").strip()
+            if scheduled_times_str:
+                times = self._parse_scheduled_times(scheduled_times_str)
+                if times:
+                    tz_str = self._get_system_timezone(settings)
+                    status_lines.append(f"⏰ Times: {', '.join([t.strftime('%H:%M') for t in times])} ({tz_str})")
+                else:
+                    status_lines.append("⚠️  Invalid times")
+            else:
+                status_lines.append("⏰ No times configured")
+
+            # Last run tracking
+            if _last_run:
+                last_runs = [f"{t.strftime('%H:%M')} on {d}" for t, d in _last_run.items()]
+                status_lines.append(f"📅 Last runs: {', '.join(last_runs)}")
+
+            return {
+                "status": "success",
+                "message": "\n".join(status_lines)
+            }
+
+        except Exception as e:
+            logger.error(f"Error checking scheduler status: {e}")
+            import traceback
+            logger.error(f"Traceback: {traceback.format_exc()}")
+            return {"status": "error", "message": f"Error checking scheduler status: {e}"}
+
 
 
     def update_schedule_action(self, settings, logger):
@@ -1318,12 +1469,12 @@ class Plugin:
         # First check if user specified a timezone in plugin settings
         if settings.get('timezone'):
             user_tz = settings.get('timezone')
-            LOGGER.info(f"Using user-specified timezone: {user_tz}")
+            LOGGER.debug(f"Using user-specified timezone: {user_tz}")
             return user_tz
         
-        # Otherwise use America/Chicago as default
-        LOGGER.info("Using default timezone: America/Chicago")
-        return "America/Chicago"
+        # Otherwise use default timezone
+        LOGGER.debug(f"Using default timezone: {self.DEFAULT_TIMEZONE}")
+        return self.DEFAULT_TIMEZONE
         
     def _parse_scheduled_times(self, scheduled_times_str):
         """Parse scheduled times string into list of datetime.time objects"""
@@ -1342,81 +1493,103 @@ class Plugin:
 
     def _start_background_scheduler(self, settings):
         """Start background scheduler thread"""
-        global _bg_thread
-        
-        # Stop existing scheduler if running
-        self._stop_background_scheduler()
-        
-        # Parse scheduled times
-        scheduled_times_str = settings.get("scheduled_times", "").strip()
-        if not scheduled_times_str:
-            LOGGER.info("No scheduled times configured, scheduler not started")
-            return
-        
-        scheduled_times = self._parse_scheduled_times(scheduled_times_str)
-        if not scheduled_times:
-            LOGGER.info("No valid scheduled times, scheduler not started")
-            return
-        
-        # Start new scheduler thread
-        def scheduler_loop():
-            import pytz
+        global _bg_thread, _last_run, _scheduler_lock
 
-            # Get timezone from settings
-            tz_str = self._get_system_timezone(settings)
-            try:
-                local_tz = pytz.timezone(tz_str)
-            except pytz.exceptions.UnknownTimeZoneError:
-                LOGGER.error(f"Unknown timezone: {tz_str}, falling back to America/Chicago")
-                local_tz = pytz.timezone('America/Chicago')
+        # Use lock to prevent concurrent scheduler starts
+        with _scheduler_lock:
+            # Stop existing scheduler if running
+            self._stop_background_scheduler()
 
-            # Initialize last run tracker to prevent immediate execution
-            # when scheduler starts at a time that matches a scheduled time
-            last_run = {}
+            # Parse scheduled times
+            scheduled_times_str = settings.get("scheduled_times", "").strip()
+            if not scheduled_times_str:
+                LOGGER.info("No scheduled times configured, scheduler not started")
+                return
 
-            LOGGER.info(f"Scheduler timezone: {tz_str}")
-            LOGGER.info(f"Scheduler initialized - will run at next scheduled time (not immediately)")
-            
-            while not _stop_event.is_set():
+            scheduled_times = self._parse_scheduled_times(scheduled_times_str)
+            if not scheduled_times:
+                LOGGER.info("No valid scheduled times, scheduler not started")
+                return
+
+            # Start new scheduler thread
+            def scheduler_loop():
+                import pytz
+                thread_id = threading.current_thread().name
+
+                # Get timezone from settings
+                tz_str = self._get_system_timezone(settings)
                 try:
-                    now = datetime.now(local_tz)
-                    current_date = now.date()
-                    
-                    # Check each scheduled time
-                    for scheduled_time in scheduled_times:
-                        # Create a datetime for the scheduled time today in the local timezone
-                        scheduled_dt = local_tz.localize(datetime.combine(current_date, scheduled_time))
-                        time_diff = (scheduled_dt - now).total_seconds()
-                        
-                        # Run if within 30 seconds and have not run today for this time
-                        if -30 <= time_diff <= 30 and last_run.get(scheduled_time) != current_date:
-                            LOGGER.info(f"Scheduled scan triggered at {now.strftime('%Y-%m-%d %H:%M %Z')}")
-                            try:
-                                result = self._scan_and_update_channels(settings, LOGGER, dry_run=False, is_scheduled_run=True)
-                                LOGGER.info(f"Scheduled scan completed: {result.get('message', 'Done')}")
+                    local_tz = pytz.timezone(tz_str)
+                except pytz.exceptions.UnknownTimeZoneError:
+                    LOGGER.error(f"Unknown timezone: {tz_str}, falling back to {self.DEFAULT_TIMEZONE}")
+                    local_tz = pytz.timezone(self.DEFAULT_TIMEZONE)
 
-                                # Trigger frontend refresh if changes were made
-                                if result.get("status") == "success":
-                                    results_data = result.get("results", {})
-                                    if results_data.get("to_hide", 0) > 0 or results_data.get("to_show", 0) > 0:
-                                        self._trigger_frontend_refresh(settings, LOGGER)
-                            except Exception as e:
-                                LOGGER.error(f"Error in scheduled scan: {e}")
+                LOGGER.info(f"[{thread_id}] Scheduler timezone: {tz_str}")
+                LOGGER.info(f"[{thread_id}] Scheduler initialized - will run at next scheduled time (not immediately)")
 
-                            # Mark as executed for today's date
-                            last_run[scheduled_time] = current_date
-                            break
-                    
-                    # Sleep for 30 seconds
-                    _stop_event.wait(30)
-                    
-                except Exception as e:
-                    LOGGER.error(f"Error in scheduler loop: {e}")
-                    _stop_event.wait(60)
-        
-        _bg_thread = threading.Thread(target=scheduler_loop, name="event-channel-managarr-scheduler", daemon=True)
-        _bg_thread.start()
-        LOGGER.info(f"Background scheduler started for times: {[t.strftime('%H:%M') for t in scheduled_times]}")
+                while not _stop_event.is_set():
+                    try:
+                        now = datetime.now(local_tz)
+                        current_date = now.date()
+
+                        # Check each scheduled time
+                        for scheduled_time in scheduled_times:
+                            # Create a datetime for the scheduled time today in the local timezone
+                            scheduled_dt = local_tz.localize(datetime.combine(current_date, scheduled_time))
+                            time_diff = (scheduled_dt - now).total_seconds()
+
+                            # Run if within 30 seconds and have not run today for this time
+                            # Use global _last_run to track executions across all threads
+                            if -30 <= time_diff <= 30 and _last_run.get(scheduled_time) != current_date:
+                                LOGGER.info(f"[{thread_id}] Scheduled scan triggered at {now.strftime('%Y-%m-%d %H:%M %Z')}")
+                                try:
+                                    # Reload settings from disk to get the latest configuration
+                                    # This ensures changes made via "Update Schedule" or "Validate" are picked up
+                                    try:
+                                        if os.path.exists(self.settings_file):
+                                            with open(self.settings_file, 'r') as f:
+                                                current_settings = json.load(f)
+                                            LOGGER.info(f"[{thread_id}] Reloaded settings from disk: {self.settings_file}")
+                                            LOGGER.info(f"[{thread_id}]   enable_scheduled_csv_export from file: {current_settings.get('enable_scheduled_csv_export', 'NOT SET')}")
+                                        else:
+                                            current_settings = self.saved_settings.copy() if self.saved_settings else settings
+                                            LOGGER.info(f"[{thread_id}] Settings file not found, using in-memory settings")
+                                            LOGGER.info(f"[{thread_id}]   enable_scheduled_csv_export from memory: {current_settings.get('enable_scheduled_csv_export', 'NOT SET')}")
+                                    except Exception as e:
+                                        LOGGER.warning(f"[{thread_id}] Error reloading settings from disk: {e}, using in-memory settings")
+                                        current_settings = self.saved_settings.copy() if self.saved_settings else settings
+                                        LOGGER.info(f"[{thread_id}]   enable_scheduled_csv_export from memory (error): {current_settings.get('enable_scheduled_csv_export', 'NOT SET')}")
+                                    
+                                    LOGGER.info(f"[{thread_id}] Using current settings for scheduled run")
+
+                                    result = self._scan_and_update_channels(current_settings, LOGGER, dry_run=False, is_scheduled_run=True)
+                                    LOGGER.info(f"[{thread_id}] Scheduled scan completed: {result.get('message', 'Done')}")
+
+                                    # Trigger frontend refresh if changes were made
+                                    if result.get("status") == "success":
+                                        results_data = result.get("results", {})
+                                        if results_data.get("to_hide", 0) > 0 or results_data.get("to_show", 0) > 0:
+                                            self._trigger_frontend_refresh(current_settings, LOGGER)
+                                except Exception as e:
+                                    LOGGER.error(f"[{thread_id}] Error in scheduled scan: {e}")
+
+                                # Mark as executed for today's date in global tracker
+                                _last_run[scheduled_time] = current_date
+                                LOGGER.info(f"[{thread_id}] Marked {scheduled_time.strftime('%H:%M')} as executed for {current_date}")
+                                break
+
+                        # Sleep for configured interval
+                        _stop_event.wait(self.SCHEDULER_CHECK_INTERVAL)
+
+                    except Exception as e:
+                        LOGGER.error(f"[{thread_id}] Error in scheduler loop: {e}")
+                        _stop_event.wait(60)
+
+                LOGGER.info(f"[{thread_id}] Scheduler thread exiting")
+
+            _bg_thread = threading.Thread(target=scheduler_loop, name="event-channel-managarr-scheduler", daemon=True)
+            _bg_thread.start()
+            LOGGER.info(f"Background scheduler started for times: {[t.strftime('%H:%M') for t in scheduled_times]}")
 
 
 
@@ -1424,11 +1597,16 @@ class Plugin:
         """Stop background scheduler thread"""
         global _bg_thread
         if _bg_thread and _bg_thread.is_alive():
-            LOGGER.info("Stopping background scheduler")
+            LOGGER.info(f"Stopping background scheduler (thread: {_bg_thread.name})")
             _stop_event.set()
-            _bg_thread.join(timeout=5)
+            _bg_thread.join(timeout=self.SCHEDULER_STOP_TIMEOUT)
+
+            if _bg_thread.is_alive():
+                LOGGER.warning(f"Background scheduler thread did not stop within timeout - may still be running!")
+            else:
+                LOGGER.info("Background scheduler stopped successfully")
+
             _stop_event.clear()
-            LOGGER.info("Background scheduler stopped")
 
     def _get_api_token(self, settings, logger):
         """Get an API access token using username and password."""
@@ -1653,9 +1831,9 @@ class Plugin:
             
             # Only log if it's a "real" event (has a description)
             if event_description:
-                 logger.info(f"Found {len(channels)} duplicate channels for '{normalized_name} | {event_description}'")
+                 logger.debug(f"Found {len(channels)} duplicate channels for '{normalized_name} | {event_description}'")
             else:
-                 logger.info(f"Found {len(channels)} duplicate channels for base name '{normalized_name}' (no event desc)")
+                 logger.debug(f"Found {len(channels)} duplicate channels for base name '{normalized_name}' (no event desc)")
             
             # Sort channels based on the selected strategy
             if strategy == "highest_number":
@@ -1669,11 +1847,11 @@ class Plugin:
             channel_to_keep = channels_sorted[0]
             channels_to_hide_in_group = channels_sorted[1:]
             
-            logger.info(f"Keeping channel {channel_to_keep['id']} (#{channel_to_keep['number']}): {channel_to_keep['name']}")
+            logger.debug(f"Keeping channel {channel_to_keep['id']} (#{channel_to_keep['number']}): {channel_to_keep['name']}")
             
             # Mark the rest for hiding
             for dup in channels_to_hide_in_group:
-                logger.info(f"Marking duplicate for hiding: {dup['id']} (#{dup['number']}): {dup['name']}")
+                logger.debug(f"Marking duplicate for hiding: {dup['id']} (#{dup['number']}): {dup['name']}")
                 duplicate_hide_list.append(dup['id'])
                 
                 # Remove from show list if it was going to be shown
@@ -1915,7 +2093,7 @@ class Plugin:
                 channels_to_show,
                 logger,
                 strategy=settings.get("duplicate_strategy", "lowest_number"),
-                keep_duplicates=settings.get("keep_duplicates", False)
+                keep_duplicates=self._get_bool_setting(settings, "keep_duplicates", False)
             )
             
             # Build final results with duplicate information
@@ -1939,7 +2117,7 @@ class Plugin:
                     else:
                         final_action = "No change"
                 
-                logger.info(f"Decision for Channel {channel_id} ('{channel_info['channel_name']}'): Action={final_action}, Reason='{reason}'")
+                logger.debug(f"Decision for Channel {channel_id} ('{channel_info['channel_name']}'): Action={final_action}, Reason='{reason}'")
 
                 # Extract rule tag from reason for easier filtering
                 hide_rule = ""
@@ -1971,10 +2149,20 @@ class Plugin:
             csv_filepath = None
             should_create_csv = False
             if is_scheduled_run:
-                should_create_csv = settings.get("enable_scheduled_csv_export", False)
+                # Log the raw value from settings
+                raw_value = settings.get('enable_scheduled_csv_export', 'NOT SET')
+                logger.info(f"Scheduled run - CSV export check:")
+                logger.info(f"  Raw setting value: {raw_value} (type: {type(raw_value).__name__})")
+                logger.info(f"  Setting key exists in dict: {'enable_scheduled_csv_export' in settings}")
+                
+                # Get the boolean value
+                should_create_csv = self._get_bool_setting(settings, "enable_scheduled_csv_export", False)
+                logger.info(f"  Resolved to boolean: {should_create_csv}")
+                logger.info(f"  CSV export will be: {'ENABLED' if should_create_csv else 'DISABLED'}")
             else:
                 # For manual runs (Dry Run, Run Now), always create the CSV
                 should_create_csv = True
+                logger.info(f"Manual run - CSV export enabled: {should_create_csv}")
 
             if should_create_csv:
                 timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -2055,7 +2243,7 @@ class Plugin:
                     logger.info("Visibility changes applied successfully to all profiles")
 
             # Handle automatic EPG removal if enabled
-            if not dry_run and settings.get("auto_set_dummy_epg_on_hide", False) and channels_to_hide:
+            if not dry_run and self._get_bool_setting(settings, "auto_set_dummy_epg_on_hide", False) and channels_to_hide:
                 logger.info(f"Automatically removing EPG data from {len(channels_to_hide)} hidden channels...")
                 channels_to_update_epg = Channel.objects.filter(id__in=channels_to_hide)
                 updated_count = 0
@@ -2246,13 +2434,13 @@ class Plugin:
                         # Delete all EPG data for this channel
                         deleted_count = ProgramData.objects.filter(epg=channel.epg_data).delete()[0]
                         total_epg_removed += deleted_count
-                        logger.info(f"Removed {deleted_count} EPG entries from channel {channel_number} - {channel_name}")
+                        logger.debug(f"Removed {deleted_count} EPG entries from channel {channel_number} - {channel_name}")
                     
                     # Set channel EPG to null (dummy EPG)
                     channel.epg_data = None
                     channel.save()
                     channels_set_to_dummy += 1
-                    logger.info(f"Set channel {channel_number} - {channel_name} to dummy EPG")
+                    logger.debug(f"Set channel {channel_number} - {channel_name} to dummy EPG")
                     
                     results.append({
                         'channel_id': channel_id,
@@ -2356,4 +2544,3 @@ actions = Plugin.actions
 # Define what this module exports
 
 __all__ = ['plugin', 'fields', 'actions']
-
