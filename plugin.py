@@ -38,7 +38,7 @@ class Plugin:
     """Event Channel Managarr Plugin"""
 
     name = "Event Channel Managarr"
-    version = "0.4.8"
+    version = "0.4.9"
     description = "Automatically manage channel visibility based on EPG data and channel names. Hides channels with no events and shows channels with active events.\n\nGitHub: https://github.com/PiratesIRC/Dispatcharr-Event-Channel-Managarr-Plugin"
     
     # ============================================================================
@@ -892,7 +892,11 @@ class Plugin:
             'THURS': 3,
             'FRI': 4,
             'SAT': 5,
-            'SUN': 6
+            'SUN': 6,
+            # NFL abbreviations
+            'MNF': 0,  # Monday Night Football
+            'TNF': 3,  # Thursday Night Football
+            'SNF': 6   # Sunday Night Football
         }
 
         # Search for day names in the channel name
