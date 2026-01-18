@@ -38,7 +38,7 @@ class Plugin:
     """Event Channel Managarr Plugin"""
 
     name = "Event Channel Managarr"
-    version = "0.4.9"
+    version = "0.5.0"
     description = "Automatically manage channel visibility based on EPG data and channel names. Hides channels with no events and shows channels with active events.\n\nGitHub: https://github.com/PiratesIRC/Dispatcharr-Event-Channel-Managarr-Plugin"
     
     # ============================================================================
@@ -1066,8 +1066,15 @@ class Plugin:
             if extracted_day is None:
                 return False, None  # Skip rule if no day found
 
-            # Get today's day of week (0 = Monday, 6 = Sunday)
-            today_day = datetime.now().weekday()
+            # Get today's day of week using user's timezone (0 = Monday, 6 = Sunday)
+            tz_str = self._get_system_timezone(settings)
+            try:
+                local_tz = pytz.timezone(tz_str)
+            except pytz.exceptions.UnknownTimeZoneError:
+                local_tz = pytz.timezone(self.DEFAULT_TIMEZONE)
+
+            now_in_tz = datetime.now(local_tz)
+            today_day = now_in_tz.weekday()
 
             day_names = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday']
             extracted_day_name = day_names[extracted_day]
