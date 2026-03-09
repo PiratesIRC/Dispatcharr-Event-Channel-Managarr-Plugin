@@ -10,7 +10,6 @@ import json
 import csv
 import os
 import re
-import requests
 import time
 import threading
 import pytz
@@ -21,12 +20,12 @@ from datetime import datetime, timedelta
 from django.utils import timezone
 
 # Django model imports
-from apps.channels.models import Channel, ChannelProfileMembership, ChannelProfile
+from apps.channels.models import Channel, ChannelProfileMembership, ChannelProfile, Stream
 from apps.epg.models import ProgramData
+from django.db import transaction
+from core.utils import send_websocket_update
 
-# Setup logging using Dispatcharr's format
 LOGGER = logging.getLogger("plugins.event_channel_managarr")
-LOGGER.setLevel(logging.INFO)
 
 # Background scheduling globals
 _bg_thread = None
@@ -38,7 +37,7 @@ class Plugin:
     """Event Channel Managarr Plugin"""
 
     name = "Event Channel Managarr"
-    version = "0.5.0"
+    version = "0.6.0a"
     description = "Automatically manage channel visibility based on EPG data and channel names. Hides channels with no events and shows channels with active events.\n\nGitHub: https://github.com/PiratesIRC/Dispatcharr-Event-Channel-Managarr-Plugin"
     
     # ============================================================================
@@ -69,9 +68,6 @@ class Plugin:
     
     # Default keep duplicates setting
     DEFAULT_KEEP_DUPLICATES = False
-    
-    # API token cache duration (in seconds)
-    TOKEN_CACHE_DURATION = 1800  # 30 minutes
     
     # Version check interval (in seconds)
     VERSION_CHECK_INTERVAL = 86400  # 24 hours
@@ -174,28 +170,6 @@ class Plugin:
                 "type": "info",
                 "help_text": version_message
             },
-        {
-            "id": "dispatcharr_url",
-            "label": "🌐 Dispatcharr URL",
-            "type": "string",
-            "default": "",
-            "placeholder": "http://192.168.1.10:9191",
-            "help_text": "URL of your Dispatcharr instance (from your browser's address bar). This is required.",
-        },
-
-        {
-            "id": "dispatcharr_username",
-            "label": "👤 Dispatcharr Admin Username",
-            "type": "string",
-            "help_text": "Your admin username for the Dispatcharr UI. Required for API access.",
-        },
-        {
-            "id": "dispatcharr_password",
-            "label": "🔑 Dispatcharr Admin Password",
-            "type": "string",
-            "input_type": "password",
-            "help_text": "Your admin password for the Dispatcharr UI. Required for API access.",
-        },
         {
             "id": "timezone",
             "label": "🌍 Timezone",
@@ -321,7 +295,7 @@ class Plugin:
         {
             "id": "validate_configuration",
             "label": "✅ Validate Configuration",
-            "description": "Test and validate all plugin settings (regex patterns, rules, API connectivity)",
+            "description": "Test and validate all plugin settings (regex patterns, rules, DB connectivity)",
             "confirm": { "required": False }
         },
         {
@@ -375,11 +349,6 @@ class Plugin:
 
         # Version check cache
         self.cached_version_info = None
-
-        # API token cache
-        self.cached_api_token = None
-        self.token_cache_time = None
-        self.token_cache_duration = self.TOKEN_CACHE_DURATION
 
         LOGGER.info(f"{self.name} Plugin v{self.version} initialized")
 
@@ -559,9 +528,7 @@ class Plugin:
             if params:
                 merged_settings.update(params)
 
-            if action == "load_settings":
-                return self.load_settings_action(merged_settings, logger)
-            elif action == "update_schedule":
+            if action == "update_schedule":
                 return self.update_schedule_action(merged_settings, logger)
             elif action == "dry_run":
                 return self.dry_run_action(merged_settings, logger)
@@ -628,45 +595,35 @@ class Plugin:
                 validation_results.append(f"❌ {label}: {str(e)}")
                 has_errors = True
 
-        # 3. Validate API connectivity
-        token = None
+        # 3. Validate database connectivity
+        db_ok = False
         try:
-            token, error = self._get_api_token(settings, logger)
-            if error:
-                validation_results.append(f"❌ API Auth: {error}")
-                has_errors = True
-            else:
-                validation_results.append("✅ API Auth: OK")
+            channel_count = Channel.objects.count()
+            profile_count = ChannelProfile.objects.count()
+            stream_count = Stream.objects.count()
+            validation_results.append(
+                f"✅ DB OK ({channel_count} channels, {profile_count} profiles, {stream_count} streams)"
+            )
+            db_ok = True
         except Exception as e:
-            validation_results.append(f"❌ API: {str(e)}")
+            validation_results.append(f"❌ DB error: {str(e)[:50]}")
             has_errors = True
 
         # 4. Validate channel profile names
         channel_profile_names_str = settings.get("channel_profile_name", "").strip()
-        if channel_profile_names_str and token:
+        if channel_profile_names_str and db_ok:
             try:
-                # Parse profile names from settings
                 channel_profile_names = [p.strip() for p in channel_profile_names_str.split(',') if p.strip()]
 
-                # Fetch all profiles from API
-                profiles = self._get_api_data("/api/channels/profiles/", token, settings, logger)
-
-                # Check which profiles exist
                 found_profiles = []
                 missing_profiles = []
 
                 for profile_name in channel_profile_names:
-                    profile_found = False
-                    for profile in profiles:
-                        if profile.get('name', '').strip().upper() == profile_name.upper():
-                            found_profiles.append(profile_name)
-                            profile_found = True
-                            break
-
-                    if not profile_found:
+                    if ChannelProfile.objects.filter(name__iexact=profile_name).exists():
+                        found_profiles.append(profile_name)
+                    else:
                         missing_profiles.append(profile_name)
 
-                # Report results
                 if missing_profiles:
                     validation_results.append(f"❌ Profiles: Not found - {', '.join(missing_profiles)}")
                     has_errors = True
@@ -677,32 +634,25 @@ class Plugin:
             except Exception as e:
                 validation_results.append(f"❌ Profiles: {str(e)}")
                 has_errors = True
-        elif channel_profile_names_str and not token:
-            validation_results.append("⚠️ Profiles: Cannot validate (API failed)")
+        elif channel_profile_names_str and not db_ok:
+            validation_results.append("⚠️ Profiles: Cannot validate (DB failed)")
         else:
             validation_results.append("❌ Profiles: Required")
             has_errors = True
 
         # 5. Validate channel groups
         channel_groups_str = settings.get("channel_groups", "").strip()
-        if channel_groups_str and token and channel_profile_names_str:
+        if channel_groups_str and db_ok and channel_profile_names_str:
             try:
-                # Parse group names from settings
                 group_names = [g.strip() for g in channel_groups_str.split(',') if g.strip()]
-
-                # Parse profile names from settings
                 channel_profile_names = [p.strip() for p in channel_profile_names_str.split(',') if p.strip()]
 
-                # Fetch profiles from API
-                profiles = self._get_api_data("/api/channels/profiles/", token, settings, logger)
-
-                # Find matching profile IDs
-                profile_ids = []
-                for profile_name in channel_profile_names:
-                    for profile in profiles:
-                        if profile.get('name', '').strip().upper() == profile_name.upper():
-                            profile_ids.append(profile.get('id'))
-                            break
+                # Find matching profile IDs via ORM
+                profile_ids = list(
+                    ChannelProfile.objects.filter(
+                        name__in=channel_profile_names
+                    ).values_list('id', flat=True)
+                )
 
                 if profile_ids:
                     # Get all channels in the profiles
@@ -739,8 +689,8 @@ class Plugin:
             except Exception as e:
                 validation_results.append(f"❌ Groups: {str(e)}")
                 has_errors = True
-        elif channel_groups_str and not token:
-            validation_results.append("⚠️ Groups: Cannot validate (API failed)")
+        elif channel_groups_str and not db_ok:
+            validation_results.append("⚠️ Groups: Cannot validate (DB failed)")
         elif channel_groups_str and not channel_profile_names_str:
             validation_results.append("⚠️ Groups: Cannot validate (no profiles)")
         else:
@@ -1619,150 +1569,6 @@ class Plugin:
 
             _stop_event.clear()
 
-    def _get_api_token(self, settings, logger):
-        """Get an API access token using username and password."""
-        import time
-
-        # Check if we have a valid cached token
-        if self.cached_api_token and self.token_cache_time:
-            elapsed_time = time.time() - self.token_cache_time
-            if elapsed_time < self.token_cache_duration:
-                logger.info("Successfully obtained API access via CACHED token")
-                return self.cached_api_token, None
-            else:
-                logger.info("Cached API token expired, requesting new token")
-
-        dispatcharr_url = settings.get("dispatcharr_url", "").strip().rstrip('/')
-        username = settings.get("dispatcharr_username", "")
-        password = settings.get("dispatcharr_password", "")
-
-        if not all([dispatcharr_url, username, password]):
-            return None, "Dispatcharr URL, Username, and Password must be configured in the plugin settings."
-
-        try:
-            url = f"{dispatcharr_url}/api/accounts/token/"
-            payload = {"username": username, "password": password}
-
-            logger.info(f"Attempting to authenticate with Dispatcharr at: {url}")
-            response = requests.post(url, json=payload, timeout=15)
-
-            if response.status_code == 401:
-                logger.error("Authentication failed - invalid credentials")
-                return None, "Authentication failed. Please check your username and password in the plugin settings."
-            elif response.status_code == 404:
-                logger.error(f"API endpoint not found - check Dispatcharr URL: {dispatcharr_url}")
-                return None, f"API endpoint not found. Please verify your Dispatcharr URL: {dispatcharr_url}"
-            elif response.status_code >= 500:
-                logger.error(f"Server error from Dispatcharr: {response.status_code}")
-                return None, f"Dispatcharr server error ({response.status_code}). Please check if Dispatcharr is running properly."
-            
-            response.raise_for_status()
-            token_data = response.json()
-            access_token = token_data.get("access")
-
-            if not access_token:
-                logger.error("No access token returned from API")
-                return None, "Login successful, but no access token was returned by the API."
-
-            # Cache the token
-            import time
-            self.cached_api_token = access_token
-            self.token_cache_time = time.time()
-
-            logger.info("Successfully obtained new API access token (cached for 30 minutes)")
-            return access_token, None
-            
-        except requests.exceptions.ConnectionError as e:
-            logger.error(f"Connection error: {e}")
-            return None, f"Unable to connect to Dispatcharr at {dispatcharr_url}. Please check the URL and ensure Dispatcharr is running."
-        except requests.exceptions.Timeout as e:
-            logger.error(f"Request timeout: {e}")
-            return None, "Request timed out while connecting to Dispatcharr. Please check your network connection."
-        except requests.RequestException as e:
-            logger.error(f"Request error: {e}")
-            return None, f"Network error occurred while authenticating: {e}"
-        except json.JSONDecodeError as e:
-            logger.error(f"Invalid JSON response: {e}")
-            return None, "Invalid response from Dispatcharr API. Please check if the URL is correct."
-        except Exception as e:
-            logger.error(f"Unexpected error during authentication: {e}")
-            return None, f"Unexpected error during authentication: {e}"
-
-    def _get_api_data(self, endpoint, token, settings, logger):
-        """Helper to perform GET requests to the Dispatcharr API."""
-        dispatcharr_url = settings.get("dispatcharr_url", "").strip().rstrip('/')
-        url = f"{dispatcharr_url}{endpoint}"
-        headers = {'Authorization': f'Bearer {token}', 'Accept': 'application/json'}
-
-        try:
-            response = requests.get(url, headers=headers, timeout=30)
-
-            if response.status_code == 401:
-                logger.error("API token expired or invalid")
-                # Invalidate cached token
-                self.cached_api_token = None
-                self.token_cache_time = None
-                raise Exception("API authentication failed. Token may have expired.")
-            elif response.status_code == 403:
-                logger.error("API access forbidden")
-                raise Exception("API access forbidden. Check user permissions.")
-            elif response.status_code == 404:
-                logger.error(f"API endpoint not found: {endpoint}")
-                raise Exception(f"API endpoint not found: {endpoint}")
-            
-            response.raise_for_status()
-            
-            if not response.text or response.text.strip() == '':
-                logger.warning(f"Empty response from {endpoint}, returning empty list")
-                return []
-            
-            try:
-                json_data = response.json()
-            except json.JSONDecodeError as e:
-                logger.error(f"Failed to parse JSON from {endpoint}: {e}")
-                logger.error(f"Response text: {response.text}")
-                raise Exception(f"Invalid JSON response from {endpoint}: {e}")
-            
-            if isinstance(json_data, dict):
-                return json_data.get('results', json_data)
-            elif isinstance(json_data, list):
-                return json_data
-            return []
-            
-        except requests.exceptions.RequestException as e:
-            logger.error(f"API request failed for {endpoint}: {e}")
-            raise Exception(f"API request failed: {e}")
-
-    def _patch_api_data(self, endpoint, token, payload, settings, logger):
-        """Helper to perform PATCH requests to the Dispatcharr API."""
-        dispatcharr_url = settings.get("dispatcharr_url", "").strip().rstrip('/')
-        url = f"{dispatcharr_url}{endpoint}"
-        headers = {'Authorization': f'Bearer {token}', 'Content-Type': 'application/json'}
-
-        try:
-            logger.info(f"Making API PATCH request to: {endpoint}")
-            response = requests.patch(url, headers=headers, json=payload, timeout=60)
-
-            if response.status_code == 401:
-                logger.error("API token expired or invalid")
-                # Invalidate cached token
-                self.cached_api_token = None
-                self.token_cache_time = None
-                raise Exception("API authentication failed. Token may have expired.")
-            elif response.status_code == 403:
-                logger.error("API access forbidden")
-                raise Exception("API access forbidden. Check user permissions.")
-            elif response.status_code == 404:
-                logger.error(f"API endpoint not found: {endpoint}")
-                raise Exception(f"API endpoint not found: {endpoint}")
-            
-            response.raise_for_status()
-            return response.json()
-            
-        except requests.exceptions.RequestException as e:
-            logger.error(f"API PATCH request failed for {endpoint}: {e}")
-            raise Exception(f"API PATCH request failed: {e}")
-
     def _normalize_channel_name(self, channel_name):
         """Normalize channel name for duplicate detection by removing event details"""
         if not channel_name:
@@ -1918,29 +1724,16 @@ class Plugin:
             
 
             
-            # Get API token
-            token, error = self._get_api_token(settings, logger)
-            if error:
-                return {"status": "error", "message": error}
-            
-            # Get Channel Profiles
+            # Get Channel Profiles via ORM
             logger.info(f"Fetching Channel Profile(s): {', '.join(channel_profile_names)}")
-            profiles = self._get_api_data("/api/channels/profiles/", token, settings, logger)
-            
-            # Find all matching profile IDs
             profile_ids = []
             found_profile_names = []
             for profile_name in channel_profile_names:
-                profile_id = None
-                for profile in profiles:
-                    if profile.get('name', '').strip().upper() == profile_name.upper():
-                        profile_id = profile.get('id')
-                        found_profile_names.append(profile_name)
-                        break
-                
-                if profile_id:
-                    profile_ids.append(profile_id)
-                else:
+                try:
+                    profile = ChannelProfile.objects.get(name__iexact=profile_name.strip())
+                    profile_ids.append(profile.id)
+                    found_profile_names.append(profile_name)
+                except ChannelProfile.DoesNotExist:
                     logger.warning(f"Channel Profile '{profile_name}' not found")
             
             if not profile_ids:
@@ -2220,38 +2013,40 @@ class Plugin:
             
             # Apply changes if not dry run
             if not dry_run and (channels_to_hide or channels_to_show):
-                # Build bulk update payload
-                channels_payload = []
-                
                 # Log channels being hidden with reasons
                 for channel_id in channels_to_hide:
-                    channels_payload.append({'channel_id': channel_id, 'enabled': False})
                     if channel_id in channel_info_map:
                         info = channel_info_map[channel_id]
-                        # Check if this is a duplicate
                         if channel_id in duplicate_hide_list:
                             reason = "Duplicate channel (keeping better match)"
                         else:
                             reason = info['reason']
                         logger.debug(f"Hiding channel {channel_id} (#{info['channel_number']}) '{info['channel_name']}' - Reason: {reason}")
-                
+
                 # Log channels being shown with reasons
                 for channel_id in channels_to_show:
-                    channels_payload.append({'channel_id': channel_id, 'enabled': True})
                     if channel_id in channel_info_map:
                         info = channel_info_map[channel_id]
                         logger.debug(f"Showing channel {channel_id} (#{info['channel_number']}) '{info['channel_name']}' - Reason: {info['reason']}")
-                
-                if channels_payload:
-                    logger.info(f"Applying visibility changes to {len(channels_payload)} channels across {len(profile_ids)} profile(s)...")
-                    payload = {'channels': channels_payload}
-                    
-                    # Apply changes to each profile
-                    for profile_id in profile_ids:
-                        self._patch_api_data(f"/api/channels/profiles/{profile_id}/channels/bulk-update/", 
-                                            token, payload, settings, logger)
-                    
-                    logger.info("Visibility changes applied successfully to all profiles")
+
+                # Apply visibility changes via ORM
+                total_changes = len(channels_to_hide) + len(channels_to_show)
+                logger.info(f"Applying visibility changes to {total_changes} channels across {len(profile_ids)} profile(s)...")
+
+                with transaction.atomic():
+                    if channels_to_hide:
+                        ChannelProfileMembership.objects.filter(
+                            channel_id__in=channels_to_hide,
+                            channel_profile_id__in=profile_ids
+                        ).update(enabled=False)
+
+                    if channels_to_show:
+                        ChannelProfileMembership.objects.filter(
+                            channel_id__in=channels_to_show,
+                            channel_profile_id__in=profile_ids
+                        ).update(enabled=True)
+
+                logger.info("Visibility changes applied successfully to all profiles")
 
             # Handle automatic EPG removal if enabled
             if not dry_run and self._get_bool_setting(settings, "auto_set_dummy_epg_on_hide", False) and channels_to_hide:
@@ -2522,36 +2317,14 @@ class Plugin:
     def _trigger_frontend_refresh(self, settings, logger):
         """Trigger frontend channel list refresh via WebSocket"""
         try:
-            from channels.layers import get_channel_layer
-            from asgiref.sync import async_to_sync
-            
-            channel_layer = get_channel_layer()
-            if channel_layer:
-                # Send WebSocket message to trigger frontend refresh
-                async_to_sync(channel_layer.group_send)(
-                    "dispatcharr_updates",
-                    {
-                        "type": "channels.updated",
-                        "message": "Channel visibility updated by Event Channel Managarr"
-                    }
-                )
-                logger.info("Frontend refresh triggered via WebSocket")
-                return True
+            send_websocket_update('updates', 'update', {
+                "type": "plugin",
+                "plugin": self.name,
+                "message": "Channels updated"
+            })
+            logger.info("Frontend refresh triggered via WebSocket")
+            return True
         except Exception as e:
             logger.warning(f"Could not trigger frontend refresh: {e}")
         return False
 
-
-# Export for Dispatcharr plugin system
-
-# Create the single plugin instance
-plugin = Plugin()
-
-# Export the components the loader needs
-# Note: fields is now a property on the instance, not the class
-fields = plugin.fields
-actions = Plugin.actions
-
-# Define what this module exports
-
-__all__ = ['plugin', 'fields', 'actions']
