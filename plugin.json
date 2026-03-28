@@ -1,6 +1,6 @@
 {
   "name": "Event Channel Managarr",
-  "version": "0.6.0a",
+  "version": "0.6.0b",
   "description": "Automates channel visibility by hiding channels without events and showing those with events, based on EPG data and channel names.",
   "author": "community",
   "help_url": "https://github.com/PiratesIRC/Dispatcharr-Event-Channel-Managarr-Plugin",

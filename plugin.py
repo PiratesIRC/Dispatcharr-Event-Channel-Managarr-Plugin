@@ -8,6 +8,10 @@ Automatically hides channels with no events and shows channels with events
 import logging
 import json
 import csv
+try:
+    import fcntl
+except ImportError:
+    fcntl = None  # Windows — file locking unavailable (not needed outside Docker)
 import os
 import re
 import time
@@ -30,14 +34,39 @@ LOGGER = logging.getLogger("plugins.event_channel_managarr")
 # Background scheduling globals
 _bg_thread = None
 _stop_event = threading.Event()
-_last_run = {}  # Shared execution tracking across all scheduler instances
 _scheduler_lock = threading.Lock()  # Prevent concurrent scheduler starts
+_LAST_RUN_FILE = "/data/event_channel_managarr_last_run.json"
+_SCAN_LOCK_FILE = "/data/event_channel_managarr_scan.lock"
+
+
+def _read_last_run():
+    """Read the last-run tracker from disk (shared across all uwsgi workers)."""
+    try:
+        if os.path.exists(_LAST_RUN_FILE):
+            with open(_LAST_RUN_FILE, 'r') as f:
+                return json.load(f)
+    except (json.JSONDecodeError, OSError):
+        pass
+    return {}
+
+
+def _write_last_run(data):
+    """Write the last-run tracker to disk (shared across all uwsgi workers).
+    Must only be called while holding the scan lock.
+    Uses atomic write (temp + rename) to prevent corruption from crashes."""
+    tmp_file = _LAST_RUN_FILE + ".tmp"
+    try:
+        with open(tmp_file, 'w') as f:
+            json.dump(data, f)
+        os.replace(tmp_file, _LAST_RUN_FILE)
+    except OSError as e:
+        LOGGER.error(f"Failed to write last-run file: {e}")
 
 class Plugin:
     """Event Channel Managarr Plugin"""
 
     name = "Event Channel Managarr"
-    version = "0.6.0a"
+    version = "0.6.0b"
     description = "Automatically manage channel visibility based on EPG data and channel names. Hides channels with no events and shows channels with active events.\n\nGitHub: https://github.com/PiratesIRC/Dispatcharr-Event-Channel-Managarr-Plugin"
     
     # ============================================================================
@@ -1344,7 +1373,7 @@ class Plugin:
 
     def check_scheduler_status_action(self, settings, logger):
         """Display scheduler thread status and diagnostic information"""
-        global _bg_thread, _last_run
+        global _bg_thread
         try:
             # Count all threads with our scheduler name
             all_threads = threading.enumerate()
@@ -1374,9 +1403,10 @@ class Plugin:
             else:
                 status_lines.append("⏰ No times configured")
 
-            # Last run tracking
-            if _last_run:
-                last_runs = [f"{t.strftime('%H:%M')} on {d}" for t, d in _last_run.items()]
+            # Last run tracking (read from shared file across all workers)
+            last_run_data = _read_last_run()
+            if last_run_data:
+                last_runs = [f"{time_str} on {date_str}" for time_str, date_str in last_run_data.items()]
                 status_lines.append(f"📅 Last runs: {', '.join(last_runs)}")
 
             return {
@@ -1454,7 +1484,7 @@ class Plugin:
 
     def _start_background_scheduler(self, settings):
         """Start background scheduler thread"""
-        global _bg_thread, _last_run, _scheduler_lock
+        global _bg_thread, _scheduler_lock
 
         # Use lock to prevent concurrent scheduler starts
         with _scheduler_lock:
@@ -1500,10 +1530,33 @@ class Plugin:
                             time_diff = (scheduled_dt - now).total_seconds()
 
                             # Run if within 30 seconds and have not run today for this time
-                            # Use global _last_run to track executions across all threads
-                            if -30 <= time_diff <= 30 and _last_run.get(scheduled_time) != current_date:
-                                LOGGER.info(f"[{thread_id}] Scheduled scan triggered at {now.strftime('%Y-%m-%d %H:%M %Z')}")
+                            # Use file-based tracking shared across all uwsgi workers
+                            time_key = scheduled_time.strftime('%H:%M')
+                            last_run_data = _read_last_run()
+                            already_ran = last_run_data.get(time_key) == str(current_date)
+
+                            if -30 <= time_diff <= 30 and not already_ran:
+                                # Acquire cross-process file lock to prevent concurrent scans
+                                lock_fd = None
+                                if fcntl:
+                                    try:
+                                        lock_fd = open(_SCAN_LOCK_FILE, 'w')
+                                        fcntl.flock(lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                                    except (OSError, IOError):
+                                        LOGGER.info(f"[{thread_id}] Another worker is already running the scheduled scan, skipping")
+                                        if lock_fd:
+                                            lock_fd.close()
+                                        break
+
                                 try:
+                                    # Re-check after acquiring lock (another worker may have just finished)
+                                    last_run_data = _read_last_run()
+                                    if last_run_data.get(time_key) == str(current_date):
+                                        LOGGER.info(f"[{thread_id}] Scan already completed by another worker, skipping")
+                                        break
+
+                                    LOGGER.info(f"[{thread_id}] Scheduled scan triggered at {now.strftime('%Y-%m-%d %H:%M %Z')}")
+
                                     # Reload settings from disk to get the latest configuration
                                     # This ensures changes made via "Update Schedule" or "Validate" are picked up
                                     try:
@@ -1520,7 +1573,7 @@ class Plugin:
                                         LOGGER.warning(f"[{thread_id}] Error reloading settings from disk: {e}, using in-memory settings")
                                         current_settings = self.saved_settings.copy() if self.saved_settings else settings
                                         LOGGER.info(f"[{thread_id}]   enable_scheduled_csv_export from memory (error): {current_settings.get('enable_scheduled_csv_export', 'NOT SET')}")
-                                    
+
                                     LOGGER.info(f"[{thread_id}] Using current settings for scheduled run")
 
                                     result = self._scan_and_update_channels(current_settings, LOGGER, dry_run=False, is_scheduled_run=True)
@@ -1534,9 +1587,28 @@ class Plugin:
                                 except Exception as e:
                                     LOGGER.error(f"[{thread_id}] Error in scheduled scan: {e}")
 
-                                # Mark as executed for today's date in global tracker
-                                _last_run[scheduled_time] = current_date
-                                LOGGER.info(f"[{thread_id}] Marked {scheduled_time.strftime('%H:%M')} as executed for {current_date}")
+                                    # Mark as executed for today's date in shared file tracker
+                                    # (even on failure, to prevent retry storms that caused the original bug)
+                                    last_run_data = _read_last_run()
+                                    last_run_data[time_key] = str(current_date)
+                                    _write_last_run(last_run_data)
+                                    LOGGER.info(f"[{thread_id}] Marked {time_key} as executed for {current_date} (after error)")
+                                else:
+                                    # Mark as executed on success
+                                    last_run_data = _read_last_run()
+                                    last_run_data[time_key] = str(current_date)
+                                    _write_last_run(last_run_data)
+                                    LOGGER.info(f"[{thread_id}] Marked {time_key} as executed for {current_date}")
+                                finally:
+                                    # Always release the file lock
+                                    if lock_fd:
+                                        try:
+                                            if fcntl:
+                                                fcntl.flock(lock_fd, fcntl.LOCK_UN)
+                                            lock_fd.close()
+                                        except OSError:
+                                            pass
+
                                 break
 
                         # Sleep for configured interval
