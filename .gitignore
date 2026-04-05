@@ -56,3 +56,14 @@ venv.bak/
 # OS
 .DS_Store
 Thumbs.db
+
+# AI/Tool config
+.claude/
+.serena/
+GEMINI.md
+
+# Local files
+Event-Channel-Managarr.txt
+Event-Channel-Managarr.zip
+SCHEDULED_TASKS_GUIDE.md
+zip.cmd
