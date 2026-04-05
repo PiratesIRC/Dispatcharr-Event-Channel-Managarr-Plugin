@@ -2,8 +2,10 @@
   "name": "Event Channel Managarr",
   "version": "0.7.0",
   "description": "Automates channel visibility by hiding channels without events and showing those with events, based on EPG data and channel names.",
-  "author": "community",
-  "help_url": "https://github.com/PiratesIRC/Dispatcharr-Event-Channel-Managarr-Plugin",
+  "author": "PiratesIRC",
+  "license": "MIT",
+  "repo_url": "https://github.com/PiratesIRC/Dispatcharr-Event-Channel-Managarr-Plugin",
+  "min_dispatcharr_version": "v0.20.0",
   "fields": [
     {"id": "timezone", "label": "Timezone", "type": "select", "default": "America/Chicago"},
     {"id": "channel_profile_name", "label": "Channel Profile Names (Required)", "type": "string", "default": ""},
