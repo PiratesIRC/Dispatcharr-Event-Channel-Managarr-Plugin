@@ -21,7 +21,8 @@ A Dispatcharr plugin that automatically manages channel visibility based on EPG 
 * **Day-of-Week Logic**: Use the `[WrongDayOfWeek]` rule to hide channels named for a specific day (e.g., "Saturday Night Fights") when it's not that day.
 * **Multi-Profile Support**: Monitor and manage channels across **multiple Channel Profiles** at once (e.g., "PPV Events, Sports Profile").
 * **Configurable Duplicate Handling**: Choose your strategy for handling duplicate events: keep the one with the **lowest number**, **highest number**, or **longest name**. Optionally keep all duplicate channels visible.
-* **API Token Caching**: Automatically caches authentication tokens for 30 minutes to reduce API overhead and improve performance.
+* **Direct Django ORM Integration**: Operates directly within Dispatcharr's Django environment for fast, reliable channel management without API overhead.
+* **WebSocket Progress Updates**: Real-time adaptive progress notifications during scans via WebSocket.
 * **Force Visibility**: Use a regular expression to **force specific channels** (like news or weather) to remain visible, overriding all hide rules.
 * **Flexible Scheduling**: Run scans automatically at specific times each day (e.g., `0600,1300,1800`) with a simple dropdown for timezone selection.
 * **Auto-EPG Management**: When a channel is hidden, the plugin can automatically remove its EPG assignment to keep your guide clean.
@@ -31,8 +32,7 @@ A Dispatcharr plugin that automatically manages channel visibility based on EPG 
 * **Detailed Reporting**: Both dry runs and applied changes generate a CSV report detailing the action taken for each channel, the reason, and which hide rule was triggered.
 
 ## Requirements
-* Active Dispatcharr installation
-* Admin username and password for API access
+* Active Dispatcharr installation (v0.2x+)
 
 ## Installation
 1.  Log in to Dispatcharr's web UI.
@@ -44,9 +44,6 @@ A Dispatcharr plugin that automatically manages channel visibility based on EPG 
 
 | Setting | Type | Default | Description |
 | :--- | :--- | :--- | :--- |
-| **🌐 Dispatcharr URL** | `string` | - | Full URL of your Dispatcharr instance (e.g., `http://127.0.0.1:9191`). |
-| **👤 Dispatcharr Admin Username**| `string` | - | Your admin username for the Dispatcharr UI. Required for API access. |
-| **🔑 Dispatcharr Admin Password**| `password`| - | Your admin password for the Dispatcharr UI. Required for API access. |
 | **🌍 Timezone** | `select` | `America/Chicago` | Timezone for scheduled runs. Select from the dropdown. |
 | **📺 Channel Profile Names (Required)** | `string` | - | Channel Profile(s) to monitor. Use comma-separated names for multiple profiles. |
 | **📂 Channel Groups** | `string` | - | Comma-separated group names to monitor. Leave empty for all groups in the profile(s). |
@@ -65,8 +62,7 @@ A Dispatcharr plugin that automatically manages channel visibility based on EPG 
 ## Usage Guide
 
 ### Step-by-Step Workflow
-1.  **Configure Authentication & Profile(s)**
-    * Enter your Dispatcharr URL, username, and password.
+1.  **Configure Profile(s)**
     * Enter the **Channel Profile Name(s)** you want the plugin to manage (e.g., `PPV Events, Sports Events`). This is required.
     * Optionally, specify **Channel Groups** to narrow the scope.
 2.  **Set Rules & Schedule**
@@ -137,12 +133,14 @@ The plugin can extract dates from channel names in the following formats (checke
 
 | Action | Description |
 | :--- | :--- |
+| **🔍 Validate Configuration** | Test and validate all plugin settings before running. |
 | **💾 Update Schedule** | Save all settings and update/activate the scheduled run times. |
 | **🧪 Dry Run (Export to CSV)** | Preview which channels would be hidden or shown without making any changes. |
 | **🚀 Run Now** | Immediately scan and apply visibility updates based on the current EPG data. |
 | **🗑️ Remove EPG from Hidden Channels** | Delete all EPG data from channels that are currently hidden/disabled in the selected profile(s). |
 | **✨ Clear CSV Exports** | Delete all CSV export files created by this plugin to free up disk space. |
 | **🧹 Cleanup Orphaned Tasks** | Remove any orphaned Celery periodic tasks from old plugin versions. |
+| **📊 Check Scheduler Status** | Display scheduler thread status and diagnostic information. |
 
 ## File Locations
 * **Settings Cache**: `/data/event_channel_managarr_settings.json`
@@ -169,7 +167,6 @@ The plugin can extract dates from channel names in the following formats (checke
 ### General Issues
 * **"Channel Profile not found"**: Ensure the name(s) entered in the settings exactly match the names in Dispatcharr. Check for typos or extra spaces if using multiple comma-separated names.
 * **"No channels found..."**: Verify that the specified profile(s) have channels assigned and that the group names (if used) are spelled correctly.
-* **Authentication Errors**: Double-check that the Dispatcharr URL, username, and password are correct. The URL should be the one you use in your browser's address bar.
 * **Scheduler Not Running**: After changing the schedule, you must click **Update Schedule** to save and activate it. Ensure the times are in `HHMM` format (e.g., `0700` for 7 AM).
 * **Channels Aren't Hiding/Showing**: Run a **Dry Run** and check the `reason` and `hide_rule` columns for that channel. This will tell you exactly why a decision was made. You may need to adjust your **Hide Rules Priority** list.
 
