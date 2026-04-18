@@ -41,7 +41,7 @@ _scheduler_lock = threading.Lock()  # Prevent concurrent scheduler starts
 class PluginConfig:
     """Centralized configuration constants for Event Channel Managarr."""
 
-    PLUGIN_VERSION = "1.26.1081612"
+    PLUGIN_VERSION = "1.26.1081615"
 
     # Default timezone for scheduling
     DEFAULT_TIMEZONE = "America/Chicago"
@@ -2873,6 +2873,31 @@ class Plugin:
                 except OSError:
                     pass
 
+    def _compact_scan_summary(self, label, result):
+        """Build a single-line toast-sized summary from a scan result dict.
+
+        The full multi-line `message` returned by `_scan_and_update_channels`
+        is kept in logs and in the CSV header; the short form below is what
+        the Dispatcharr notification window shows.
+        """
+        if not isinstance(result, dict) or result.get("status") != "success":
+            return None
+        res = result.get("results") or {}
+        total = res.get("total_channels", 0)
+        to_hide = res.get("to_hide", 0)
+        to_show = res.get("to_show", 0)
+        attached = res.get("managed_epg_attached", 0)
+        detached = res.get("managed_epg_detached", 0)
+        parts = [f"{label}: {total} channels"]
+        if to_hide or to_show:
+            parts.append(f"{to_hide} hide / {to_show} show")
+        if attached or detached:
+            parts.append(f"EPG +{attached}/-{detached}")
+        csv_file = res.get("csv_file")
+        if csv_file and csv_file != "N/A":
+            parts.append(f"CSV: {os.path.basename(csv_file)}")
+        return " | ".join(parts)
+
     def _dry_run_bg(self, settings, logger, result_holder):
         """Background wrapper for dry_run; stores the result for the synchronous caller."""
         try:
@@ -2884,20 +2909,22 @@ class Plugin:
     def dry_run_action(self, settings, logger):
         """Preview channel visibility changes without applying them.
 
-        Runs synchronously: Dispatcharr's action-button loading spinner is the
-        busy indicator, and the HTTP response carries the full summary that
-        becomes the single completion notification. The background thread is
-        used only to share _try_start_thread's mutex with other operations;
-        the action waits via thread.join before returning. ProgressTracker's
-        interval WebSocket updates still fire for long scans so the user gets
-        mid-flight progress too.
+        Runs synchronously. Dispatcharr's action-button loading spinner is
+        the busy indicator; the HTTP response carries a compact one-line
+        summary for the completion notification. The full multi-line
+        `message` that `_scan_and_update_channels` produces stays in logs
+        and CSV headers for diagnostics.
         """
         result_holder = {}
         if not self._try_start_thread(self._dry_run_bg, (dict(settings), logger, result_holder)):
             return {"status": "error", "message": "Another operation is already running. Please wait for it to finish."}
         logger.info(f"{LOG_PREFIX} Starting dry run scan...")
         self._thread.join()
-        return result_holder.get('result', {"status": "error", "message": "Dry run produced no result."})
+        result = result_holder.get('result', {"status": "error", "message": "Dry run produced no result."})
+        summary = self._compact_scan_summary("Dry run", result)
+        if summary:
+            result["message"] = summary
+        return result
 
     def _run_now_bg(self, settings, logger, result_holder):
         """Background wrapper for run_now; stores the result for the synchronous caller."""
@@ -2916,16 +2943,21 @@ class Plugin:
     def run_now_action(self, settings, logger):
         """Immediately scan and update channel visibility, synchronously.
 
-        Same rationale as dry_run_action: Dispatcharr's action-button spinner
-        covers the busy state and a single HTTP response drives the final
-        notification.
+        Same pattern as dry_run_action: synchronous thread.join so the
+        action-button spinner covers the busy state, and the HTTP response
+        returns a compact one-line summary that renders cleanly in the
+        Dispatcharr notification window.
         """
         result_holder = {}
         if not self._try_start_thread(self._run_now_bg, (dict(settings), logger, result_holder)):
             return {"status": "error", "message": "Another operation is already running. Please wait for it to finish."}
         logger.info(f"{LOG_PREFIX} Starting Run Now scan...")
         self._thread.join()
-        return result_holder.get('result', {"status": "error", "message": "Run Now produced no result."})
+        result = result_holder.get('result', {"status": "error", "message": "Run Now produced no result."})
+        summary = self._compact_scan_summary("Run Now", result)
+        if summary:
+            result["message"] = summary
+        return result
 
     def remove_epg_from_hidden_action(self, settings, logger):
         """Remove EPG data from all hidden/disabled channels in the selected profile and set to dummy EPG"""
