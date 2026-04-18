@@ -41,7 +41,7 @@ _scheduler_lock = threading.Lock()  # Prevent concurrent scheduler starts
 class PluginConfig:
     """Centralized configuration constants for Event Channel Managarr."""
 
-    PLUGIN_VERSION = "1.26.1081244"
+    PLUGIN_VERSION = "1.26.1081251"
 
     # Default timezone for scheduling
     DEFAULT_TIMEZONE = "America/Chicago"
@@ -2715,6 +2715,37 @@ class Plugin:
                     for rule, count in sorted(rule_stats.items(), key=lambda x: x[1], reverse=True):
                         header_lines.append(f"  {rule}: {count} channels")
                 header_lines.append(f"Hide Rules Priority: {hide_rules_text_for_export}")
+
+                # Full settings snapshot so a CSV is self-describing. Skip legacy keys
+                # that may hold credentials (dispatcharr_username/password from pre-ORM
+                # versions) and already-exported lines (rate_limiting, hide_rules_priority).
+                settings_keys = [
+                    "timezone",
+                    "channel_profile_name",
+                    "channel_groups",
+                    "name_source",
+                    "regex_channels_to_ignore",
+                    "regex_mark_inactive",
+                    "regex_force_visible",
+                    "past_date_grace_hours",
+                    "duplicate_strategy",
+                    "keep_duplicates",
+                    "auto_set_dummy_epg_on_hide",
+                    "manage_dummy_epg",
+                    "dummy_epg_event_duration_hours",
+                    "dummy_epg_offline_title",
+                    "dummy_epg_event_timezone",
+                    "scheduled_times",
+                    "enable_scheduled_csv_export",
+                ]
+                header_lines.append("Settings:")
+                for k in settings_keys:
+                    v = settings.get(k, "")
+                    if v == "" or v is None:
+                        v_str = "(empty)"
+                    else:
+                        v_str = str(v)
+                    header_lines.append(f"  {k}: {v_str}")
 
                 fieldnames = ['channel_id', 'channel_name', 'channel_number', 'channel_group',
                             'current_visibility', 'action', 'reason', 'hide_rule', 'has_epg',
