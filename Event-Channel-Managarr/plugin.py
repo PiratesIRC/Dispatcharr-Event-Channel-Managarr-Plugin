@@ -2081,6 +2081,69 @@ class Plugin:
                 return None
         return source
 
+    def _attach_managed_epg(self, channels, managed_source, logger):
+        """Bind each channel in `channels` to the managed dummy source via an EPGData row.
+
+        Only touches channels where epg_data IS NULL. Returns list of channel IDs that
+        were attached (for result reporting).
+        """
+        from apps.epg.models import EPGData
+
+        attached_ids = []
+        channels_to_update = []
+
+        for channel in channels:
+            if channel.epg_data_id is not None:
+                continue
+            try:
+                epg_data, _ = EPGData.objects.get_or_create(
+                    tvg_id=str(channel.uuid),
+                    epg_source=managed_source,
+                    defaults={"name": channel.name},
+                )
+                # Keep EPGData.name in sync with the channel name so {channel_name}
+                # in the dummy source's fallback template renders correctly.
+                if epg_data.name != channel.name:
+                    epg_data.name = channel.name
+                    epg_data.save(update_fields=["name"])
+            except Exception as e:
+                logger.warning(f"{LOG_PREFIX} Failed to get_or_create EPGData for channel {channel.id}: {e}")
+                continue
+
+            channel.epg_data = epg_data
+            channels_to_update.append(channel)
+            attached_ids.append(channel.id)
+
+        if channels_to_update:
+            with transaction.atomic():
+                Channel.objects.bulk_update(channels_to_update, ["epg_data"])
+            logger.info(f"{LOG_PREFIX} Attached managed EPG to {len(channels_to_update)} channel(s)")
+        return attached_ids
+
+    def _detach_managed_epg(self, managed_source, keep_channel_ids, logger):
+        """Set epg_data=None on any channel currently bound to the managed source
+        whose id is NOT in keep_channel_ids. Returns list of detached channel IDs.
+        """
+        if managed_source is None:
+            return []
+
+        stale = list(Channel.objects.filter(
+            epg_data__epg_source=managed_source
+        ).exclude(id__in=keep_channel_ids))
+
+        if not stale:
+            return []
+
+        for ch in stale:
+            ch.epg_data = None
+
+        with transaction.atomic():
+            Channel.objects.bulk_update(stale, ["epg_data"])
+
+        detached_ids = [ch.id for ch in stale]
+        logger.info(f"{LOG_PREFIX} Detached managed EPG from {len(detached_ids)} channel(s)")
+        return detached_ids
+
     def _get_channel_visibility(self, channel_id, profile_ids, logger):
         """Get current visibility status for a channel in profiles - returns True if enabled in ANY profile"""
         try:
