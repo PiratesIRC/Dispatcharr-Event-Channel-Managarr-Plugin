@@ -157,6 +157,36 @@ class ProgressTracker:
             return f"{h}h {m}m"
 
 
+class SmartRateLimiter:
+    """Optional per-item pacing for bulk ORM loops.
+
+    Sleeps a configurable amount between .wait() calls. Usage:
+        limiter = SmartRateLimiter(settings.get("rate_limiting", "none"))
+        for item in items:
+            ... do one ORM op ...
+            limiter.wait()
+    """
+
+    _DELAYS = {
+        "none": 0.0,
+        "low": 0.05,
+        "medium": 0.2,
+        "high": 0.5,
+    }
+
+    def __init__(self, level):
+        level_str = str(level).strip().lower() if level is not None else "none"
+        self.delay = self._DELAYS.get(level_str, 0.0)
+        self.level = level_str if level_str in self._DELAYS else "none"
+
+    def wait(self):
+        if self.delay > 0:
+            time.sleep(self.delay)
+
+    def is_active(self):
+        return self.delay > 0
+
+
 def _read_last_run():
     """Read the last-run tracker from disk (shared across all uwsgi workers)."""
     try:
