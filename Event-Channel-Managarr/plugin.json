@@ -1,6 +1,6 @@
 {
   "name": "Event Channel Managarr",
-  "version": "1.26.1081230",
+  "version": "1.26.1081232",
   "description": "Automates channel visibility by hiding channels without events and showing those with events, based on EPG data and channel names. Optionally manages dummy EPG for channels without real EPG.",
   "author": "PiratesIRC",
   "license": "MIT",
@@ -17,7 +17,7 @@
     {"id": "_section_rules", "label": "🎯 Hide Rules", "type": "info", "description": "Priority-ordered rules that decide which channels to hide."},
     {"id": "hide_rules_priority", "label": "📜 Hide Rules Priority", "type": "text", "default": "[InactiveRegex],[BlankName],[WrongDayOfWeek],[NoEventPattern],[EmptyPlaceholder],[PastDate:0],[FutureDate:2],[UndatedAge:2],[ShortDescription],[ShortChannelName]"},
     {"id": "regex_channels_to_ignore", "label": "🚫 Regex: Channel Names to Ignore", "type": "text", "default": ""},
-    {"id": "regex_mark_inactive", "label": "💤 Regex: Mark Channel as Inactive", "type": "text", "default": ""},
+    {"id": "regex_mark_inactive", "label": "💤 Regex: Mark Channel as Inactive", "type": "text", "default": "", "placeholder": "PLACEHOLDER|TBD|COMING SOON"},
     {"id": "regex_force_visible", "label": "✅ Regex: Force Visible Channels", "type": "text", "default": ""},
     {"id": "past_date_grace_hours", "label": "📅 Past Date Grace Period (Hours)", "type": "number", "default": 4},
 
