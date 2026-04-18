@@ -41,7 +41,7 @@ _scheduler_lock = threading.Lock()  # Prevent concurrent scheduler starts
 class PluginConfig:
     """Centralized configuration constants for Event Channel Managarr."""
 
-    PLUGIN_VERSION = "1.26.1081153"
+    PLUGIN_VERSION = "1.26.1081225"
 
     # Default timezone for scheduling
     DEFAULT_TIMEZONE = "America/Chicago"
@@ -1658,31 +1658,20 @@ class Plugin:
         """
         global _bg_thread
         try:
-            status_lines = []
-
-            # --- This worker ---
+            # --- This worker's scheduler thread ---
             worker_pid = os.getpid()
-            all_threads = threading.enumerate()
-            scheduler_threads = [t for t in all_threads if "event-channel-managarr-scheduler" in t.name]
-            this_worker_running = bool(_bg_thread and _bg_thread.is_alive())
-
-            status_lines.append(f"🧵 This worker (PID {worker_pid})")
-            if this_worker_running:
-                status_lines.append(f"   ✅ Scheduler thread: Running ({len(scheduler_threads)} in this process)")
+            scheduler_threads = [t for t in threading.enumerate() if "event-channel-managarr-scheduler" in t.name]
+            running = bool(_bg_thread and _bg_thread.is_alive())
+            n = len(scheduler_threads)
+            if n > 1:
+                thread_state = f"⚠️ {n} threads in one worker (leak)"
+            elif running:
+                thread_state = "running"
             else:
-                status_lines.append(f"   ❌ Scheduler thread: Not running in this worker")
-            if len(scheduler_threads) > 1:
-                status_lines.append(f"   ⚠️  {len(scheduler_threads)} threads inside ONE worker — possible stop/start leak (real bug)")
+                thread_state = "not running"
 
-            status_lines.append("")
-            status_lines.append("ℹ️  Note: Dispatcharr runs multiple uwsgi workers; each has its own")
-            status_lines.append("   scheduler thread. Pressing this button again may reach a different")
-            status_lines.append("   worker. Scheduled runs are coordinated via shared files — only one")
-            status_lines.append("   worker actually runs the scan at each scheduled time.")
-
-            # --- Configured schedule ---
-            status_lines.append("")
-            status_lines.append("⏰ Schedule")
+            # --- Configured schedule + next run ---
+            schedule_line = "Schedule: none configured"
             scheduled_times_str = settings.get("scheduled_times", "").strip()
             if scheduled_times_str:
                 times = self._parse_scheduled_times(scheduled_times_str)
@@ -1693,8 +1682,6 @@ class Plugin:
                     except pytz.exceptions.UnknownTimeZoneError:
                         local_tz = pytz.timezone(self.DEFAULT_TIMEZONE)
                     now = datetime.now(local_tz)
-                    status_lines.append(f"   Times: {', '.join([t.strftime('%H:%M') for t in times])} ({tz_str})")
-                    # Next scheduled run across any configured time
                     upcoming = []
                     for t in times:
                         today_dt = local_tz.localize(datetime.combine(now.date(), t))
@@ -1704,40 +1691,39 @@ class Plugin:
                     delta = next_run - now
                     hours, rem = divmod(int(delta.total_seconds()), 3600)
                     minutes = rem // 60
-                    status_lines.append(f"   Next run: {next_run.strftime('%Y-%m-%d %H:%M %Z')} (in {hours}h {minutes}m)")
+                    times_fmt = ",".join(t.strftime("%H:%M") for t in times)
+                    schedule_line = f"Schedule: {times_fmt} {tz_str} | next {next_run.strftime('%H:%M')} in {hours}h{minutes:02d}m"
                 else:
-                    status_lines.append("   ⚠️  Invalid times — check Scheduled Run Times field")
-            else:
-                status_lines.append("   No times configured (scheduler is idle)")
+                    schedule_line = "Schedule: ⚠️ invalid times"
 
-            # --- Shared coordination state (container-wide) ---
-            status_lines.append("")
-            status_lines.append("📅 Last runs (container-wide, from shared file)")
+            # --- Last runs (shared file, container-wide) ---
             last_run_data = _read_last_run()
-            if last_run_data:
-                for time_str, date_str in sorted(last_run_data.items()):
-                    status_lines.append(f"   {time_str}: {date_str}")
-            else:
-                status_lines.append("   No runs recorded yet")
+            last_runs_line = (
+                "Last runs: " + ", ".join(f"{k}={v}" for k, v in sorted(last_run_data.items()))
+                if last_run_data else "Last runs: none yet"
+            )
 
-            # --- Scan lock ---
-            status_lines.append("")
-            status_lines.append("🔒 Scan lock")
+            # --- Scan lock probe ---
             scan_lock_path = PluginConfig.SCAN_LOCK_FILE
             if os.path.exists(scan_lock_path) and fcntl:
                 try:
                     with open(scan_lock_path, 'r') as probe:
                         fcntl.flock(probe, fcntl.LOCK_EX | fcntl.LOCK_NB)
                         fcntl.flock(probe, fcntl.LOCK_UN)
-                    status_lines.append(f"   Free — no scan currently running")
+                    lock_str = "free"
                 except (OSError, IOError):
-                    status_lines.append(f"   Held — a scan is running in another worker")
+                    lock_str = "HELD"
             else:
-                status_lines.append(f"   Not yet created (no scan has run since boot)")
+                lock_str = "none"
 
             return {
                 "status": "success",
-                "message": "\n".join(status_lines)
+                "message": (
+                    f"Scheduler [PID {worker_pid}]: {thread_state} | lock: {lock_str}\n"
+                    f"{schedule_line}\n"
+                    f"{last_runs_line}\n"
+                    f"(per-worker view; coordination via shared files)"
+                )
             }
 
         except Exception as e:
