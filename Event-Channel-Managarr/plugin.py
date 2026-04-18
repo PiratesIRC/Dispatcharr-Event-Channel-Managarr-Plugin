@@ -1993,6 +1993,94 @@ class Plugin:
         
         return duplicate_hide_list
 
+    def _get_or_create_managed_epg_source(self, settings, logger):
+        """Create (if missing) or refresh the shared plugin-managed dummy EPGSource.
+
+        Returns the EPGSource, or None on error.
+        """
+        from apps.epg.models import EPGSource
+
+        # Parse duration with fallback
+        try:
+            duration_hours = int(str(settings.get("dummy_epg_event_duration_hours",
+                                                   self.DEFAULT_EVENT_DURATION_HOURS)).strip())
+        except (ValueError, TypeError):
+            logger.warning(f"{LOG_PREFIX} Invalid dummy_epg_event_duration_hours; using default")
+            duration_hours = int(self.DEFAULT_EVENT_DURATION_HOURS)
+        if duration_hours <= 0:
+            duration_hours = int(self.DEFAULT_EVENT_DURATION_HOURS)
+
+        offline_title = str(settings.get("dummy_epg_offline_title",
+                                         self.DEFAULT_OFFLINE_TITLE)).strip() or self.DEFAULT_OFFLINE_TITLE
+        tz_value = str(settings.get("dummy_epg_event_timezone",
+                                    self.DEFAULT_DUMMY_EPG_TIMEZONE)).strip() or self.DEFAULT_DUMMY_EPG_TIMEZONE
+
+        # Keys the plugin owns. Any other keys on the source are left untouched.
+        # Regexes validated against these four real channel names:
+        #   "PPV EVENT 12: Cage Fury FC 153 (4.17 8:30 PM ET)"  -> title="Cage Fury FC 153"
+        #   "LIVE EVENT 01   9:45am Suslenkov v Mann"           -> title="Suslenkov v Mann"
+        #   "PPV EVENT 25: OUTDOOR THEATRE Live From Coachella" -> title="OUTDOOR THEATRE Live From Coachella"
+        #   "PPV02 | UFC 327: English Apr 14 4:30 PM"           -> title="UFC 327: English"
+        # The title capture stops at the first of: " (", a time token, or a month-name token.
+        # leading_time handles names where the time appears BEFORE the event text (LIVE format).
+        managed_props = {
+            "title_pattern": (
+                r"(?:PPV|LIVE)\s*(?:EVENT\s*)?\d+\s*[:|\s]\s*"
+                r"(?:(?P<leading_time>\d{1,2}:\d{2}\s*[AaPp][Mm])\s+)?"
+                r"(?P<title>.+?)"
+                r"(?=\s*\(|\s+\d{1,2}(?::\d{2})?\s*[AaPp][Mm]|"
+                r"\s+(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)\s+\d+|$)"
+            ),
+            "time_pattern": r"(?P<hour>\d{1,2}):(?P<minute>\d{2})\s*(?P<ampm>[AaPp][Mm])?",
+            "date_pattern": r"\b(?P<month>\d{1,2})[./](?P<day>\d{1,2})(?:[./](?P<year>\d{2,4}))?\b",
+            "title_template": "{title}",
+            "upcoming_title_template": offline_title,
+            "ended_title_template": offline_title,
+            "fallback_title_template": "{channel_name}",
+            "program_duration": duration_hours * 60,
+            "timezone": tz_value,
+            "include_date": False,
+            "managed_by": "event-channel-managarr",
+        }
+
+        try:
+            source, created = EPGSource.objects.get_or_create(
+                name="ECM Managed Dummy",
+                defaults={
+                    "source_type": "dummy",
+                    "is_active": True,
+                    "custom_properties": managed_props,
+                },
+            )
+        except Exception as e:
+            logger.error(f"{LOG_PREFIX} Failed to get_or_create managed EPGSource: {e}")
+            return None
+
+        if created:
+            logger.info(f"{LOG_PREFIX} Created managed EPGSource 'ECM Managed Dummy' (id={source.id})")
+            return source
+
+        # Existing source: refresh only the plugin-managed keys, preserving any
+        # user-added keys.
+        current = dict(source.custom_properties or {})
+        changed = False
+        for k, v in managed_props.items():
+            if current.get(k) != v:
+                current[k] = v
+                changed = True
+        if source.source_type != "dummy":
+            logger.warning(f"{LOG_PREFIX} 'ECM Managed Dummy' exists but source_type={source.source_type!r}; leaving alone")
+            return None
+        if changed:
+            source.custom_properties = current
+            try:
+                source.save(update_fields=["custom_properties"])
+                logger.info(f"{LOG_PREFIX} Refreshed managed EPGSource custom_properties (id={source.id})")
+            except Exception as e:
+                logger.error(f"{LOG_PREFIX} Failed to update managed EPGSource: {e}")
+                return None
+        return source
+
     def _get_channel_visibility(self, channel_id, profile_ids, logger):
         """Get current visibility status for a channel in profiles - returns True if enabled in ANY profile"""
         try:
