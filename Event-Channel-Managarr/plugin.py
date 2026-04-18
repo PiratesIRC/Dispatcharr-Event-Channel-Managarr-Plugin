@@ -2092,32 +2092,34 @@ class Plugin:
         attached_ids = []
         channels_to_update = []
 
-        for channel in channels:
-            if channel.epg_data_id is not None:
-                continue
-            try:
-                epg_data, _ = EPGData.objects.get_or_create(
-                    tvg_id=str(channel.uuid),
-                    epg_source=managed_source,
-                    defaults={"name": channel.name},
-                )
-                # Keep EPGData.name in sync with the channel name so {channel_name}
-                # in the dummy source's fallback template renders correctly.
-                if epg_data.name != channel.name:
-                    epg_data.name = channel.name
-                    epg_data.save(update_fields=["name"])
-            except Exception as e:
-                logger.warning(f"{LOG_PREFIX} Failed to get_or_create EPGData for channel {channel.id}: {e}")
-                continue
+        # Wrap the entire get_or_create + bulk_update cycle in one transaction so a
+        # bulk_update failure doesn't leave orphan EPGData rows pointing nowhere.
+        with transaction.atomic():
+            for channel in channels:
+                if channel.epg_data_id is not None:
+                    continue
+                try:
+                    epg_data, _ = EPGData.objects.get_or_create(
+                        tvg_id=str(channel.uuid),
+                        epg_source=managed_source,
+                        defaults={"name": channel.name},
+                    )
+                    # Keep EPGData.name in sync with the channel name so {channel_name}
+                    # in the dummy source's fallback template renders correctly.
+                    if epg_data.name != channel.name:
+                        epg_data.name = channel.name
+                        epg_data.save(update_fields=["name"])
+                except Exception as e:
+                    logger.warning(f"{LOG_PREFIX} Failed to get_or_create EPGData for channel {channel.id}: {e}")
+                    continue
 
-            channel.epg_data = epg_data
-            channels_to_update.append(channel)
-            attached_ids.append(channel.id)
+                channel.epg_data = epg_data
+                channels_to_update.append(channel)
+                attached_ids.append(channel.id)
 
-        if channels_to_update:
-            with transaction.atomic():
+            if channels_to_update:
                 Channel.objects.bulk_update(channels_to_update, ["epg_data"])
-            logger.info(f"{LOG_PREFIX} Attached managed EPG to {len(channels_to_update)} channel(s)")
+                logger.info(f"{LOG_PREFIX} Attached managed EPG to {len(channels_to_update)} channel(s)")
         return attached_ids
 
     def _detach_managed_epg(self, managed_source, keep_channel_ids, logger):
