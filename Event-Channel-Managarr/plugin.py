@@ -41,7 +41,7 @@ _scheduler_lock = threading.Lock()  # Prevent concurrent scheduler starts
 class PluginConfig:
     """Centralized configuration constants for Event Channel Managarr."""
 
-    PLUGIN_VERSION = "1.26.1081604"
+    PLUGIN_VERSION = "1.26.1081612"
 
     # Default timezone for scheduling
     DEFAULT_TIMEZONE = "America/Chicago"
@@ -2873,104 +2873,59 @@ class Plugin:
                 except OSError:
                     pass
 
-    def _ws_summary_line(self, result):
-        """Build a compact one-line summary from a scan result dict for a completion toast.
-
-        Prefers actionable counts (hide/show/managed EPG) over total-processed.
-        """
-        if not isinstance(result, dict):
-            return "Done"
-        res = result.get("results") or {}
-        parts = []
-        total = res.get("total_channels", 0)
-        to_hide = res.get("to_hide", 0)
-        to_show = res.get("to_show", 0)
-        attached = res.get("managed_epg_attached", 0)
-        detached = res.get("managed_epg_detached", 0)
-        if total:
-            parts.append(f"{total} channels")
-        if to_hide or to_show:
-            parts.append(f"{to_hide} hidden / {to_show} shown")
-        if attached or detached:
-            parts.append(f"EPG +{attached}/-{detached}")
-        csv_file = res.get("csv_file")
-        if csv_file and csv_file != "N/A":
-            parts.append(f"CSV: {os.path.basename(csv_file)}")
-        return " | ".join(parts) if parts else "Done"
-
-    def _dry_run_bg(self, settings, logger):
-        """Background wrapper for dry_run. Streams progress + completion toasts."""
-        send_websocket_update('updates', 'update', {
-            "type": "plugin", "plugin": self.name,
-            "message": "🔄 Dry run: scanning channels…"
-        })
+    def _dry_run_bg(self, settings, logger, result_holder):
+        """Background wrapper for dry_run; stores the result for the synchronous caller."""
         try:
-            result = self._scan_and_update_channels(settings, logger, dry_run=True)
-            if result.get("status") == "success":
-                send_websocket_update('updates', 'update', {
-                    "type": "plugin", "plugin": self.name,
-                    "message": f"✅ Dry run complete — {self._ws_summary_line(result)}"
-                })
-            else:
-                send_websocket_update('updates', 'update', {
-                    "type": "plugin", "plugin": self.name,
-                    "message": f"❌ Dry run: {result.get('message', 'failed')}"
-                })
+            result_holder['result'] = self._scan_and_update_channels(settings, logger, dry_run=True)
         except Exception as e:
             logger.exception(f"{LOG_PREFIX} Dry run error: {e}")
-            send_websocket_update('updates', 'update', {
-                "type": "plugin", "plugin": self.name,
-                "message": f"❌ Dry run failed: {e}"
-            })
+            result_holder['result'] = {"status": "error", "message": f"Dry run error: {e}"}
 
     def dry_run_action(self, settings, logger):
-        """Preview channel visibility changes without applying them (runs as background thread)."""
-        if not self._try_start_thread(self._dry_run_bg, (dict(settings), logger)):
-            return {"status": "error", "message": "Another operation is already running. Please wait for it to finish."}
-        return {
-            "status": "success",
-            "message": "🔄 Dry run started. Watch notifications for progress and completion.",
-            "background": True,
-        }
+        """Preview channel visibility changes without applying them.
 
-    def _run_now_bg(self, settings, logger):
-        """Background wrapper for run_now. Streams progress + completion toasts."""
-        send_websocket_update('updates', 'update', {
-            "type": "plugin", "plugin": self.name,
-            "message": "🔄 Run Now: scanning channels…"
-        })
+        Runs synchronously: Dispatcharr's action-button loading spinner is the
+        busy indicator, and the HTTP response carries the full summary that
+        becomes the single completion notification. The background thread is
+        used only to share _try_start_thread's mutex with other operations;
+        the action waits via thread.join before returning. ProgressTracker's
+        interval WebSocket updates still fire for long scans so the user gets
+        mid-flight progress too.
+        """
+        result_holder = {}
+        if not self._try_start_thread(self._dry_run_bg, (dict(settings), logger, result_holder)):
+            return {"status": "error", "message": "Another operation is already running. Please wait for it to finish."}
+        logger.info(f"{LOG_PREFIX} Starting dry run scan...")
+        self._thread.join()
+        return result_holder.get('result', {"status": "error", "message": "Dry run produced no result."})
+
+    def _run_now_bg(self, settings, logger, result_holder):
+        """Background wrapper for run_now; stores the result for the synchronous caller."""
         try:
             result = self._scan_and_update_channels(settings, logger, dry_run=False)
             if result.get("status") == "success":
-                results_data = result.get("results", {})
-                if results_data.get("to_hide", 0) > 0 or results_data.get("to_show", 0) > 0:
+                rs = result.get("results", {})
+                if rs.get("to_hide", 0) > 0 or rs.get("to_show", 0) > 0:
                     self._trigger_frontend_refresh(settings, logger)
-                send_websocket_update('updates', 'update', {
-                    "type": "plugin", "plugin": self.name,
-                    "message": f"✅ Run Now complete — {self._ws_summary_line(result)}"
-                })
-            else:
-                send_websocket_update('updates', 'update', {
-                    "type": "plugin", "plugin": self.name,
-                    "message": f"❌ Run Now: {result.get('message', 'failed')}"
-                })
+            result_holder['result'] = result
             logger.info(f"{LOG_PREFIX} Run Now completed: {result.get('message', 'Done')}")
         except Exception as e:
             logger.exception(f"{LOG_PREFIX} Run Now error: {e}")
-            send_websocket_update('updates', 'update', {
-                "type": "plugin", "plugin": self.name,
-                "message": f"❌ Run Now failed: {e}"
-            })
+            result_holder['result'] = {"status": "error", "message": f"Run Now error: {e}"}
 
     def run_now_action(self, settings, logger):
-        """Immediately scan and update channel visibility (runs as background thread)"""
-        if not self._try_start_thread(self._run_now_bg, (dict(settings), logger)):
+        """Immediately scan and update channel visibility, synchronously.
+
+        Same rationale as dry_run_action: Dispatcharr's action-button spinner
+        covers the busy state and a single HTTP response drives the final
+        notification.
+        """
+        result_holder = {}
+        if not self._try_start_thread(self._run_now_bg, (dict(settings), logger, result_holder)):
             return {"status": "error", "message": "Another operation is already running. Please wait for it to finish."}
-        return {
-            "status": "success",
-            "message": "🔄 Run Now started. Watch notifications for progress and completion.",
-            "background": True,
-        }
+        logger.info(f"{LOG_PREFIX} Starting Run Now scan...")
+        self._thread.join()
+        return result_holder.get('result', {"status": "error", "message": "Run Now produced no result."})
 
     def remove_epg_from_hidden_action(self, settings, logger):
         """Remove EPG data from all hidden/disabled channels in the selected profile and set to dummy EPG"""
