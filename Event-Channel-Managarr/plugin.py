@@ -50,7 +50,7 @@ class PluginConfig:
     DEFAULT_NAME_SOURCE = "Channel_Name"  # Options: "Channel_Name" or "Stream_Name"
 
     # Default hide rules priority (comma-separated)
-    DEFAULT_HIDE_RULES = "[InactiveRegex],[BlankName],[WrongDayOfWeek],[NoEventPattern],[EmptyPlaceholder],[PastDate:0],[FutureDate:2],[ShortDescription],[ShortChannelName]"
+    DEFAULT_HIDE_RULES = "[InactiveRegex],[BlankName],[WrongDayOfWeek],[NoEventPattern],[EmptyPlaceholder],[PastDate:0],[FutureDate:2],[UndatedAge:2],[ShortDescription],[ShortChannelName]"
 
     # Default duplicate handling strategy
     DEFAULT_DUPLICATE_STRATEGY = "lowest_number"  # Options: "lowest_number", "highest_number", "longest_name"
@@ -82,6 +82,7 @@ class PluginConfig:
     SETTINGS_FILE = "/data/event_channel_managarr_settings.json"
     RESULTS_FILE = "/data/event_channel_managarr_results.json"
     VERSION_CHECK_FILE = "/data/event_channel_managarr_version_check.json"
+    UNDATED_FIRST_SEEN_FILE = "/data/event_channel_managarr_undated_first_seen.json"
     EXPORTS_DIR = "/data/exports"
 
     # GitHub repo for version checks
@@ -318,8 +319,8 @@ class Plugin:
             "label": "📜 Hide Rules Priority",
             "type": "string",
             "default": self.DEFAULT_HIDE_RULES,
-            "placeholder": "[BlankName],[NoEventPattern],[EmptyPlaceholder],[PastDate:0],[FutureDate:2],[ShortDescription],[ShortChannelName]",
-            "help_text": "Define rules for hiding channels in priority order (first match wins). Comma-separated tags. Available tags: [NoEPG], [BlankName], [WrongDayOfWeek], [NoEventPattern], [EmptyPlaceholder], [ShortDescription], [ShortChannelName], [NumberOnly], [PastDate:days], [PastDate:days:Xh], [FutureDate:days], [InactiveRegex]. Example: [PastDate:0] hides if event date has passed, [PastDate:0:4h] adds 4 hour grace period, [NumberOnly] hides channels with just prefix+number like 'PPV 12'.",
+            "placeholder": "[BlankName],[NoEventPattern],[EmptyPlaceholder],[PastDate:0],[FutureDate:2],[UndatedAge:2],[ShortDescription],[ShortChannelName]",
+            "help_text": "Define rules for hiding channels in priority order (first match wins). Comma-separated tags. Available tags: [NoEPG], [BlankName], [WrongDayOfWeek], [NoEventPattern], [EmptyPlaceholder], [ShortDescription], [ShortChannelName], [NumberOnly], [PastDate:days], [PastDate:days:Xh], [FutureDate:days], [UndatedAge:days], [InactiveRegex]. Example: [PastDate:0] hides if event date has passed, [PastDate:0:4h] adds 4 hour grace period, [UndatedAge:2] hides channels with no date in name once they've been present for more than 2 days, [NumberOnly] hides channels with just prefix+number like 'PPV 12'.",
         },
         {
             "id": "regex_channels_to_ignore",
@@ -874,6 +875,44 @@ class Plugin:
         except Exception as e:
             LOGGER.error(f"Error saving settings: {e}")
 
+    def _load_undated_tracker(self, logger):
+        """Load the undated-channel first-seen tracker from disk."""
+        path = PluginConfig.UNDATED_FIRST_SEEN_FILE
+        try:
+            with open(path, 'r') as f:
+                data = json.load(f)
+            if not isinstance(data, dict):
+                logger.warning(f"{LOG_PREFIX} Undated tracker at {path} is not a dict; starting fresh.")
+                return {}
+            return data
+        except FileNotFoundError:
+            return {}
+        except (json.JSONDecodeError, OSError) as e:
+            logger.warning(f"{LOG_PREFIX} Could not load undated tracker ({e}); starting fresh.")
+            return {}
+
+    def _save_undated_tracker(self, tracker, logger):
+        """Atomically save the undated-channel first-seen tracker to disk. Returns True on success."""
+        path = PluginConfig.UNDATED_FIRST_SEEN_FILE
+        tmp_path = f"{path}.tmp"
+        try:
+            with open(tmp_path, 'w') as f:
+                json.dump(tracker, f, indent=2, sort_keys=True)
+            os.replace(tmp_path, path)
+            return True
+        except OSError as e:
+            logger.error(f"{LOG_PREFIX} Failed to save undated tracker: {e}")
+            return False
+
+    def _record_undated_channel(self, tracker, channel_id, channel_name, today_str):
+        """Record/refresh a channel in the undated tracker. Returns the entry."""
+        key = str(channel_id)
+        entry = tracker.get(key)
+        if not entry or entry.get("name") != channel_name:
+            entry = {"first_seen": today_str, "name": channel_name}
+            tracker[key] = entry
+        return entry
+
     def _parse_hide_rules(self, rules_text, logger):
         """Parse hide rules priority text into list of rule tuples"""
         if not rules_text or not rules_text.strip():
@@ -1312,6 +1351,39 @@ class Plugin:
             
             return False, None
         
+        elif rule_name == "UndatedAge":
+            tracker = getattr(self, '_undated_tracker', None) or {}
+            entry = tracker.get(str(channel.id))
+            if not entry:
+                return False, None
+            try:
+                first_seen = datetime.strptime(entry['first_seen'], '%Y-%m-%d').date()
+            except (KeyError, ValueError, TypeError):
+                return False, None
+
+            # Accept [UndatedAge:N] or, defensively, [UndatedAge:N:Xh] (grace hours ignored —
+            # undated age is day-granular).
+            if isinstance(rule_param, tuple):
+                threshold = rule_param[0]
+            else:
+                threshold = rule_param if rule_param is not None else 2
+
+            today_str = getattr(self, '_undated_today_str', None)
+            if today_str:
+                today = datetime.strptime(today_str, '%Y-%m-%d').date()
+            else:
+                tz_str = self._get_system_timezone(settings)
+                try:
+                    local_tz = pytz.timezone(tz_str)
+                except pytz.exceptions.UnknownTimeZoneError:
+                    local_tz = pytz.timezone(self.DEFAULT_TIMEZONE)
+                today = datetime.now(local_tz).date()
+
+            age_days = (today - first_seen).days
+            if age_days > threshold:
+                return True, f"[UndatedAge:{threshold}] No date in name; first seen {first_seen.isoformat()} ({age_days} days ago, threshold: {threshold})"
+            return False, None
+
         elif rule_name == "InactiveRegex":
             regex_inactive_str = settings.get("regex_mark_inactive", "").strip()
             logger.debug(f"[InactiveRegex] Checking pattern '{regex_inactive_str}' against channel name '{channel_name}'")
@@ -1640,25 +1712,10 @@ class Plugin:
                             already_ran = last_run_data.get(time_key) == str(current_date)
 
                             if -30 <= time_diff <= 30 and not already_ran:
-                                # Acquire cross-process file lock to prevent concurrent scans
-                                lock_fd = None
-                                if fcntl:
-                                    try:
-                                        lock_fd = open(_SCAN_LOCK_FILE, 'w')
-                                        fcntl.flock(lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
-                                    except (OSError, IOError):
-                                        LOGGER.info(f"[{thread_id}] Another worker is already running the scheduled scan, skipping")
-                                        if lock_fd:
-                                            lock_fd.close()
-                                        break
-
+                                # Cross-process concurrency is enforced inside _scan_and_update_channels
+                                # (flock on SCAN_LOCK_FILE). This covers manual Run Now / Dry Run too,
+                                # which the old scheduler-only flock did not.
                                 try:
-                                    # Re-check after acquiring lock (another worker may have just finished)
-                                    last_run_data = _read_last_run()
-                                    if last_run_data.get(time_key) == str(current_date):
-                                        LOGGER.info(f"[{thread_id}] Scan already completed by another worker, skipping")
-                                        break
-
                                     LOGGER.info(f"[{thread_id}] Scheduled scan triggered at {now.strftime('%Y-%m-%d %H:%M %Z')}")
 
                                     # Reload settings from disk to get the latest configuration
@@ -1688,6 +1745,13 @@ class Plugin:
                                         results_data = result.get("results", {})
                                         if results_data.get("to_hide", 0) > 0 or results_data.get("to_show", 0) > 0:
                                             self._trigger_frontend_refresh(current_settings, LOGGER)
+
+                                    # If _scan_and_update_channels skipped because another worker
+                                    # was scanning, don't mark this slot as executed — let that worker
+                                    # (or the next scheduler tick) do it.
+                                    if result.get("skipped_due_to_lock"):
+                                        LOGGER.info(f"[{thread_id}] Skipped due to active scan in another worker; not marking {time_key} as executed")
+                                        break
                                 except Exception as e:
                                     LOGGER.error(f"[{thread_id}] Error in scheduled scan: {e}")
 
@@ -1703,15 +1767,6 @@ class Plugin:
                                     last_run_data[time_key] = str(current_date)
                                     _write_last_run(last_run_data)
                                     LOGGER.info(f"[{thread_id}] Marked {time_key} as executed for {current_date}")
-                                finally:
-                                    # Always release the file lock
-                                    if lock_fd:
-                                        try:
-                                            if fcntl:
-                                                fcntl.flock(lock_fd, fcntl.LOCK_UN)
-                                            lock_fd.close()
-                                        except OSError:
-                                            pass
 
                                 break
 
@@ -1906,6 +1961,24 @@ class Plugin:
 
     def _scan_and_update_channels(self, settings, logger, dry_run=True, is_scheduled_run=False):
         """Scan channels and update visibility based on hide rules priority"""
+        # Cross-worker serialization: one scan at a time across all uwsgi workers.
+        # Covers manual Run Now / Dry Run as well as scheduled runs.
+        lock_fd = None
+        if fcntl:
+            try:
+                lock_fd = open(PluginConfig.SCAN_LOCK_FILE, 'w')
+                fcntl.flock(lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except (OSError, IOError):
+                if lock_fd:
+                    lock_fd.close()
+                lock_fd = None
+                msg = "Another scan is already running in this or another worker. Skipping."
+                if is_scheduled_run:
+                    logger.info(f"{LOG_PREFIX} {msg}")
+                    return {"status": "success", "message": msg, "skipped_due_to_lock": True}
+                logger.warning(f"{LOG_PREFIX} {msg}")
+                return {"status": "error", "message": msg, "skipped_due_to_lock": True}
+
         try:
             # Validate required settings
             channel_profile_names_str = settings.get("channel_profile_name", "").strip()
@@ -2001,12 +2074,26 @@ class Plugin:
             # Initialize progress tracker
             progress = ProgressTracker(total_channels, "Channel Scan", logger)
 
+            # Load undated-channel first-seen tracker (used by [UndatedAge:N] rule)
+            self._undated_tracker = self._load_undated_tracker(logger)
+            tracker_before = len(self._undated_tracker)
+            tz_str = self._get_system_timezone(settings)
+            try:
+                local_tz = pytz.timezone(tz_str)
+            except pytz.exceptions.UnknownTimeZoneError:
+                local_tz = pytz.timezone(self.DEFAULT_TIMEZONE)
+            # Capture once per scan so records and rule evaluations agree even if
+            # the scan crosses local midnight.
+            self._undated_today_str = datetime.now(local_tz).date().isoformat()
+            today_str = self._undated_today_str
+            tracked_this_scan = set()
+
             results = []
             channels_to_hide = []
             channels_to_show = []
             channels_ignored = []
             channels_for_duplicate_check = []
-            
+
             # Track channel info for enhanced logging
             channel_info_map = {}
             
@@ -2026,6 +2113,9 @@ class Plugin:
                 # Check if channel should be ignored
                 if regex_ignore and regex_ignore.search(channel_name):
                     channels_ignored.append(channel.id)
+                    # Preserve any existing undated-tracker entry for this channel so first_seen
+                    # doesn't reset if the user later removes the ignore regex.
+                    tracked_this_scan.add(str(channel.id))
                     results.append({
                         "channel_id": channel.id,
                         "channel_name": channel_name,
@@ -2043,7 +2133,9 @@ class Plugin:
                 if regex_force_visible and regex_force_visible.search(channel_name):
                     if not current_visible:
                         channels_to_show.append(channel.id)
-                    
+
+                    # Preserve any existing undated-tracker entry — same reason as above.
+                    tracked_this_scan.add(str(channel.id))
                     results.append({
                         "channel_id": channel.id,
                         "channel_name": channel_name,
@@ -2056,7 +2148,15 @@ class Plugin:
                         "has_epg": "Yes" if channel.epg_data else "No"
                     })
                     continue
-                
+
+                # Update undated-channel tracker: record channels with no extractable date,
+                # drop those that now have a date.
+                if self._extract_date_from_channel_name(channel_name, logger) is None:
+                    self._record_undated_channel(self._undated_tracker, channel.id, channel_name, today_str)
+                    tracked_this_scan.add(str(channel.id))
+                else:
+                    self._undated_tracker.pop(str(channel.id), None)
+
                 # Check hide rules
                 should_hide, reason = self._check_channel_should_hide(channel, hide_rules, logger, settings)
                 
@@ -2092,7 +2192,17 @@ class Plugin:
                     channels_to_hide.append(channel.id)
                 elif action_needed == "show":
                     channels_to_show.append(channel.id)
-            
+
+            # Prune undated tracker: drop entries for channels not evaluated this scan
+            # (deleted or now dated). Ignored/force-visible channels are preserved if they
+            # already have entries — see the per-channel loop above.
+            pruned = [k for k in self._undated_tracker if k not in tracked_this_scan]
+            for k in pruned:
+                self._undated_tracker.pop(k, None)
+            saved = self._save_undated_tracker(self._undated_tracker, logger)
+            save_status = "saved" if saved else "save FAILED (see errors above)"
+            logger.info(f"{LOG_PREFIX} Undated tracker: {tracker_before} loaded, {len(tracked_this_scan)} tracked, {len(pruned)} pruned, {len(self._undated_tracker)} {save_status}")
+
             # Handle duplicates - only process channels that would be visible
             logger.info("Checking for duplicate channels...")
             # Filter to only channels that would be visible (either currently visible or about to be shown)
@@ -2317,6 +2427,14 @@ class Plugin:
             import traceback
             logger.error(f"Traceback: {traceback.format_exc()}")
             return {"status": "error", "message": f"Error scanning channels: {str(e)}"}
+        finally:
+            if lock_fd:
+                try:
+                    if fcntl:
+                        fcntl.flock(lock_fd, fcntl.LOCK_UN)
+                    lock_fd.close()
+                except OSError:
+                    pass
 
     def _dry_run_bg(self, settings, logger, result_holder):
         """Background wrapper for dry_run that stores the result."""
