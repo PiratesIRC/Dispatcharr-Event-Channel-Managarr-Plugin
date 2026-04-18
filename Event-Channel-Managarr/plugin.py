@@ -2146,6 +2146,64 @@ class Plugin:
         logger.info(f"{LOG_PREFIX} Detached managed EPG from {len(detached_ids)} channel(s)")
         return detached_ids
 
+    def _run_managed_epg_pass(self, settings, logger, dry_run, enabled_channel_ids):
+        """Attach/detach the plugin's managed dummy EPG based on current settings.
+
+        If the master toggle is off, still runs the detach cleanup so turning the
+        feature off reliably un-assigns managed EPG. Returns (attached_ids, detached_ids).
+
+        Dry-run is a pure preview: it NEVER creates the EPGSource row and NEVER writes
+        attach/detach changes. It only reports what an applied run would do.
+        """
+        from apps.epg.models import EPGSource
+
+        toggle_on = self._get_bool_setting(settings, "manage_dummy_epg", False)
+
+        if dry_run:
+            # Pure preview — locate existing source only; do not create.
+            managed_source = EPGSource.objects.filter(
+                name="ECM Managed Dummy", source_type="dummy"
+            ).first()
+            if managed_source is None:
+                return [], []
+            if toggle_on:
+                attached_ids = list(Channel.objects.filter(
+                    id__in=enabled_channel_ids, epg_data__isnull=True
+                ).values_list("id", flat=True))
+                detached_ids = list(Channel.objects.filter(
+                    epg_data__epg_source=managed_source
+                ).exclude(id__in=enabled_channel_ids).values_list("id", flat=True))
+            else:
+                attached_ids = []
+                detached_ids = list(Channel.objects.filter(
+                    epg_data__epg_source=managed_source
+                ).values_list("id", flat=True))
+            logger.info(f"{LOG_PREFIX} [dry-run] Managed EPG would attach {len(attached_ids)}, detach {len(detached_ids)}")
+            return attached_ids, detached_ids
+
+        # Applied run — may create/refresh the source row.
+        if toggle_on:
+            managed_source = self._get_or_create_managed_epg_source(settings, logger)
+        else:
+            managed_source = EPGSource.objects.filter(
+                name="ECM Managed Dummy", source_type="dummy"
+            ).first()
+
+        if managed_source is None:
+            return [], []
+
+        attached_ids = []
+        if toggle_on:
+            no_epg_channels = list(Channel.objects.filter(
+                id__in=enabled_channel_ids, epg_data__isnull=True
+            ))
+            attached_ids = self._attach_managed_epg(no_epg_channels, managed_source, logger)
+
+        keep_ids = set(enabled_channel_ids) if toggle_on else set()
+        detached_ids = self._detach_managed_epg(managed_source, keep_ids, logger)
+
+        return attached_ids, detached_ids
+
     def _get_channel_visibility(self, channel_id, profile_ids, logger):
         """Get current visibility status for a channel in profiles - returns True if enabled in ANY profile"""
         try:
@@ -2422,7 +2480,26 @@ class Plugin:
                 strategy=settings.get("duplicate_strategy", "lowest_number"),
                 keep_duplicates=self._get_bool_setting(settings, "keep_duplicates", False)
             )
-            
+
+            # Managed Dummy EPG pass — runs before results are built so per-channel
+            # result dicts can report managed_epg_assigned / managed_epg_detached.
+            # Compute the "enabled after this scan" set from in-memory decisions so
+            # dry-run and applied-run paths produce identical attach/detach counts.
+            managed_attached_set = set()
+            managed_detached_set = set()
+            enabled_channel_ids = [
+                ch["channel_id"] for ch in channels_for_duplicate_check
+                if (
+                    (ch["current_visible"] and ch["channel_id"] not in channels_to_hide)
+                    or ch["channel_id"] in channels_to_show
+                ) and ch["channel_id"] not in duplicate_hide_list
+            ]
+            managed_attached_ids, managed_detached_ids = self._run_managed_epg_pass(
+                settings, logger, dry_run, enabled_channel_ids
+            )
+            managed_attached_set = set(managed_attached_ids)
+            managed_detached_set = set(managed_detached_ids)
+
             # Build final results with duplicate information
             for channel_info in channels_for_duplicate_check:
                 channel_id = channel_info['channel_id']
