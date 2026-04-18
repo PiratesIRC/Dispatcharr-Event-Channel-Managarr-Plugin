@@ -1,35 +1,51 @@
 {
   "name": "Event Channel Managarr",
-  "version": "0.7.0",
-  "description": "Automates channel visibility by hiding channels without events and showing those with events, based on EPG data and channel names.",
+  "version": "0.8.0",
+  "description": "Automates channel visibility by hiding channels without events and showing those with events, based on EPG data and channel names. Optionally manages dummy EPG for channels without real EPG.",
   "author": "PiratesIRC",
   "license": "MIT",
   "repo_url": "https://github.com/PiratesIRC/Dispatcharr-Event-Channel-Managarr-Plugin",
   "min_dispatcharr_version": "v0.20.0",
   "fields": [
-    {"id": "timezone", "label": "Timezone", "type": "select", "default": "America/Chicago"},
-    {"id": "channel_profile_name", "label": "Channel Profile Names (Required)", "type": "string", "default": ""},
-    {"id": "channel_groups", "label": "Channel Groups", "type": "string", "default": ""},
-    {"id": "name_source", "label": "Name Source", "type": "select", "default": "Channel_Name"},
-    {"id": "hide_rules_priority", "label": "Hide Rules Priority", "type": "string", "default": "[InactiveRegex],[BlankName],[WrongDayOfWeek],[NoEventPattern],[EmptyPlaceholder],[PastDate:0],[FutureDate:2],[ShortDescription],[ShortChannelName]"},
-    {"id": "regex_channels_to_ignore", "label": "Regex: Channel Names to Ignore", "type": "string", "default": ""},
-    {"id": "regex_mark_inactive", "label": "Regex: Mark Channel as Inactive", "type": "string", "default": ""},
-    {"id": "regex_force_visible", "label": "Regex: Force Visible Channels", "type": "string", "default": ""},
-    {"id": "duplicate_strategy", "label": "Duplicate Handling Strategy", "type": "select", "default": "lowest_number"},
-    {"id": "keep_duplicates", "label": "Keep Duplicate Channels", "type": "boolean", "default": false},
-    {"id": "past_date_grace_hours", "label": "Past Date Grace Period (Hours)", "type": "string", "default": "4"},
-    {"id": "auto_set_dummy_epg_on_hide", "label": "Auto-Remove EPG on Hide", "type": "boolean", "default": true},
-    {"id": "scheduled_times", "label": "Scheduled Run Times", "type": "string", "default": ""},
-    {"id": "enable_scheduled_csv_export", "label": "Enable Scheduled CSV Export", "type": "boolean", "default": false}
+    {"id": "_section_scope", "label": "📍 Scope", "type": "info", "description": "Which channels this plugin monitors and how it identifies them."},
+    {"id": "timezone", "label": "🌍 Timezone", "type": "select", "default": "America/Chicago"},
+    {"id": "channel_profile_name", "label": "📺 Channel Profile Names (Required)", "type": "text", "default": "", "placeholder": "e.g. All, Favorites"},
+    {"id": "channel_groups", "label": "📂 Channel Groups", "type": "text", "default": "", "placeholder": "e.g. PPV Live Events, Sports"},
+    {"id": "name_source", "label": "🔤 Name Source", "type": "select", "default": "Channel_Name"},
+
+    {"id": "_section_rules", "label": "🎯 Hide Rules", "type": "info", "description": "Priority-ordered rules that decide which channels to hide."},
+    {"id": "hide_rules_priority", "label": "📜 Hide Rules Priority", "type": "text", "default": "[InactiveRegex],[BlankName],[WrongDayOfWeek],[NoEventPattern],[EmptyPlaceholder],[PastDate:0],[FutureDate:2],[UndatedAge:2],[ShortDescription],[ShortChannelName]"},
+    {"id": "regex_channels_to_ignore", "label": "🚫 Regex: Channel Names to Ignore", "type": "text", "default": ""},
+    {"id": "regex_mark_inactive", "label": "💤 Regex: Mark Channel as Inactive", "type": "text", "default": ""},
+    {"id": "regex_force_visible", "label": "✅ Regex: Force Visible Channels", "type": "text", "default": ""},
+    {"id": "past_date_grace_hours", "label": "📅 Past Date Grace Period (Hours)", "type": "number", "default": 4},
+
+    {"id": "_section_duplicates", "label": "🎭 Duplicates", "type": "info", "description": "How to handle channels whose events collide."},
+    {"id": "duplicate_strategy", "label": "🎭 Duplicate Handling Strategy", "type": "select", "default": "lowest_number"},
+    {"id": "keep_duplicates", "label": "🔄 Keep Duplicate Channels", "type": "boolean", "default": false},
+
+    {"id": "_section_epg", "label": "🔌 EPG Management", "type": "info", "description": "Optional automation for EPG assignment on visibility changes and a managed dummy EPG for channels without real EPG."},
+    {"id": "auto_set_dummy_epg_on_hide", "label": "🔌 Auto-Remove EPG on Hide", "type": "boolean", "default": true},
+    {"id": "manage_dummy_epg", "label": "🗓️ Manage Dummy EPG", "type": "boolean", "default": false},
+    {"id": "dummy_epg_event_duration_hours", "label": "⏱️ Event Duration (hours)", "type": "number", "default": 3},
+    {"id": "dummy_epg_offline_title", "label": "💤 Offline Title", "type": "text", "default": "Offline"},
+    {"id": "dummy_epg_event_timezone", "label": "📺 Channel Name Event Timezone", "type": "select", "default": "US/Eastern"},
+
+    {"id": "_section_scheduling", "label": "⏰ Scheduling & Export", "type": "info", "description": "Scheduled runs and CSV export options."},
+    {"id": "scheduled_times", "label": "⏰ Scheduled Run Times (24-hour)", "type": "text", "default": "", "placeholder": "0600,1300,1800"},
+    {"id": "enable_scheduled_csv_export", "label": "📄 Enable Scheduled CSV Export", "type": "boolean", "default": false},
+
+    {"id": "_section_advanced", "label": "⚙️ Advanced", "type": "info", "description": "Performance and pacing controls for large channel profiles."},
+    {"id": "rate_limiting", "label": "🐢 Rate Limiting", "type": "select", "default": "none"}
   ],
   "actions": [
-    {"id": "validate_configuration", "label": "Validate Configuration", "description": "Test and validate all plugin settings"},
-    {"id": "update_schedule", "label": "Update Schedule", "description": "Save settings and update the scheduled run times"},
-    {"id": "dry_run", "label": "Dry Run (Export to CSV)", "description": "Preview which channels would be hidden/shown without making changes"},
-    {"id": "run_now", "label": "Run Now", "description": "Immediately scan and update channel visibility based on current EPG data"},
-    {"id": "remove_epg_from_hidden", "label": "Remove EPG from Hidden Channels", "description": "Remove all EPG data from channels that are disabled/hidden in the selected profile"},
-    {"id": "clear_csv_exports", "label": "Clear CSV Exports", "description": "Delete all CSV export files created by this plugin"},
-    {"id": "cleanup_periodic_tasks", "label": "Cleanup Orphaned Tasks", "description": "Remove any orphaned Celery periodic tasks from old plugin versions"},
-    {"id": "check_scheduler_status", "label": "Check Scheduler Status", "description": "Display scheduler thread status and diagnostic information"}
+    {"id": "validate_configuration", "label": "Validate Configuration", "description": "Test and validate all plugin settings", "button_label": "🔎 Validate", "button_variant": "outline", "button_color": "blue"},
+    {"id": "update_schedule", "label": "Update Schedule", "description": "Save settings and update the scheduled run times", "button_label": "💾 Save Schedule", "button_variant": "filled", "button_color": "green"},
+    {"id": "dry_run", "label": "Dry Run (Export to CSV)", "description": "Preview which channels would be hidden/shown without making changes", "button_label": "👁️ Dry Run", "button_variant": "outline", "button_color": "cyan"},
+    {"id": "run_now", "label": "Run Now", "description": "Immediately scan and update channel visibility based on current EPG data", "button_label": "▶️ Run Now", "button_variant": "filled", "button_color": "green", "confirm": {"message": "This will apply visibility changes and (if enabled) attach/detach managed EPG. Continue?"}},
+    {"id": "remove_epg_from_hidden", "label": "Remove EPG from Hidden Channels", "description": "Remove all EPG data from channels that are disabled/hidden in the selected profile", "button_label": "🧹 Remove EPG from Hidden", "button_variant": "filled", "button_color": "red", "confirm": {"message": "This will CLEAR EPG data from every hidden channel in the selected profile. Cannot be undone by this plugin. Continue?"}},
+    {"id": "clear_csv_exports", "label": "Clear CSV Exports", "description": "Delete all CSV export files created by this plugin", "button_label": "🗑️ Clear CSV Exports", "button_variant": "filled", "button_color": "red", "confirm": {"message": "This will delete every CSV file in /data/exports created by this plugin. Continue?"}},
+    {"id": "cleanup_periodic_tasks", "label": "Cleanup Orphaned Tasks", "description": "Remove any orphaned Celery periodic tasks from old plugin versions", "button_label": "🧼 Cleanup Orphaned Tasks", "button_variant": "outline", "button_color": "orange", "confirm": {"message": "This removes orphaned Celery periodic tasks left by older plugin versions. Continue?"}},
+    {"id": "check_scheduler_status", "label": "Check Scheduler Status", "description": "Display scheduler thread status and diagnostic information", "button_label": "🩺 Check Scheduler", "button_variant": "outline", "button_color": "blue"}
   ]
 }
