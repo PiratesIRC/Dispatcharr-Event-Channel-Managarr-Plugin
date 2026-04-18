@@ -2690,6 +2690,9 @@ class Plugin:
                     f"Channels to Show: {len(channels_to_show)}",
                     f"Channels Ignored: {len(channels_ignored)}",
                     f"Duplicates Hidden: {total_duplicates_hidden}",
+                    f"Managed EPG Attached: {len(managed_attached_set)}",
+                    f"Managed EPG Detached: {len(managed_detached_set)}",
+                    f"Rate Limiting: {settings.get('rate_limiting', self.DEFAULT_RATE_LIMITING)}",
                 ]
                 if rule_stats:
                     header_lines.append("Rule Effectiveness:")
