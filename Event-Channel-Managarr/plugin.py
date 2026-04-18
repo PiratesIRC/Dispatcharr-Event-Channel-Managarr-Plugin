@@ -41,7 +41,7 @@ _scheduler_lock = threading.Lock()  # Prevent concurrent scheduler starts
 class PluginConfig:
     """Centralized configuration constants for Event Channel Managarr."""
 
-    PLUGIN_VERSION = "1.26.1081234"
+    PLUGIN_VERSION = "1.26.1081242"
 
     # Default timezone for scheduling
     DEFAULT_TIMEZONE = "America/Chicago"
@@ -1314,8 +1314,11 @@ class Plugin:
             return False, None
         
         elif rule_name == "EmptyPlaceholder":
-            # Ends with colon, pipe, or dash with nothing or only whitespace/very short content after
-            colon_match = re.search(r':(.*)$', channel_name)
+            # Ends with colon, pipe, or dash with nothing or only whitespace/very short content after.
+            # The `(?=\s|$)` lookahead after the colon excludes time-colons like "7:00AM" / "9:45am"
+            # (colon followed by a digit) while still matching real separator colons like
+            # "PPV 12: Title" or trailing-empty-colon "PPV 25:".
+            colon_match = re.search(r':(?=\s|$)(.*)$', channel_name)
             if colon_match:
                 content_after = colon_match.group(1).strip()
                 if not content_after or len(content_after) <= 2:
@@ -1338,8 +1341,10 @@ class Plugin:
             return False, None
         
         elif rule_name == "ShortDescription":
-            # Check description length after separators (colon, pipe, or dash)
-            colon_match = re.search(r':(.+)$', channel_name)
+            # Check description length after separators (colon, pipe, or dash).
+            # The `(?=\s)` lookahead after the colon excludes time-colons like "7:00AM"
+            # so only real separator colons like "PPV 12: Title" are measured.
+            colon_match = re.search(r':(?=\s)(.+)$', channel_name)
             if colon_match:
                 description = colon_match.group(1).strip()
                 if len(description) < 15:
@@ -1366,7 +1371,9 @@ class Plugin:
             # Normalize whitespace first to handle multiple spaces, tabs, etc.
             normalized_name = re.sub(r'\s+', ' ', channel_name.strip())
 
-            colon_match = re.search(r':(.+)$', normalized_name)
+            # `(?=\s|$)` excludes time-colons (7:00, 9:45) so a channel like "LIVE 10:30"
+            # is correctly seen as having NO real separator.
+            colon_match = re.search(r':(?=\s|$)', normalized_name)
             pipe_match = re.search(r'\|(.+)$', normalized_name)
             dash_match = re.search(r'\s-\s', normalized_name)  # Dash with surrounding spaces
 
