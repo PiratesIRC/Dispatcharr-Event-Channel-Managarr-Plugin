@@ -2164,7 +2164,7 @@ class Plugin:
                 return None
         return source
 
-    def _attach_managed_epg(self, channels, managed_source, logger):
+    def _attach_managed_epg(self, channels, managed_source, logger, rate_limiter=None):
         """Bind each channel in `channels` to the managed dummy source via an EPGData row.
 
         Only touches channels where epg_data IS NULL. Returns list of channel IDs that
@@ -2199,6 +2199,9 @@ class Plugin:
                 channel.epg_data = epg_data
                 channels_to_update.append(channel)
                 attached_ids.append(channel.id)
+
+                if rate_limiter is not None:
+                    rate_limiter.wait()
 
             if channels_to_update:
                 Channel.objects.bulk_update(channels_to_update, ["epg_data"])
@@ -2280,7 +2283,8 @@ class Plugin:
             no_epg_channels = list(Channel.objects.filter(
                 id__in=enabled_channel_ids, epg_data__isnull=True
             ))
-            attached_ids = self._attach_managed_epg(no_epg_channels, managed_source, logger)
+            rate_limiter = SmartRateLimiter(settings.get("rate_limiting", self.DEFAULT_RATE_LIMITING))
+            attached_ids = self._attach_managed_epg(no_epg_channels, managed_source, logger, rate_limiter=rate_limiter)
 
         keep_ids = set(enabled_channel_ids) if toggle_on else set()
         detached_ids = self._detach_managed_epg(managed_source, keep_ids, logger)
@@ -2439,7 +2443,13 @@ class Plugin:
 
             # Track channel info for enhanced logging
             channel_info_map = {}
-            
+
+            # Optional pacing for large profiles. Reads from settings each scan so
+            # toggling the UI select takes effect on the next run.
+            rate_limiter = SmartRateLimiter(settings.get("rate_limiting", self.DEFAULT_RATE_LIMITING))
+            if rate_limiter.is_active():
+                logger.info(f"{LOG_PREFIX} Rate limiting active: {rate_limiter.level} ({rate_limiter.delay}s/channel)")
+
             # Process each channel
             for i, channel in enumerate(channels):
                 if self._op_stop_event.is_set():
@@ -2539,6 +2549,8 @@ class Plugin:
                     channels_to_hide.append(channel.id)
                 elif action_needed == "show":
                     channels_to_show.append(channel.id)
+
+                rate_limiter.wait()
 
             # Prune undated tracker: drop entries for channels not evaluated this scan
             # (deleted or now dated). Ignored/force-visible channels are preserved if they
