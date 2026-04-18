@@ -2385,7 +2385,9 @@ class Plugin:
                         "action": "Ignored",
                         "reason": "Matches ignore regex",
                         "hide_rule": "",
-                        "has_epg": "Yes" if channel.epg_data else "No"
+                        "has_epg": "Yes" if channel.epg_data else "No",
+                        "managed_epg_assigned": False,
+                        "managed_epg_detached": False,
                     })
                     continue
 
@@ -2405,7 +2407,9 @@ class Plugin:
                         "action": "Forced Visible" if not current_visible else "Visible (Forced)",
                         "reason": "Matches force visible regex",
                         "hide_rule": "[ForceVisible]",
-                        "has_epg": "Yes" if channel.epg_data else "No"
+                        "has_epg": "Yes" if channel.epg_data else "No",
+                        "managed_epg_assigned": False,
+                        "managed_epg_detached": False,
                     })
                     continue
 
@@ -2540,7 +2544,9 @@ class Plugin:
                     "action": final_action,
                     "reason": reason,
                     "hide_rule": hide_rule,
-                    "has_epg": channel_info['has_epg']
+                    "has_epg": channel_info['has_epg'],
+                    "managed_epg_assigned": channel_id in managed_attached_set,
+                    "managed_epg_detached": channel_id in managed_detached_set,
                 })
             
             # Mark scan as complete
@@ -2584,7 +2590,8 @@ class Plugin:
                 header_lines.append(f"Hide Rules Priority: {hide_rules_text_for_export}")
 
                 fieldnames = ['channel_id', 'channel_name', 'channel_number', 'channel_group',
-                            'current_visibility', 'action', 'reason', 'hide_rule', 'has_epg']
+                            'current_visibility', 'action', 'reason', 'hide_rule', 'has_epg',
+                            'managed_epg_assigned', 'managed_epg_detached']
                 csv_filepath = self._export_csv(csv_filename, results, fieldnames, logger, header_lines)
             
             # Apply changes if not dry run
@@ -2666,6 +2673,7 @@ class Plugin:
                 f"• Channels to show: {len(channels_to_show)}",
                 f"• Channels ignored: {len(channels_ignored)}",
                 f"• Duplicate channels hidden: {total_duplicates_hidden}",
+                f"• Managed EPG: {len(managed_attached_set)} attached, {len(managed_detached_set)} detached",
                 f"",
             ]
             if csv_filepath:
@@ -2697,6 +2705,8 @@ class Plugin:
                     "to_show": len(channels_to_show),
                     "ignored": len(channels_ignored),
                     "duplicates_hidden": total_duplicates_hidden,
+                    "managed_epg_attached": len(managed_attached_set),
+                    "managed_epg_detached": len(managed_detached_set),
                     "csv_file": csv_filepath if csv_filepath else "N/A"
                 }
             }
