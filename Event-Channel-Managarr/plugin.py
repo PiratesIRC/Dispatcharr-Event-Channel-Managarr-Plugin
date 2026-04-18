@@ -41,7 +41,7 @@ _scheduler_lock = threading.Lock()  # Prevent concurrent scheduler starts
 class PluginConfig:
     """Centralized configuration constants for Event Channel Managarr."""
 
-    PLUGIN_VERSION = "1.26.1081141"
+    PLUGIN_VERSION = "1.26.1081153"
 
     # Default timezone for scheduling
     DEFAULT_TIMEZONE = "America/Chicago"
@@ -1644,42 +1644,96 @@ class Plugin:
             return {"status": "error", "message": f"Error clearing CSV exports: {e}"}
 
     def check_scheduler_status_action(self, settings, logger):
-        """Display scheduler thread status and diagnostic information"""
+        """Display scheduler status and diagnostic information.
+
+        NOTE ON SCOPE: Dispatcharr runs under uwsgi with multiple worker processes,
+        and each worker loads the plugin independently and starts its own scheduler
+        thread. `threading.enumerate()` only sees threads in the single worker that
+        handled this HTTP request, so the "Threads in this worker" count below is
+        per-worker, not container-wide. Coordination across workers is via the
+        shared files /data/event_channel_managarr_last_run.json (pre-run check)
+        and /data/event_channel_managarr_scan.lock (flock during scan) — those
+        guarantee each scheduled time fires exactly once no matter how many
+        worker threads exist.
+        """
         global _bg_thread
         try:
-            # Count all threads with our scheduler name
-            all_threads = threading.enumerate()
-            scheduler_threads = [t for t in all_threads if "event-channel-managarr-scheduler" in t.name]
-
             status_lines = []
 
-            # Main scheduler thread status
-            if _bg_thread and _bg_thread.is_alive():
-                status_lines.append("✅ Scheduler: Running")
+            # --- This worker ---
+            worker_pid = os.getpid()
+            all_threads = threading.enumerate()
+            scheduler_threads = [t for t in all_threads if "event-channel-managarr-scheduler" in t.name]
+            this_worker_running = bool(_bg_thread and _bg_thread.is_alive())
+
+            status_lines.append(f"🧵 This worker (PID {worker_pid})")
+            if this_worker_running:
+                status_lines.append(f"   ✅ Scheduler thread: Running ({len(scheduler_threads)} in this process)")
             else:
-                status_lines.append("❌ Scheduler: Not running")
-
-            # Check for multiple scheduler threads (this would be a bug)
+                status_lines.append(f"   ❌ Scheduler thread: Not running in this worker")
             if len(scheduler_threads) > 1:
-                status_lines.append(f"⚠️  WARNING: {len(scheduler_threads)} threads detected! May cause duplicates.")
+                status_lines.append(f"   ⚠️  {len(scheduler_threads)} threads inside ONE worker — possible stop/start leak (real bug)")
 
-            # Configured scheduled times
+            status_lines.append("")
+            status_lines.append("ℹ️  Note: Dispatcharr runs multiple uwsgi workers; each has its own")
+            status_lines.append("   scheduler thread. Pressing this button again may reach a different")
+            status_lines.append("   worker. Scheduled runs are coordinated via shared files — only one")
+            status_lines.append("   worker actually runs the scan at each scheduled time.")
+
+            # --- Configured schedule ---
+            status_lines.append("")
+            status_lines.append("⏰ Schedule")
             scheduled_times_str = settings.get("scheduled_times", "").strip()
             if scheduled_times_str:
                 times = self._parse_scheduled_times(scheduled_times_str)
                 if times:
                     tz_str = self._get_system_timezone(settings)
-                    status_lines.append(f"⏰ Times: {', '.join([t.strftime('%H:%M') for t in times])} ({tz_str})")
+                    try:
+                        local_tz = pytz.timezone(tz_str)
+                    except pytz.exceptions.UnknownTimeZoneError:
+                        local_tz = pytz.timezone(self.DEFAULT_TIMEZONE)
+                    now = datetime.now(local_tz)
+                    status_lines.append(f"   Times: {', '.join([t.strftime('%H:%M') for t in times])} ({tz_str})")
+                    # Next scheduled run across any configured time
+                    upcoming = []
+                    for t in times:
+                        today_dt = local_tz.localize(datetime.combine(now.date(), t))
+                        tomorrow_dt = local_tz.localize(datetime.combine(now.date() + timedelta(days=1), t))
+                        upcoming.append(today_dt if today_dt > now else tomorrow_dt)
+                    next_run = min(upcoming)
+                    delta = next_run - now
+                    hours, rem = divmod(int(delta.total_seconds()), 3600)
+                    minutes = rem // 60
+                    status_lines.append(f"   Next run: {next_run.strftime('%Y-%m-%d %H:%M %Z')} (in {hours}h {minutes}m)")
                 else:
-                    status_lines.append("⚠️  Invalid times")
+                    status_lines.append("   ⚠️  Invalid times — check Scheduled Run Times field")
             else:
-                status_lines.append("⏰ No times configured")
+                status_lines.append("   No times configured (scheduler is idle)")
 
-            # Last run tracking (read from shared file across all workers)
+            # --- Shared coordination state (container-wide) ---
+            status_lines.append("")
+            status_lines.append("📅 Last runs (container-wide, from shared file)")
             last_run_data = _read_last_run()
             if last_run_data:
-                last_runs = [f"{time_str} on {date_str}" for time_str, date_str in last_run_data.items()]
-                status_lines.append(f"📅 Last runs: {', '.join(last_runs)}")
+                for time_str, date_str in sorted(last_run_data.items()):
+                    status_lines.append(f"   {time_str}: {date_str}")
+            else:
+                status_lines.append("   No runs recorded yet")
+
+            # --- Scan lock ---
+            status_lines.append("")
+            status_lines.append("🔒 Scan lock")
+            scan_lock_path = PluginConfig.SCAN_LOCK_FILE
+            if os.path.exists(scan_lock_path) and fcntl:
+                try:
+                    with open(scan_lock_path, 'r') as probe:
+                        fcntl.flock(probe, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                        fcntl.flock(probe, fcntl.LOCK_UN)
+                    status_lines.append(f"   Free — no scan currently running")
+                except (OSError, IOError):
+                    status_lines.append(f"   Held — a scan is running in another worker")
+            else:
+                status_lines.append(f"   Not yet created (no scan has run since boot)")
 
             return {
                 "status": "success",

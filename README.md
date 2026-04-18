@@ -197,7 +197,7 @@ When **🗓️ Manage Dummy EPG** is enabled:
 | **🧹 Remove EPG from Hidden** | Filled red, with confirm | Delete all EPG data from channels that are currently hidden/disabled in the selected profile(s). Destructive; requires confirmation. |
 | **🗑️ Clear CSV Exports** | Filled red, with confirm | Delete all CSV export files created by this plugin to free up disk space. Requires confirmation. |
 | **🧼 Cleanup Orphaned Tasks** | Outline orange, with confirm | Remove any orphaned Celery periodic tasks from old plugin versions. Requires confirmation. |
-| **🩺 Check Scheduler** | Outline blue | Display scheduler thread status and diagnostic information. |
+| **🩺 Check Scheduler** | Outline blue | Display scheduler status. Reports this worker's scheduler thread, configured times, the next upcoming run, container-wide last-run history (from shared file), and whether a scan is currently holding the cross-process lock. Because Dispatcharr runs under multiple uwsgi workers and each has its own scheduler thread, pressing the button twice may reach different workers — coordination is via shared files so each scheduled time fires exactly once regardless. |
 
 ## File Locations
 * **Settings Cache**: `/data/event_channel_managarr_settings.json`
