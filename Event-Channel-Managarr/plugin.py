@@ -2504,6 +2504,19 @@ class Plugin:
             managed_attached_set = set(managed_attached_ids)
             managed_detached_set = set(managed_detached_ids)
 
+            # Patch result rows appended by the ignored-regex / force-visible
+            # early-exit branches earlier in this method — they hardcode the
+            # managed-EPG flags to False because the pass hadn't run yet. The
+            # detach pass may have cleared their epg_data (if they were bound
+            # in a prior scan), so re-sync the report with actual set state.
+            if managed_detached_set or managed_attached_set:
+                for row in results:
+                    cid = row.get("channel_id")
+                    if cid in managed_detached_set:
+                        row["managed_epg_detached"] = True
+                    if cid in managed_attached_set:
+                        row["managed_epg_assigned"] = True
+
             # Build final results with duplicate information
             for channel_info in channels_for_duplicate_check:
                 channel_id = channel_info['channel_id']
