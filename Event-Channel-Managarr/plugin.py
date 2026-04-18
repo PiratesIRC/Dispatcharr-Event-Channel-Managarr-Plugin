@@ -41,7 +41,7 @@ _scheduler_lock = threading.Lock()  # Prevent concurrent scheduler starts
 class PluginConfig:
     """Centralized configuration constants for Event Channel Managarr."""
 
-    PLUGIN_VERSION = "1.26.1081232"
+    PLUGIN_VERSION = "1.26.1081234"
 
     # Default timezone for scheduling
     DEFAULT_TIMEZONE = "America/Chicago"
@@ -391,7 +391,7 @@ class Plugin:
                 "label": "💤 Regex: Mark Channel as Inactive",
                 "type": "text",
                 "default": "",
-                "placeholder": "PLACEHOLDER|TBD|COMING SOON",
+                "placeholder": "CANCELLED|COMING SOON|^TEST|^BACKUP|PLACEHOLDER",
                 "help_text": "Regular expression to hide channels. This is processed as part of the [InactiveRegex] hide rule.",
             },
             {
