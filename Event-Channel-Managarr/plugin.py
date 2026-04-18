@@ -67,6 +67,12 @@ class PluginConfig:
     # Default keep duplicates setting
     DEFAULT_KEEP_DUPLICATES = False
 
+    # Managed Dummy EPG feature defaults
+    DEFAULT_MANAGE_DUMMY_EPG = False
+    DEFAULT_EVENT_DURATION_HOURS = "3"
+    DEFAULT_OFFLINE_TITLE = "Offline"
+    DEFAULT_DUMMY_EPG_TIMEZONE = "US/Eastern"
+
     # Version check interval (in seconds)
     VERSION_CHECK_INTERVAL = 86400  # 24 hours
 
@@ -187,6 +193,10 @@ class Plugin:
     DEFAULT_AUTO_REMOVE_EPG = PluginConfig.DEFAULT_AUTO_REMOVE_EPG
     DEFAULT_SCHEDULED_CSV_EXPORT = PluginConfig.DEFAULT_SCHEDULED_CSV_EXPORT
     DEFAULT_KEEP_DUPLICATES = PluginConfig.DEFAULT_KEEP_DUPLICATES
+    DEFAULT_MANAGE_DUMMY_EPG = PluginConfig.DEFAULT_MANAGE_DUMMY_EPG
+    DEFAULT_EVENT_DURATION_HOURS = PluginConfig.DEFAULT_EVENT_DURATION_HOURS
+    DEFAULT_OFFLINE_TITLE = PluginConfig.DEFAULT_OFFLINE_TITLE
+    DEFAULT_DUMMY_EPG_TIMEZONE = PluginConfig.DEFAULT_DUMMY_EPG_TIMEZONE
     VERSION_CHECK_INTERVAL = PluginConfig.VERSION_CHECK_INTERVAL
     SCHEDULER_CHECK_INTERVAL = PluginConfig.SCHEDULER_CHECK_INTERVAL
     SCHEDULER_STOP_TIMEOUT = PluginConfig.SCHEDULER_STOP_TIMEOUT
@@ -394,6 +404,37 @@ class Plugin:
                 "type": "boolean",
                 "default": self.DEFAULT_SCHEDULED_CSV_EXPORT,
                 "help_text": "If enabled, a CSV file of the scan results will be created when the plugin runs on a schedule. If disabled, no CSV will be created for scheduled runs.",
+            },
+            {
+                "id": "manage_dummy_epg",
+                "label": "🗓️ Manage Dummy EPG",
+                "type": "boolean",
+                "default": self.DEFAULT_MANAGE_DUMMY_EPG,
+                "help_text": "If enabled, visible channels with no EPG assigned will be bound to a plugin-managed dummy EPG source. The guide shows the extracted event during its time window (and 'Offline' outside it), or the channel name as a 24-hour fallback if no time is parseable.",
+            },
+            {
+                "id": "dummy_epg_event_duration_hours",
+                "label": "⏱️ Event Duration (hours)",
+                "type": "string",
+                "default": self.DEFAULT_EVENT_DURATION_HOURS,
+                "placeholder": "3",
+                "help_text": "How long each scheduled event should appear in the guide (hours). Before and after this window the guide shows the Offline Title.",
+            },
+            {
+                "id": "dummy_epg_offline_title",
+                "label": "💤 Offline Title",
+                "type": "string",
+                "default": self.DEFAULT_OFFLINE_TITLE,
+                "placeholder": "Offline",
+                "help_text": "Title shown in the guide before and after the event window. Also used as fallback when the title pattern doesn't match.",
+            },
+            {
+                "id": "dummy_epg_event_timezone",
+                "label": "📺 Channel Name Event Timezone",
+                "type": "select",
+                "default": self.DEFAULT_DUMMY_EPG_TIMEZONE,
+                "help_text": "Timezone encoded in the event times inside channel names (e.g., US/Eastern for channels like '(4.17 8:30 PM ET)'). Different from the scheduler timezone above.",
+                "options": self._load_timezones_from_file()
             },
         ]
 
@@ -866,7 +907,15 @@ class Plugin:
                 settings["keep_duplicates"] = self.DEFAULT_KEEP_DUPLICATES
             if "auto_set_dummy_epg_on_hide" not in settings:
                 settings["auto_set_dummy_epg_on_hide"] = self.DEFAULT_AUTO_REMOVE_EPG
-            
+            if "manage_dummy_epg" not in settings:
+                settings["manage_dummy_epg"] = self.DEFAULT_MANAGE_DUMMY_EPG
+            if "dummy_epg_event_duration_hours" not in settings:
+                settings["dummy_epg_event_duration_hours"] = self.DEFAULT_EVENT_DURATION_HOURS
+            if "dummy_epg_offline_title" not in settings:
+                settings["dummy_epg_offline_title"] = self.DEFAULT_OFFLINE_TITLE
+            if "dummy_epg_event_timezone" not in settings:
+                settings["dummy_epg_event_timezone"] = self.DEFAULT_DUMMY_EPG_TIMEZONE
+
             with open(self.settings_file, 'w') as f:
                 json.dump(settings, f, indent=2)
             self.saved_settings = settings
