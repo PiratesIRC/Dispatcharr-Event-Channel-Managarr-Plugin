@@ -41,7 +41,7 @@ _scheduler_lock = threading.Lock()  # Prevent concurrent scheduler starts
 class PluginConfig:
     """Centralized configuration constants for Event Channel Managarr."""
 
-    PLUGIN_VERSION = "1.26.1081303"
+    PLUGIN_VERSION = "1.26.1081321"
 
     # Default timezone for scheduling
     DEFAULT_TIMEZONE = "America/Chicago"
@@ -2883,45 +2883,84 @@ class Plugin:
                 except OSError:
                     pass
 
+    def _ws_summary_line(self, message):
+        """Pick a compact one-line summary from a multi-line scan result message."""
+        if not message:
+            return "Done"
+        # message_parts starts with a header line then "• Total..." bullets;
+        # the first bullet is usually the most informative single line.
+        for line in message.splitlines():
+            line = line.strip()
+            if line.startswith("•"):
+                return line.lstrip("• ").strip()
+        return message.splitlines()[0].strip()
+
     def _dry_run_bg(self, settings, logger, result_holder):
-        """Background wrapper for dry_run that stores the result."""
+        """Background wrapper for dry_run that stores the result and streams progress toasts."""
+        send_websocket_update('updates', 'update', {
+            "type": "plugin", "plugin": self.name,
+            "message": "🔄 Dry run: scanning channels…"
+        })
         try:
-            result_holder['result'] = self._scan_and_update_channels(settings, logger, dry_run=True)
+            result = self._scan_and_update_channels(settings, logger, dry_run=True)
+            result_holder['result'] = result
+            if result.get("status") == "success":
+                summary = self._ws_summary_line(result.get("message", ""))
+                send_websocket_update('updates', 'update', {
+                    "type": "plugin", "plugin": self.name,
+                    "message": f"✅ Dry run complete — {summary}"
+                })
+            else:
+                send_websocket_update('updates', 'update', {
+                    "type": "plugin", "plugin": self.name,
+                    "message": f"❌ Dry run: {result.get('message', 'failed')}"
+                })
         except Exception as e:
             logger.exception(f"{LOG_PREFIX} Dry run error: {e}")
             result_holder['result'] = {"status": "error", "message": f"Dry run error: {e}"}
+            send_websocket_update('updates', 'update', {
+                "type": "plugin", "plugin": self.name,
+                "message": f"❌ Dry run failed: {e}"
+            })
 
     def dry_run_action(self, settings, logger):
-        """Preview channel visibility changes without applying them"""
-        # Use a result holder so the background thread can store its result
-        result_holder = {}
-        if not self._try_start_thread(self._dry_run_bg, (dict(settings), logger, result_holder)):
+        """Preview channel visibility changes without applying them (runs as background thread)."""
+        if not self._try_start_thread(self._dry_run_bg, (dict(settings), logger, {})):
             return {"status": "error", "message": "Another operation is already running. Please wait for it to finish."}
-
-        # Wait for the dry run to complete (synchronous for the caller)
-        logger.info(f"{LOG_PREFIX} Starting dry run scan...")
-        self._thread.join()
-        return result_holder.get('result', {"status": "error", "message": "Dry run produced no result."})
+        return {
+            "status": "success",
+            "message": "🔄 Dry run started. Watch notifications for progress and completion.",
+            "background": True,
+        }
 
     def _run_now_bg(self, settings, logger):
-        """Background wrapper for run_now to support thread-safe execution."""
+        """Background wrapper for run_now. Streams progress + completion toasts."""
+        send_websocket_update('updates', 'update', {
+            "type": "plugin", "plugin": self.name,
+            "message": "🔄 Run Now: scanning channels…"
+        })
         try:
             result = self._scan_and_update_channels(settings, logger, dry_run=False)
             if result.get("status") == "success":
                 results_data = result.get("results", {})
                 if results_data.get("to_hide", 0) > 0 or results_data.get("to_show", 0) > 0:
                     self._trigger_frontend_refresh(settings, logger)
-            msg = result.get("message", "Done")
-            logger.info(f"{LOG_PREFIX} Run Now completed: {msg}")
-            send_websocket_update('updates', 'update', {
-                "type": "plugin", "plugin": self.name,
-                "message": f"Run Now complete: {msg.split(chr(10))[0]}"
-            })
+                summary = self._ws_summary_line(result.get("message", ""))
+                send_websocket_update('updates', 'update', {
+                    "type": "plugin", "plugin": self.name,
+                    "message": f"✅ Run Now complete — {summary}"
+                })
+            else:
+                send_websocket_update('updates', 'update', {
+                    "type": "plugin", "plugin": self.name,
+                    "message": f"❌ Run Now: {result.get('message', 'failed')}"
+                })
+            logger.info(f"{LOG_PREFIX} Run Now completed: {result.get('message', 'Done')}")
         except Exception as e:
             logger.exception(f"{LOG_PREFIX} Run Now error: {e}")
             send_websocket_update('updates', 'update', {
                 "type": "plugin", "plugin": self.name,
-                "message": f"Run Now error: {e}"
+                "message": f"❌ Run Now failed: {e}"
             })
 
     def run_now_action(self, settings, logger):
@@ -2930,7 +2969,7 @@ class Plugin:
             return {"status": "error", "message": "Another operation is already running. Please wait for it to finish."}
         return {
             "status": "success",
-            "message": "Channel visibility update started. Check notifications for progress.",
+            "message": "🔄 Run Now started. Watch notifications for progress and completion.",
             "background": True,
         }
 
