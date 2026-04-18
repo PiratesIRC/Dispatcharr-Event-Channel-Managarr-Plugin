@@ -67,3 +67,6 @@ Event-Channel-Managarr.txt
 Event-Channel-Managarr.zip
 SCHEDULED_TASKS_GUIDE.md
 zip.cmd
+
+# Internal planning / design docs (not shipped to end users)
+docs/
