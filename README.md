@@ -1,5 +1,5 @@
 # Event Channel Managarr
-A Dispatcharr plugin that automatically manages channel visibility based on EPG data and channel names. It hides channels that currently have no event information and shows channels that do — with optional managed dummy EPG so the guide still shows something useful (event title during the window, "Offline" outside it) for channels that never have real EPG assigned.
+A Dispatcharr plugin that automatically manages channel visibility based on EPG data and channel names. It hides channels that currently have no event information and shows channels that do — with optional managed dummy EPG so the guide still shows something useful (event title during the window; "Upcoming at <time>: <title>" before; "Ended at <time>: <title>" after) for channels that never have real EPG assigned.
 
 [![Dispatcharr plugin](https://img.shields.io/badge/Dispatcharr-plugin-8A2BE2)](https://github.com/Dispatcharr/Dispatcharr)
 [![Ask DeepWiki](https://deepwiki.com/badge.svg)](https://deepwiki.com/PiratesIRC/Dispatcharr-Event-Channel-Managarr-Plugin)
@@ -16,7 +16,7 @@ A Dispatcharr plugin that automatically manages channel visibility based on EPG 
 * **Automatic Visibility Control**: Hides channels without active events and shows channels that have them. Scans ALL channels in the profile (both visible and hidden) to ensure channels with new events are always shown.
 * **Prioritized Hide Rules**: A fully customizable, priority-based rule system. You define the order of rules (e.g., `[BlankName]`, `[PastDate:0]`, `[UndatedAge:2]`, `[ShortDescription]`) to determine *why* and *when* a channel should be hidden.
 * **Undated-Channel Aging**: The `[UndatedAge:N]` rule tracks per-channel first-seen dates and hides channels whose names carry no parseable date once they've been visible for more than N days. Catches stale placeholder channels that date-only rules can't evaluate.
-* **Managed Dummy EPG (new in v1.26.1081141)**: Opt-in. Visible channels with no EPG get bound to a plugin-managed dummy EPG source. Dispatcharr's guide then shows the extracted event title during its time window and a user-configurable **Offline Title** outside it — or a 24-hour program with the channel name when no time is parseable from the name. Timezone-aware (channel name time is interpreted in the configured event timezone; the guide renders in the client's local time).
+* **Managed Dummy EPG (new in v1.26.1081141)**: Opt-in. Visible channels with no EPG get bound to a plugin-managed dummy EPG source. Dispatcharr's guide then shows the extracted event title during its time window; before the window it shows `Upcoming at <start-time>: <title>`; after, `Ended at <end-time>: <title>`. For names with no parseable time, a 24-hour program rendering the channel name is used instead. Timezone-aware (channel name time is interpreted in the configured event timezone; the guide renders in the client's local time).
 * **Stream Name Selection**: Choose between using the channel name or the stream name for rule matching. When stream name is selected, the plugin uses the first stream in the channel for all rule evaluations.
 * **Date-Based Logic**: Use rules like `[PastDate:days]` and `[FutureDate:days]` to hide events that are over or too far in the future. Includes a **grace period** for events that run past midnight.
 * **Enhanced Date Format Support**: Recognizes a wide variety of date formats in channel names, including dates with optional times (e.g., "Nov 8 16:00"), slash-separated dates, ISO formats, and more.
@@ -81,8 +81,7 @@ Settings are grouped into six sections in the UI.
 | :--- | :--- | :--- | :--- |
 | **🔌 Auto-Remove EPG on Hide** | `boolean` | `True` | If enabled, automatically removes EPG data from a channel when it is hidden by the plugin. |
 | **🗓️ Manage Dummy EPG** | `boolean` | `False` | If enabled, visible channels with no EPG get bound to the plugin-managed dummy EPG source. Disables cleanly: toggling off detaches all channels from the managed source on the next scan. |
-| **⏱️ Event Duration (hours)** | `number` | `3` | How long each scheduled event appears in the guide. Before and after this window the guide shows the Offline Title. |
-| **💤 Offline Title** | `text` | `Offline` | Title shown in the guide before and after the event window. |
+| **⏱️ Event Duration (hours)** | `number` | `3` | How long each scheduled event appears in the guide. Before this window the guide shows `Upcoming at <start-time>: <title>`; after, `Ended at <end-time>: <title>`. |
 | **📺 Channel Name Event Timezone** | `select` | `US/Eastern` | Timezone encoded in event times within channel names (e.g., `US/Eastern` for channels like `(4.17 8:30 PM ET)`). Independent of the scheduler timezone. |
 
 ### ⏰ Scheduling & Export
@@ -112,7 +111,7 @@ Settings are grouped into six sections in the UI.
     * Click **💾 Save Schedule**. This saves all settings and activates the schedule if times are provided.
 3.  **(Optional) Enable Managed Dummy EPG**
     * In the **🔌 EPG Management** section, toggle **Manage Dummy EPG** on.
-    * Set **Event Duration (hours)**, **Offline Title**, and **Channel Name Event Timezone** to match your event-channel conventions.
+    * Set **Event Duration (hours)** and **Channel Name Event Timezone** to match your event-channel conventions.
     * On the next scan, visible channels with no EPG get bound to the plugin-managed dummy source. The guide will then show event titles during their windows and the offline title outside them.
 4.  **Preview Changes (Dry Run)**
     * Click **👁️ Dry Run**.
@@ -182,7 +181,8 @@ When **🗓️ Manage Dummy EPG** is enabled:
 * Channels that already have a real EPG binding (XMLTV, Schedules Direct) are never touched.
 * Dispatcharr's `generate_custom_dummy_programs` renders the guide on demand using regex patterns + templates stored in the source's `custom_properties`:
   * **During the event window** (length = Event Duration hours, starting at the time extracted from the channel name in the configured Channel Name Event Timezone): the event title.
-  * **Before and after the event window**: the configured **Offline Title**.
+  * **Before the event window**: `Upcoming at <start-time>: <title>`.
+  * **After the event window**: `Ended at <end-time>: <title>`.
   * **For names with no parseable time**: a 24-hour program with the channel name (fallback template).
 * Toggling **Manage Dummy EPG** off cleanly unbinds every channel the plugin attached — on the next scan, `epg_data` is set to `None` for any channel still pointing at the managed source. The source row itself is preserved for cheap re-adoption.
 

@@ -41,7 +41,7 @@ _scheduler_lock = threading.Lock()  # Prevent concurrent scheduler starts
 class PluginConfig:
     """Centralized configuration constants for Event Channel Managarr."""
 
-    PLUGIN_VERSION = "1.26.1081321"
+    PLUGIN_VERSION = "1.26.1081602"
 
     # Default timezone for scheduling
     DEFAULT_TIMEZONE = "America/Chicago"
@@ -70,7 +70,6 @@ class PluginConfig:
     # Managed Dummy EPG feature defaults
     DEFAULT_MANAGE_DUMMY_EPG = False
     DEFAULT_EVENT_DURATION_HOURS = "3"
-    DEFAULT_OFFLINE_TITLE = "Offline"
     DEFAULT_DUMMY_EPG_TIMEZONE = "US/Eastern"
 
     # Pacing for per-channel ORM writes ("none", "low", "medium", "high")
@@ -228,7 +227,6 @@ class Plugin:
     DEFAULT_KEEP_DUPLICATES = PluginConfig.DEFAULT_KEEP_DUPLICATES
     DEFAULT_MANAGE_DUMMY_EPG = PluginConfig.DEFAULT_MANAGE_DUMMY_EPG
     DEFAULT_EVENT_DURATION_HOURS = PluginConfig.DEFAULT_EVENT_DURATION_HOURS
-    DEFAULT_OFFLINE_TITLE = PluginConfig.DEFAULT_OFFLINE_TITLE
     DEFAULT_DUMMY_EPG_TIMEZONE = PluginConfig.DEFAULT_DUMMY_EPG_TIMEZONE
     DEFAULT_RATE_LIMITING = PluginConfig.DEFAULT_RATE_LIMITING
     VERSION_CHECK_INTERVAL = PluginConfig.VERSION_CHECK_INTERVAL
@@ -459,15 +457,7 @@ class Plugin:
                 "label": "⏱️ Event Duration (hours)",
                 "type": "number",
                 "default": int(self.DEFAULT_EVENT_DURATION_HOURS),
-                "help_text": "How long each scheduled event should appear in the guide (hours). Before and after this window the guide shows the Offline Title.",
-            },
-            {
-                "id": "dummy_epg_offline_title",
-                "label": "💤 Offline Title",
-                "type": "text",
-                "default": self.DEFAULT_OFFLINE_TITLE,
-                "placeholder": "Offline",
-                "help_text": "Title shown in the guide before and after the event window. Also used as fallback when the title pattern doesn't match.",
+                "help_text": "How long each scheduled event should appear in the guide (hours). Before this window the guide shows 'Upcoming at <time>: <event>'; after, 'Ended at <time>: <event>'.",
             },
             {
                 "id": "dummy_epg_event_timezone",
@@ -956,8 +946,6 @@ class Plugin:
                 settings["manage_dummy_epg"] = self.DEFAULT_MANAGE_DUMMY_EPG
             if "dummy_epg_event_duration_hours" not in settings:
                 settings["dummy_epg_event_duration_hours"] = self.DEFAULT_EVENT_DURATION_HOURS
-            if "dummy_epg_offline_title" not in settings:
-                settings["dummy_epg_offline_title"] = self.DEFAULT_OFFLINE_TITLE
             if "dummy_epg_event_timezone" not in settings:
                 settings["dummy_epg_event_timezone"] = self.DEFAULT_DUMMY_EPG_TIMEZONE
             if "rate_limiting" not in settings:
@@ -2107,8 +2095,6 @@ class Plugin:
         if duration_hours <= 0:
             duration_hours = int(self.DEFAULT_EVENT_DURATION_HOURS)
 
-        offline_title = str(settings.get("dummy_epg_offline_title",
-                                         self.DEFAULT_OFFLINE_TITLE)).strip() or self.DEFAULT_OFFLINE_TITLE
         tz_value = str(settings.get("dummy_epg_event_timezone",
                                     self.DEFAULT_DUMMY_EPG_TIMEZONE)).strip() or self.DEFAULT_DUMMY_EPG_TIMEZONE
 
@@ -2131,8 +2117,13 @@ class Plugin:
             "time_pattern": r"(?P<hour>\d{1,2})(?::(?P<minute>\d{2}))?\s*(?P<ampm>[AaPp][Mm])",
             "date_pattern": r"\b(?P<month>\d{1,2})[./](?P<day>\d{1,2})(?:[./](?P<year>\d{2,4}))?\b",
             "title_template": "{title}",
-            "upcoming_title_template": offline_title,
-            "ended_title_template": offline_title,
+            # Informative pre/post-event titles using Dispatcharr's
+            # auto-computed {starttime}/{endtime} placeholders plus the
+            # extracted {title}. Examples at render time:
+            #   Upcoming at 8:00 PM: Cage Fury FC 153
+            #   Ended at 11:00 PM: Cage Fury FC 153
+            "upcoming_title_template": "Upcoming at {starttime}: {title}",
+            "ended_title_template": "Ended at {endtime}: {title}",
             "fallback_title_template": "{channel_name}",
             "program_duration": duration_hours * 60,
             "timezone": tz_value,
@@ -2733,7 +2724,6 @@ class Plugin:
                     "auto_set_dummy_epg_on_hide",
                     "manage_dummy_epg",
                     "dummy_epg_event_duration_hours",
-                    "dummy_epg_offline_title",
                     "dummy_epg_event_timezone",
                     "scheduled_times",
                     "enable_scheduled_csv_export",
@@ -2883,32 +2873,43 @@ class Plugin:
                 except OSError:
                     pass
 
-    def _ws_summary_line(self, message):
-        """Pick a compact one-line summary from a multi-line scan result message."""
-        if not message:
-            return "Done"
-        # message_parts starts with a header line then "• Total..." bullets;
-        # the first bullet is usually the most informative single line.
-        for line in message.splitlines():
-            line = line.strip()
-            if line.startswith("•"):
-                return line.lstrip("• ").strip()
-        return message.splitlines()[0].strip()
+    def _ws_summary_line(self, result):
+        """Build a compact one-line summary from a scan result dict for a completion toast.
 
-    def _dry_run_bg(self, settings, logger, result_holder):
-        """Background wrapper for dry_run that stores the result and streams progress toasts."""
+        Prefers actionable counts (hide/show/managed EPG) over total-processed.
+        """
+        if not isinstance(result, dict):
+            return "Done"
+        res = result.get("results") or {}
+        parts = []
+        total = res.get("total_channels", 0)
+        to_hide = res.get("to_hide", 0)
+        to_show = res.get("to_show", 0)
+        attached = res.get("managed_epg_attached", 0)
+        detached = res.get("managed_epg_detached", 0)
+        if total:
+            parts.append(f"{total} channels")
+        if to_hide or to_show:
+            parts.append(f"{to_hide} hidden / {to_show} shown")
+        if attached or detached:
+            parts.append(f"EPG +{attached}/-{detached}")
+        csv_file = res.get("csv_file")
+        if csv_file and csv_file != "N/A":
+            parts.append(f"CSV: {os.path.basename(csv_file)}")
+        return " | ".join(parts) if parts else "Done"
+
+    def _dry_run_bg(self, settings, logger):
+        """Background wrapper for dry_run. Streams progress + completion toasts."""
         send_websocket_update('updates', 'update', {
             "type": "plugin", "plugin": self.name,
             "message": "🔄 Dry run: scanning channels…"
         })
         try:
             result = self._scan_and_update_channels(settings, logger, dry_run=True)
-            result_holder['result'] = result
             if result.get("status") == "success":
-                summary = self._ws_summary_line(result.get("message", ""))
                 send_websocket_update('updates', 'update', {
                     "type": "plugin", "plugin": self.name,
-                    "message": f"✅ Dry run complete — {summary}"
+                    "message": f"✅ Dry run complete — {self._ws_summary_line(result)}"
                 })
             else:
                 send_websocket_update('updates', 'update', {
@@ -2917,7 +2918,6 @@ class Plugin:
                 })
         except Exception as e:
             logger.exception(f"{LOG_PREFIX} Dry run error: {e}")
-            result_holder['result'] = {"status": "error", "message": f"Dry run error: {e}"}
             send_websocket_update('updates', 'update', {
                 "type": "plugin", "plugin": self.name,
                 "message": f"❌ Dry run failed: {e}"
@@ -2925,7 +2925,7 @@ class Plugin:
 
     def dry_run_action(self, settings, logger):
         """Preview channel visibility changes without applying them (runs as background thread)."""
-        if not self._try_start_thread(self._dry_run_bg, (dict(settings), logger, {})):
+        if not self._try_start_thread(self._dry_run_bg, (dict(settings), logger)):
             return {"status": "error", "message": "Another operation is already running. Please wait for it to finish."}
         return {
             "status": "success",
@@ -2945,10 +2945,9 @@ class Plugin:
                 results_data = result.get("results", {})
                 if results_data.get("to_hide", 0) > 0 or results_data.get("to_show", 0) > 0:
                     self._trigger_frontend_refresh(settings, logger)
-                summary = self._ws_summary_line(result.get("message", ""))
                 send_websocket_update('updates', 'update', {
                     "type": "plugin", "plugin": self.name,
-                    "message": f"✅ Run Now complete — {summary}"
+                    "message": f"✅ Run Now complete — {self._ws_summary_line(result)}"
                 })
             else:
                 send_websocket_update('updates', 'update', {
