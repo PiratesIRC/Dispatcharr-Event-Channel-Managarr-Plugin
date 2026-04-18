@@ -16,7 +16,7 @@ A Dispatcharr plugin that automatically manages channel visibility based on EPG 
 * **Automatic Visibility Control**: Hides channels without active events and shows channels that have them. Scans ALL channels in the profile (both visible and hidden) to ensure channels with new events are always shown.
 * **Prioritized Hide Rules**: A fully customizable, priority-based rule system. You define the order of rules (e.g., `[BlankName]`, `[PastDate:0]`, `[UndatedAge:2]`, `[ShortDescription]`) to determine *why* and *when* a channel should be hidden.
 * **Undated-Channel Aging**: The `[UndatedAge:N]` rule tracks per-channel first-seen dates and hides channels whose names carry no parseable date once they've been visible for more than N days. Catches stale placeholder channels that date-only rules can't evaluate.
-* **Managed Dummy EPG (new in v0.8.0)**: Opt-in. Visible channels with no EPG get bound to a plugin-managed dummy EPG source. Dispatcharr's guide then shows the extracted event title during its time window and a user-configurable **Offline Title** outside it — or a 24-hour program with the channel name when no time is parseable from the name. Timezone-aware (channel name time is interpreted in the configured event timezone; the guide renders in the client's local time).
+* **Managed Dummy EPG (new in v1.26.1081141)**: Opt-in. Visible channels with no EPG get bound to a plugin-managed dummy EPG source. Dispatcharr's guide then shows the extracted event title during its time window and a user-configurable **Offline Title** outside it — or a 24-hour program with the channel name when no time is parseable from the name. Timezone-aware (channel name time is interpreted in the configured event timezone; the guide renders in the client's local time).
 * **Stream Name Selection**: Choose between using the channel name or the stream name for rule matching. When stream name is selected, the plugin uses the first stream in the channel for all rule evaluations.
 * **Date-Based Logic**: Use rules like `[PastDate:days]` and `[FutureDate:days]` to hide events that are over or too far in the future. Includes a **grace period** for events that run past midnight.
 * **Enhanced Date Format Support**: Recognizes a wide variety of date formats in channel names, including dates with optional times (e.g., "Nov 8 16:00"), slash-separated dates, ISO formats, and more.
@@ -26,8 +26,8 @@ A Dispatcharr plugin that automatically manages channel visibility based on EPG 
 * **Direct Django ORM Integration**: Operates directly within Dispatcharr's Django environment for fast, reliable channel management without API overhead.
 * **WebSocket Progress Updates**: Real-time adaptive progress notifications during scans via WebSocket.
 * **Cross-Worker Safe**: A cross-process `fcntl` lock on the scan file ensures at most one scan runs at a time across all uwsgi workers, whether triggered by the scheduler or manually via Run Now / Dry Run.
-* **Configurable Rate Limiting (new in v0.8.0)**: Select `none` / `low` / `medium` / `high` to pace per-channel ORM writes (0 / 0.05 / 0.2 / 0.5 seconds each). Defaults to `none`; useful when scanning very large profiles on a small database.
-* **Sectioned UI (new in v0.8.0)**: Settings are grouped into **Scope**, **Hide Rules**, **Duplicates**, **EPG Management**, **Scheduling & Export**, and **Advanced** sections for easier navigation.
+* **Configurable Rate Limiting (new in v1.26.1081141)**: Select `none` / `low` / `medium` / `high` to pace per-channel ORM writes (0 / 0.05 / 0.2 / 0.5 seconds each). Defaults to `none`; useful when scanning very large profiles on a small database.
+* **Sectioned UI (new in v1.26.1081141)**: Settings are grouped into **Scope**, **Hide Rules**, **Duplicates**, **EPG Management**, **Scheduling & Export**, and **Advanced** sections for easier navigation.
 * **Force Visibility**: Use a regular expression to **force specific channels** (like news or weather) to remain visible, overriding all hide rules.
 * **Flexible Scheduling**: Run scans automatically at specific times each day (e.g., `0600,1300,1800`) with a simple dropdown for timezone selection.
 * **Auto-EPG Management**: When a channel is hidden, the plugin can automatically remove its EPG assignment to keep your guide clean.
@@ -216,7 +216,7 @@ When **🗓️ Manage Dummy EPG** is enabled:
 Every CSV includes a block of summary header lines (prefixed with `#`) before the column row:
 
 ```
-# Event Channel Managarr v0.8.0 - Dry Run - 20260418_111247
+# Event Channel Managarr v1.26.1081141 - Dry Run - 20260418_111247
 # Total Channels Processed: 103
 # Channels to Hide: 50
 # Channels to Show: 0
