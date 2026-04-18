@@ -41,7 +41,7 @@ _scheduler_lock = threading.Lock()  # Prevent concurrent scheduler starts
 class PluginConfig:
     """Centralized configuration constants for Event Channel Managarr."""
 
-    PLUGIN_VERSION = "1.26.1081242"
+    PLUGIN_VERSION = "1.26.1081244"
 
     # Default timezone for scheduling
     DEFAULT_TIMEZONE = "America/Chicago"
@@ -1371,9 +1371,12 @@ class Plugin:
             # Normalize whitespace first to handle multiple spaces, tabs, etc.
             normalized_name = re.sub(r'\s+', ' ', channel_name.strip())
 
-            # `(?=\s|$)` excludes time-colons (7:00, 9:45) so a channel like "LIVE 10:30"
-            # is correctly seen as having NO real separator.
-            colon_match = re.search(r':(?=\s|$)', normalized_name)
+            # `(?=\s)` excludes time-colons (7:00, 9:45) so a channel like "LIVE 10:30"
+            # is correctly seen as having NO real separator. Also requires content after
+            # the colon so trailing-empty colons ("PPV 25:") still count as "no separator"
+            # here — matching pre-fix behavior. [EmptyPlaceholder] catches those cases
+            # earlier in the rule chain.
+            colon_match = re.search(r':(?=\s)(.+)$', normalized_name)
             pipe_match = re.search(r'\|(.+)$', normalized_name)
             dash_match = re.search(r'\s-\s', normalized_name)  # Dash with surrounding spaces
 
