@@ -41,7 +41,7 @@ _scheduler_lock = threading.Lock()  # Prevent concurrent scheduler starts
 class PluginConfig:
     """Centralized configuration constants for Event Channel Managarr."""
 
-    PLUGIN_VERSION = "0.7.0"
+    PLUGIN_VERSION = "0.8.0"
 
     # Default timezone for scheduling
     DEFAULT_TIMEZONE = "America/Chicago"
@@ -72,6 +72,9 @@ class PluginConfig:
     DEFAULT_EVENT_DURATION_HOURS = "3"
     DEFAULT_OFFLINE_TITLE = "Offline"
     DEFAULT_DUMMY_EPG_TIMEZONE = "US/Eastern"
+
+    # Pacing for per-channel ORM writes ("none", "low", "medium", "high")
+    DEFAULT_RATE_LIMITING = "none"
 
     # Version check interval (in seconds)
     VERSION_CHECK_INTERVAL = 86400  # 24 hours
@@ -197,6 +200,7 @@ class Plugin:
     DEFAULT_EVENT_DURATION_HOURS = PluginConfig.DEFAULT_EVENT_DURATION_HOURS
     DEFAULT_OFFLINE_TITLE = PluginConfig.DEFAULT_OFFLINE_TITLE
     DEFAULT_DUMMY_EPG_TIMEZONE = PluginConfig.DEFAULT_DUMMY_EPG_TIMEZONE
+    DEFAULT_RATE_LIMITING = PluginConfig.DEFAULT_RATE_LIMITING
     VERSION_CHECK_INTERVAL = PluginConfig.VERSION_CHECK_INTERVAL
     SCHEDULER_CHECK_INTERVAL = PluginConfig.SCHEDULER_CHECK_INTERVAL
     SCHEDULER_STOP_TIMEOUT = PluginConfig.SCHEDULER_STOP_TIMEOUT
@@ -289,121 +293,129 @@ class Plugin:
                 "type": "info",
                 "help_text": version_message
             },
-        {
-            "id": "timezone",
-            "label": "🌍 Timezone",
-            "type": "select",
-            "default": self.DEFAULT_TIMEZONE,
-            "help_text": "Timezone for scheduled runs. Select the timezone for scheduling. Only one can be selected.",
-            "options": self._load_timezones_from_file()
-        },
-        {
-            "id": "channel_profile_name",
-            "label": "📺 Channel Profile Names (Required)",
-            "type": "string",
-            "default": "",
-            "placeholder": "PPV Events Profile, Sports Profile",
-            "help_text": "REQUIRED: Channel Profile(s) containing channels to monitor. Use comma-separated names for multiple profiles.",
-        },
-        {
-            "id": "channel_groups",
-            "label": "📂 Channel Groups (comma-separated)",
-            "type": "string",
-            "default": "",
-            "placeholder": "PPV Events, Live Events",
-            "help_text": "Specific channel groups to monitor within the profile. Leave blank to monitor all groups in the profile.",
-        },
-        {
-            "id": "name_source",
-            "label": "Name Source",
-            "type": "select",
-            "default": self.DEFAULT_NAME_SOURCE,
-            "help_text": "Select the source of the names to monitor. Only one can be selected.",
-            "options": [
-                {"label": "Channel Name", "value": "Channel_Name"},
-                {"label": "Stream Name", "value": "Stream_Name"}
-            ]
-        },
-        {
-            "id": "hide_rules_priority",
-            "label": "📜 Hide Rules Priority",
-            "type": "string",
-            "default": self.DEFAULT_HIDE_RULES,
-            "placeholder": "[BlankName],[NoEventPattern],[EmptyPlaceholder],[PastDate:0],[FutureDate:2],[UndatedAge:2],[ShortDescription],[ShortChannelName]",
-            "help_text": "Define rules for hiding channels in priority order (first match wins). Comma-separated tags. Available tags: [NoEPG], [BlankName], [WrongDayOfWeek], [NoEventPattern], [EmptyPlaceholder], [ShortDescription], [ShortChannelName], [NumberOnly], [PastDate:days], [PastDate:days:Xh], [FutureDate:days], [UndatedAge:days], [InactiveRegex]. Example: [PastDate:0] hides if event date has passed, [PastDate:0:4h] adds 4 hour grace period, [UndatedAge:2] hides channels with no date in name once they've been present for more than 2 days, [NumberOnly] hides channels with just prefix+number like 'PPV 12'.",
-        },
-        {
-            "id": "regex_channels_to_ignore",
-            "label": "🚫 Regex: Channel Names to Ignore",
-            "type": "string",
-            "default": "",
-            "placeholder": "^BACKUP|^TEST",
-            "help_text": "Regular expression to match channel names that should be skipped entirely. Matching channels will not be processed.",
-        },
-        {
-            "id": "regex_mark_inactive",
-            "label": "💤 Regex: Mark Channel as Inactive",
-            "type": "string",
-            "default": "",
-            "placeholder": "PLACEHOLDER|TBD|COMING SOON",
-            "help_text": "Regular expression to hide channels. This is processed as part of the [InactiveRegex] hide rule.",
-        },
-        {
-            "id": "regex_force_visible",
-            "label": "✅ Regex: Force Visible Channels",
-            "type": "string",
-            "default": "",
-            "placeholder": "^NEWS|^WEATHER",
-            "help_text": "Regular expression to match channel names that should ALWAYS be visible, overriding any hide rules.",
-        },
-        {
-            "id": "duplicate_strategy",
-            "label": "🎭 Duplicate Handling Strategy",
-            "type": "select",
-            "default": self.DEFAULT_DUPLICATE_STRATEGY,
-            "help_text": "Strategy to use when multiple channels have the same event.",
-            "options": [
-                {"label": "Keep Lowest Channel Number", "value": "lowest_number"},
-                {"label": "Keep Highest Channel Number", "value": "highest_number"},
-                {"label": "Keep Longest Channel Name", "value": "longest_name"}
-            ]
-        },
-        {
-            "id": "keep_duplicates",
-            "label": "🔄 Keep Duplicate Channels",
-            "type": "boolean",
-            "default": self.DEFAULT_KEEP_DUPLICATES,
-            "help_text": "If enabled, duplicate channels will be kept visible instead of being hidden. The duplicate strategy above will be ignored.",
-        },
-        {
-            "id": "past_date_grace_hours",
-            "label": "📅 Past Date Grace Period (Hours)",
-            "type": "string",
-            "default": self.DEFAULT_PAST_DATE_GRACE_HOURS,
-            "placeholder": "e.g., 6",
-            "help_text": "Hours to wait after midnight before hiding past events. Useful for events that run late.",
-        },
-        {
-            "id": "auto_set_dummy_epg_on_hide",
-            "label": "🔌 Auto-Remove EPG on Hide",
-            "type": "boolean",
-            "default": self.DEFAULT_AUTO_REMOVE_EPG,
-            "help_text": "If enabled, automatically removes EPG data from a channel when it is hidden by the plugin.",
-        },
-        {
-            "id": "scheduled_times",
-            "label": "⏰ Scheduled Run Times (24-hour format)",
-            "type": "string",
-            "default": "",
-            "placeholder": "0600,1300,1800",
-            "help_text": "Comma-separated times to run automatically each day (24-hour format). Example: 0600,1300,1800 runs at 6 AM, 1 PM, and 6 PM daily. Leave blank to disable scheduling.",
-        },
             {
-                "id": "enable_scheduled_csv_export",
-                "label": "📄 Enable Scheduled CSV Export",
+                "id": "_section_scope",
+                "label": "📍 Scope",
+                "type": "info",
+                "description": "Which channels this plugin monitors and how it identifies them."
+            },
+            {
+                "id": "timezone",
+                "label": "🌍 Timezone",
+                "type": "select",
+                "default": self.DEFAULT_TIMEZONE,
+                "help_text": "Timezone for scheduled runs. Select the timezone for scheduling. Only one can be selected.",
+                "options": self._load_timezones_from_file()
+            },
+            {
+                "id": "channel_profile_name",
+                "label": "📺 Channel Profile Names (Required)",
+                "type": "text",
+                "default": "",
+                "placeholder": "e.g. All, Favorites",
+                "help_text": "REQUIRED: Channel Profile(s) containing channels to monitor. Use comma-separated names for multiple profiles.",
+            },
+            {
+                "id": "channel_groups",
+                "label": "📂 Channel Groups",
+                "type": "text",
+                "default": "",
+                "placeholder": "e.g. PPV Live Events, Sports",
+                "help_text": "Specific channel groups to monitor within the profile. Leave blank to monitor all groups in the profile.",
+            },
+            {
+                "id": "name_source",
+                "label": "🔤 Name Source",
+                "type": "select",
+                "default": self.DEFAULT_NAME_SOURCE,
+                "help_text": "Select the source of the names to monitor. Only one can be selected.",
+                "options": [
+                    {"label": "Channel Name", "value": "Channel_Name"},
+                    {"label": "Stream Name", "value": "Stream_Name"}
+                ]
+            },
+            {
+                "id": "_section_rules",
+                "label": "🎯 Hide Rules",
+                "type": "info",
+                "description": "Priority-ordered rules that decide which channels to hide."
+            },
+            {
+                "id": "hide_rules_priority",
+                "label": "📜 Hide Rules Priority",
+                "type": "text",
+                "default": self.DEFAULT_HIDE_RULES,
+                "placeholder": "[BlankName],[NoEventPattern],[EmptyPlaceholder],[PastDate:0],[FutureDate:2],[UndatedAge:2],[ShortDescription],[ShortChannelName]",
+                "help_text": "Define rules for hiding channels in priority order (first match wins). Comma-separated tags. Available tags: [NoEPG], [BlankName], [WrongDayOfWeek], [NoEventPattern], [EmptyPlaceholder], [ShortDescription], [ShortChannelName], [NumberOnly], [PastDate:days], [PastDate:days:Xh], [FutureDate:days], [UndatedAge:days], [InactiveRegex].",
+            },
+            {
+                "id": "regex_channels_to_ignore",
+                "label": "🚫 Regex: Channel Names to Ignore",
+                "type": "text",
+                "default": "",
+                "placeholder": "^BACKUP|^TEST",
+                "help_text": "Regular expression to match channel names that should be skipped entirely. Matching channels will not be processed.",
+            },
+            {
+                "id": "regex_mark_inactive",
+                "label": "💤 Regex: Mark Channel as Inactive",
+                "type": "text",
+                "default": "",
+                "placeholder": "PLACEHOLDER|TBD|COMING SOON",
+                "help_text": "Regular expression to hide channels. This is processed as part of the [InactiveRegex] hide rule.",
+            },
+            {
+                "id": "regex_force_visible",
+                "label": "✅ Regex: Force Visible Channels",
+                "type": "text",
+                "default": "",
+                "placeholder": "^NEWS|^WEATHER",
+                "help_text": "Regular expression to match channel names that should ALWAYS be visible, overriding any hide rules.",
+            },
+            {
+                "id": "past_date_grace_hours",
+                "label": "📅 Past Date Grace Period (Hours)",
+                "type": "number",
+                "default": int(self.DEFAULT_PAST_DATE_GRACE_HOURS),
+                "help_text": "Hours to wait after midnight before hiding past events. Useful for events that run late.",
+            },
+            {
+                "id": "_section_duplicates",
+                "label": "🎭 Duplicates",
+                "type": "info",
+                "description": "How to handle channels whose events collide."
+            },
+            {
+                "id": "duplicate_strategy",
+                "label": "🎭 Duplicate Handling Strategy",
+                "type": "select",
+                "default": self.DEFAULT_DUPLICATE_STRATEGY,
+                "help_text": "Strategy to use when multiple channels have the same event.",
+                "options": [
+                    {"label": "Keep Lowest Channel Number", "value": "lowest_number"},
+                    {"label": "Keep Highest Channel Number", "value": "highest_number"},
+                    {"label": "Keep Longest Channel Name", "value": "longest_name"}
+                ]
+            },
+            {
+                "id": "keep_duplicates",
+                "label": "🔄 Keep Duplicate Channels",
                 "type": "boolean",
-                "default": self.DEFAULT_SCHEDULED_CSV_EXPORT,
-                "help_text": "If enabled, a CSV file of the scan results will be created when the plugin runs on a schedule. If disabled, no CSV will be created for scheduled runs.",
+                "default": self.DEFAULT_KEEP_DUPLICATES,
+                "help_text": "If enabled, duplicate channels will be kept visible instead of being hidden. The duplicate strategy above will be ignored.",
+            },
+            {
+                "id": "_section_epg",
+                "label": "🔌 EPG Management",
+                "type": "info",
+                "description": "Optional automation for EPG assignment on visibility changes and a managed dummy EPG for channels without real EPG."
+            },
+            {
+                "id": "auto_set_dummy_epg_on_hide",
+                "label": "🔌 Auto-Remove EPG on Hide",
+                "type": "boolean",
+                "default": self.DEFAULT_AUTO_REMOVE_EPG,
+                "help_text": "If enabled, automatically removes EPG data from a channel when it is hidden by the plugin.",
             },
             {
                 "id": "manage_dummy_epg",
@@ -415,15 +427,14 @@ class Plugin:
             {
                 "id": "dummy_epg_event_duration_hours",
                 "label": "⏱️ Event Duration (hours)",
-                "type": "string",
-                "default": self.DEFAULT_EVENT_DURATION_HOURS,
-                "placeholder": "3",
+                "type": "number",
+                "default": int(self.DEFAULT_EVENT_DURATION_HOURS),
                 "help_text": "How long each scheduled event should appear in the guide (hours). Before and after this window the guide shows the Offline Title.",
             },
             {
                 "id": "dummy_epg_offline_title",
                 "label": "💤 Offline Title",
-                "type": "string",
+                "type": "text",
                 "default": self.DEFAULT_OFFLINE_TITLE,
                 "placeholder": "Offline",
                 "help_text": "Title shown in the guide before and after the event window. Also used as fallback when the title pattern doesn't match.",
@@ -435,6 +446,46 @@ class Plugin:
                 "default": self.DEFAULT_DUMMY_EPG_TIMEZONE,
                 "help_text": "Timezone encoded in the event times inside channel names (e.g., US/Eastern for channels like '(4.17 8:30 PM ET)'). Different from the scheduler timezone above.",
                 "options": self._load_timezones_from_file()
+            },
+            {
+                "id": "_section_scheduling",
+                "label": "⏰ Scheduling & Export",
+                "type": "info",
+                "description": "Scheduled runs and CSV export options."
+            },
+            {
+                "id": "scheduled_times",
+                "label": "⏰ Scheduled Run Times (24-hour format)",
+                "type": "text",
+                "default": "",
+                "placeholder": "0600,1300,1800",
+                "help_text": "Comma-separated times to run automatically each day (24-hour format). Example: 0600,1300,1800 runs at 6 AM, 1 PM, and 6 PM daily. Leave blank to disable scheduling.",
+            },
+            {
+                "id": "enable_scheduled_csv_export",
+                "label": "📄 Enable Scheduled CSV Export",
+                "type": "boolean",
+                "default": self.DEFAULT_SCHEDULED_CSV_EXPORT,
+                "help_text": "If enabled, a CSV file of the scan results will be created when the plugin runs on a schedule. If disabled, no CSV will be created for scheduled runs.",
+            },
+            {
+                "id": "_section_advanced",
+                "label": "⚙️ Advanced",
+                "type": "info",
+                "description": "Performance and pacing controls for large channel profiles."
+            },
+            {
+                "id": "rate_limiting",
+                "label": "🐢 Rate Limiting",
+                "type": "select",
+                "default": self.DEFAULT_RATE_LIMITING,
+                "help_text": "Pause between per-channel ORM operations. 'none' is fastest; 'low/medium/high' add 0.05/0.2/0.5 seconds per channel. Useful when scanning very large profiles (thousands of channels) on a small DB.",
+                "options": [
+                    {"label": "None (fastest)", "value": "none"},
+                    {"label": "Low (~0.05s / channel)", "value": "low"},
+                    {"label": "Medium (~0.2s / channel)", "value": "medium"},
+                    {"label": "High (~0.5s / channel)", "value": "high"}
+                ]
             },
         ]
 
@@ -915,6 +966,8 @@ class Plugin:
                 settings["dummy_epg_offline_title"] = self.DEFAULT_OFFLINE_TITLE
             if "dummy_epg_event_timezone" not in settings:
                 settings["dummy_epg_event_timezone"] = self.DEFAULT_DUMMY_EPG_TIMEZONE
+            if "rate_limiting" not in settings:
+                settings["rate_limiting"] = self.DEFAULT_RATE_LIMITING
 
             with open(self.settings_file, 'w') as f:
                 json.dump(settings, f, indent=2)
