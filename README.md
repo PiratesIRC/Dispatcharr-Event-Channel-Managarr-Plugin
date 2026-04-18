@@ -112,7 +112,7 @@ Settings are grouped into six sections in the UI.
 3.  **(Optional) Enable Managed Dummy EPG**
     * In the **🔌 EPG Management** section, toggle **Manage Dummy EPG** on.
     * Set **Event Duration (hours)** and **Channel Name Event Timezone** to match your event-channel conventions.
-    * On the next scan, visible channels with no EPG get bound to the plugin-managed dummy source. The guide will then show event titles during their windows and the offline title outside them.
+    * On the next scan, visible channels with no EPG get bound to the plugin-managed dummy source. The guide will then show `Upcoming at <start-time>: <title>` before the window, the event title during it, and `Ended at <end-time>: <title>` after.
 4.  **Preview Changes (Dry Run)**
     * Click **👁️ Dry Run**.
     * This will not change anything but will generate a CSV file in `/data/exports/`.
