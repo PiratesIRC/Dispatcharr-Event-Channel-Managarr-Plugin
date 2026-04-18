@@ -522,53 +522,17 @@ class Plugin:
         return fields_list
     
     # Actions for Dispatcharr UI
+    # Actions metadata mirrors plugin.json (which drives the Dispatcharr UI).
+    # Kept here so code that introspects Plugin.actions sees the same shape.
     actions = [
-        {
-            "id": "validate_configuration",
-            "label": "✅ Validate Configuration",
-            "description": "Test and validate all plugin settings (regex patterns, rules, DB connectivity)",
-            "confirm": { "required": False }
-        },
-        {
-            "id": "update_schedule",
-            "label": "💾 Update Schedule",
-            "description": "Save settings and update the scheduled run times. Use this after changing any settings.",
-        },
-        {
-            "id": "dry_run",
-            "label": "🧪 Dry Run (Export to CSV)",
-            "description": "Preview which channels would be hidden/shown without making changes. Results exported to CSV.",
-        },
-        {
-            "id": "run_now",
-            "label": "🚀 Run Now",
-            "description": "Immediately scan and update channel visibility based on current EPG data",
-            "confirm": { "required": True, "title": "Run Channel Visibility Update?", "message": "This will hide channels without events and show channels with events. Continue?" }
-        },
-        {
-            "id": "remove_epg_from_hidden",
-            "label": "🗑️ Remove EPG from Hidden Channels",
-            "description": "Remove all EPG data from channels that are disabled/hidden in the selected profile. Results exported to CSV.",
-            "confirm": { "required": True, "title": "Remove EPG Data?", "message": "This will permanently delete all EPG data for channels that are currently hidden/disabled in the selected profile. This action cannot be undone. Continue?" }
-        },
-        {
-            "id": "clear_csv_exports",
-            "label": "✨ Clear CSV Exports",
-            "description": "Delete all CSV export files created by this plugin",
-            "confirm": { "required": True, "title": "Delete All CSV Exports?", "message": "This will permanently delete all CSV files created by Event Channel Managarr. This action cannot be undone. Continue?" }
-        },
-        {
-            "id": "cleanup_periodic_tasks",
-            "label": "🧹 Cleanup Orphaned Tasks",
-            "description": "Remove any orphaned Celery periodic tasks from old plugin versions",
-            "confirm": { "required": True, "title": "Cleanup Orphaned Tasks?", "message": "This will remove any old Celery Beat tasks created by previous versions of this plugin. Continue?" }
-        },
-        {
-            "id": "check_scheduler_status",
-            "label": "🔍 Check Scheduler Status",
-            "description": "Display scheduler thread status and diagnostic information",
-            "confirm": { "required": False }
-        },
+        {"id": "validate_configuration", "label": "Validate Configuration", "description": "Test and validate all plugin settings", "button_label": "🔎 Validate", "button_variant": "outline", "button_color": "blue"},
+        {"id": "update_schedule", "label": "Update Schedule", "description": "Save settings and update the scheduled run times", "button_label": "💾 Save Schedule", "button_variant": "filled", "button_color": "green"},
+        {"id": "dry_run", "label": "Dry Run (Export to CSV)", "description": "Preview which channels would be hidden/shown without making changes", "button_label": "👁️ Dry Run", "button_variant": "outline", "button_color": "cyan"},
+        {"id": "run_now", "label": "Run Now", "description": "Immediately scan and update channel visibility based on current EPG data", "button_label": "▶️ Run Now", "button_variant": "filled", "button_color": "green", "confirm": {"message": "This will apply visibility changes and (if enabled) attach/detach managed EPG. Continue?"}},
+        {"id": "remove_epg_from_hidden", "label": "Remove EPG from Hidden Channels", "description": "Remove all EPG data from channels that are disabled/hidden in the selected profile", "button_label": "🧹 Remove EPG from Hidden", "button_variant": "filled", "button_color": "red", "confirm": {"message": "This will CLEAR EPG data from every hidden channel in the selected profile. Cannot be undone by this plugin. Continue?"}},
+        {"id": "clear_csv_exports", "label": "Clear CSV Exports", "description": "Delete all CSV export files created by this plugin", "button_label": "🗑️ Clear CSV Exports", "button_variant": "filled", "button_color": "red", "confirm": {"message": "This will delete every CSV file in /data/exports created by this plugin. Continue?"}},
+        {"id": "cleanup_periodic_tasks", "label": "Cleanup Orphaned Tasks", "description": "Remove any orphaned Celery periodic tasks from old plugin versions", "button_label": "🧼 Cleanup Orphaned Tasks", "button_variant": "outline", "button_color": "orange", "confirm": {"message": "This removes orphaned Celery periodic tasks left by older plugin versions. Continue?"}},
+        {"id": "check_scheduler_status", "label": "Check Scheduler Status", "description": "Display scheduler thread status and diagnostic information", "button_label": "🩺 Check Scheduler", "button_variant": "outline", "button_color": "blue"},
     ]
     
     def __init__(self):
@@ -2482,6 +2446,7 @@ class Plugin:
                         "managed_epg_assigned": False,
                         "managed_epg_detached": False,
                     })
+                    rate_limiter.wait()
                     continue
 
                 # Check if channel should be forced visible
@@ -2504,6 +2469,7 @@ class Plugin:
                         "managed_epg_assigned": False,
                         "managed_epg_detached": False,
                     })
+                    rate_limiter.wait()
                     continue
 
                 # Update undated-channel tracker: record channels with no extractable date,
