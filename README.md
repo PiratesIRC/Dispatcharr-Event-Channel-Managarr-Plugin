@@ -45,6 +45,8 @@ A Dispatcharr plugin that automatically manages channel visibility based on EPG 
 3.  Click **Import Plugin** and upload the plugin zip file.
 4.  Enable the plugin after installation.
 
+> **Submitting upstream?** See [CONTRIBUTING](#contributing) for the upstream `Dispatcharr/Plugins` PR requirements (title format, version bump, etc.).
+
 ## Settings Reference
 
 Settings are grouped into six sections in the UI.
@@ -282,3 +284,45 @@ To update Event Channel Managarr from a previous version:
 ```bash
 docker restart dispatcharr
 ```
+
+## Contributing
+
+Pull requests welcome. To submit changes:
+
+### To this repo (`PiratesIRC/Dispatcharr-Event-Channel-Managarr-Plugin`)
+
+1. Bump version: `python3 bump_version.py` (auto-stamps with current UTC day-of-year + HHMM).
+2. Commit, push, tag, and release:
+   ```bash
+   git tag <version> && git push origin <version>
+   gh release create <version> --title "v<version>" --notes "..."
+   gh release upload <version> Event-Channel-Managarr.zip
+   ```
+
+### To the upstream marketplace (`Dispatcharr/Plugins`)
+
+Updates also need to be PR'd to `Dispatcharr/Plugins` so the plugin updates in users' Dispatcharr UIs. The repo's GitHub Actions validator enforces strict rules — failing any blocks the merge:
+
+| Check | Requirement |
+| :--- | :--- |
+| **PR title** | Must match `[event-channel-managarr]: <description>`. The `validate-title` job fails on any other format. **Most common trip-up.** |
+| **Version bump** | `plugin.json` `version` must be greater than the version on upstream `main` for any code/asset change. Metadata-only edits are exempt. |
+| **Required `plugin.json` fields** | `name`, `version`, `description`, `author`, `license` (SPDX). |
+| **Authorship** | PR author's GitHub username must appear in `author` or `maintainers`, or the `close-unauthorized` job auto-closes the PR. |
+| **Folder name** | `plugins/event-channel-managarr/` (lowercase-kebab) — note this differs from the `Event-Channel-Managarr/` capitalization used in this repo's zip. |
+
+Workflow:
+
+```bash
+# In your fork of Dispatcharr/Plugins:
+git fetch upstream && git checkout main && git merge upstream/main --ff-only && git push origin main
+git checkout -b ecm-v<version>
+cp <this-repo>/Event-Channel-Managarr/plugin.{py,json} plugins/event-channel-managarr/
+git commit -am "[event-channel-managarr]: ..."
+git push -u origin ecm-v<version>
+gh pr create --repo Dispatcharr/Plugins --base main \
+    --title "[event-channel-managarr]: Bump to v<version> — <summary>" \
+    --body "..."
+```
+
+On merge, upstream automation builds the zip + checksums and updates `manifest.json` on the `releases` branch — do not touch that branch manually.
