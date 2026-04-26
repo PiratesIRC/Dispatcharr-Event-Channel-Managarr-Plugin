@@ -1,6 +1,6 @@
 {
   "name": "Event Channel Managarr",
-  "version": "1.26.1081615",
+  "version": "1.26.1152350",
   "description": "Automates channel visibility by hiding channels without events and showing those with events, based on EPG data and channel names. Optionally manages dummy EPG for channels without real EPG.",
   "author": "PiratesIRC",
   "license": "MIT",

@@ -139,7 +139,7 @@ The plugin checks channels against the **Hide Rules Priority** list in the order
 | **[BlankName]** | — | Hides if the channel name is blank. |
 | **[WrongDayOfWeek]** | — | Hides if the name contains a day name (e.g., "MONDAY", "Mon", "Saturday", "Sat") and today is not that day. Recognizes full and abbreviated day names. |
 | **[NoEventPattern]** | — | Hides if the name contains patterns like "no event", "offline", "no games scheduled". |
-| **[EmptyPlaceholder]** | — | Hides if the name ends with a separator (`:`, `\|`, `-`) and has no event title after it. |
+| **[EmptyPlaceholder]** | — | Hides if the name ends with a separator (`:`, `\|`, `-`) and has no event title after it, OR if the name contains a parenthesized literal template token like `(MM.DD h:mmAM/PM ET)` indicating an unpopulated stub channel. |
 | **[ShortDescription]** | — | Hides if the event title (text after a separator) is less than 15 characters long. |
 | **[ShortChannelName]** | — | Hides if the *entire name* is less than 25 characters long and has *no* separator. |
 | **[NumberOnly]** | — | Hides if the channel name is just a prefix followed by a number (e.g., "PPV 12", "EVENT 15") with no event details. |
@@ -168,7 +168,7 @@ The plugin can extract dates from channel names in the following formats (checke
 | **MONTH DD** | `Dec 25` or `December 25` | Month name followed by day (no parentheses). |
 | **YYYY MM DD** | `2024 12 25` | Space-separated year, month, day. |
 | **MM.DD** | `12.25` | Dot-separated month and day (assumes current year). |
-| **MM/DD** | `12/25` | Slash-separated month and day (assumes current year). |
+| **MM/DD** | `12/25` | Slash-separated month and day (assumes current year). Skipped when followed by a colon (e.g. `1/3:30pm`) so time ranges aren't misread as dates. |
 
 **Note:** When using `[PastDate]` or `[FutureDate]` rules, the plugin will attempt to extract a date using these formats. If no date is found, the rule will not match and the next rule in your priority list will be checked. The `[UndatedAge]` rule handles the "no date found" case directly.
 

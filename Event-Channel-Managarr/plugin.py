@@ -41,7 +41,7 @@ _scheduler_lock = threading.Lock()  # Prevent concurrent scheduler starts
 class PluginConfig:
     """Centralized configuration constants for Event Channel Managarr."""
 
-    PLUGIN_VERSION = "1.26.1081615"
+    PLUGIN_VERSION = "1.26.1152350"
 
     # Default timezone for scheduling
     DEFAULT_TIMEZONE = "America/Chicago"
@@ -1208,7 +1208,9 @@ class Plugin:
                 pass
 
         # Pattern 4: MM/DD without year e.g., "10/27"
-        pattern4 = re.search(r'\b(\d{1,2})/(\d{1,2})\b(?!/)', channel_name)
+        # Lookahead excludes "/" (year follows, handled by Pattern 1) and ":" (time
+        # range like "1/3:30pm" — second number is hours, not a day).
+        pattern4 = re.search(r'\b(\d{1,2})/(\d{1,2})\b(?![/:])', channel_name)
         if pattern4:
             month, day = map(int, pattern4.groups())
             try:
@@ -1302,6 +1304,13 @@ class Plugin:
             return False, None
         
         elif rule_name == "EmptyPlaceholder":
+            # Literal date/time template tokens inside a parenthesized run
+            # (e.g. "(MM.DD h:mmAM/PM ET)") indicate an unpopulated stub channel.
+            # Scoped to parens so prose like "(times shown AM/PM ET)" in legitimate
+            # names doesn't false-trigger.
+            if re.search(r'\([^)]*\b(MM[./]DD|DD[./]MM|YYYY|hh?:mm|AM/PM)\b[^)]*\)', channel_name):
+                return True, "[EmptyPlaceholder] Channel name contains literal template tokens"
+
             # Ends with colon, pipe, or dash with nothing or only whitespace/very short content after.
             # The `(?=\s|$)` lookahead after the colon excludes time-colons like "7:00AM" / "9:45am"
             # (colon followed by a digit) while still matching real separator colons like
