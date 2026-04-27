@@ -41,7 +41,7 @@ _scheduler_lock = threading.Lock()  # Prevent concurrent scheduler starts
 class PluginConfig:
     """Centralized configuration constants for Event Channel Managarr."""
 
-    PLUGIN_VERSION = "1.26.1152350"
+    PLUGIN_VERSION = "1.26.1172336"
 
     # Default timezone for scheduling
     DEFAULT_TIMEZONE = "America/Chicago"
@@ -338,7 +338,7 @@ class Plugin:
             {
                 "id": "channel_profile_name",
                 "label": "📺 Channel Profile Names (Required)",
-                "type": "text",
+                "type": "string",
                 "default": "",
                 "placeholder": "e.g. All, Favorites",
                 "help_text": "REQUIRED: Channel Profile(s) containing channels to monitor. Use comma-separated names for multiple profiles.",
@@ -360,6 +360,18 @@ class Plugin:
                 "options": [
                     {"label": "Channel Name", "value": "Channel_Name"},
                     {"label": "Stream Name", "value": "Stream_Name"}
+                ]
+            },
+            {
+                "id": "date_format",
+                "label": "📅 Date Format in Channel Names",
+                "type": "select",
+                "default": "Auto",
+                "help_text": "How to interpret numeric dates like 04/05 in channel names. Auto = try MM/DD first; if month > 12, treat as DD/MM (handles most regional data). US = always MM/DD. EU = always DD/MM.",
+                "options": [
+                    {"label": "Auto-detect (recommended)", "value": "Auto"},
+                    {"label": "US (MM/DD)", "value": "US"},
+                    {"label": "EU (DD/MM)", "value": "EU"}
                 ]
             },
             {
@@ -1120,7 +1132,35 @@ class Plugin:
 
         return None
 
-    def _extract_date_from_channel_name(self, channel_name, logger):
+    def _resolve_numeric_date_pair(self, first, second, current_year, date_format):
+        """Resolve a (first, second) numeric pair into a datetime using the configured format.
+
+        date_format: "US" → MM/DD, "EU" → DD/MM, "Auto" → MM/DD with DD/MM fallback if month > 12.
+        Returns datetime or None if the pair can't form a valid date.
+        """
+        fmt = (date_format or "Auto").strip()
+        if fmt == "EU":
+            day, month = first, second
+            try:
+                return datetime(current_year, month, day)
+            except ValueError:
+                return None
+        if fmt == "US":
+            month, day = first, second
+            try:
+                return datetime(current_year, month, day)
+            except ValueError:
+                return None
+        # Auto: MM/DD first; if month > 12 (or invalid), retry DD/MM.
+        try:
+            return datetime(current_year, first, second)
+        except ValueError:
+            try:
+                return datetime(current_year, second, first)
+            except ValueError:
+                return None
+
+    def _extract_date_from_channel_name(self, channel_name, logger, settings=None):
         """Extract date from channel name using various patterns, including hour if present"""
         if not channel_name:
             return None
@@ -1128,6 +1168,7 @@ class Plugin:
 
         current_year = datetime.now().year
         today = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
+        date_format = (settings or {}).get("date_format", "Auto")
 
         # Pattern 0: start:YYYY-MM-DD HH:MM:SS or stop:YYYY-MM-DD HH:MM:SS
         for prefix in ["start:", "stop:"]:
@@ -1152,18 +1193,16 @@ class Plugin:
             except ValueError:
                 pass
 
-        # Pattern 1: MM/DD/YYYY or MM/DD/YY
+        # Pattern 1: M/D/YYYY or M/D/YY — interpreted per date_format setting.
         pattern1 = re.search(r'\b(\d{1,2})/(\d{1,2})/(\d{2,4})\b', channel_name)
         if pattern1:
-            month, day, year = map(int, pattern1.groups())
+            first, second, year = map(int, pattern1.groups())
             if year < 100:
                 year += 2000
-            try:
-                extracted_date = datetime(year, month, day)
-                logger.debug(f"Extracted date {extracted_date.date()} from pattern MM/DD/YYYY in '{channel_name}'")
+            extracted_date = self._resolve_numeric_date_pair(first, second, year, date_format)
+            if extracted_date is not None:
+                logger.debug(f"Extracted date {extracted_date.date()} from pattern M/D/YYYY ({date_format}) in '{channel_name}'")
                 return extracted_date
-            except ValueError:
-                pass
 
         # Pattern 2c: DDth MONTH e.g., "28th Apr"
         pattern2c = re.search(r'\b(\d{1,2})(?:st|nd|rd|th)?\s+(JAN|FEB|MAR|APR|MAY|JUN|JUL|AUG|SEP|OCT|NOV|DEC)\b', channel_name, re.IGNORECASE)
@@ -1196,29 +1235,25 @@ class Plugin:
             except (ValueError, dateutil_parser.ParserError):
                 pass
 
-        # Pattern 3: MM.DD e.g., "10.25"
+        # Pattern 3: M.D without year e.g., "10.25" — interpreted per date_format setting.
         pattern3 = re.search(r'\b(\d{1,2})\.(\d{1,2})\b', channel_name)
         if pattern3:
-            month, day = map(int, pattern3.groups())
-            try:
-                extracted_date = datetime(current_year, month, day)
-                logger.debug(f"Extracted date {extracted_date.date()} from pattern MM.DD in '{channel_name}'")
+            first, second = map(int, pattern3.groups())
+            extracted_date = self._resolve_numeric_date_pair(first, second, current_year, date_format)
+            if extracted_date is not None:
+                logger.debug(f"Extracted date {extracted_date.date()} from pattern M.D ({date_format}) in '{channel_name}'")
                 return extracted_date
-            except ValueError:
-                pass
 
-        # Pattern 4: MM/DD without year e.g., "10/27"
+        # Pattern 4: M/D without year e.g., "10/27" or "15/04" — interpreted per date_format setting.
         # Lookahead excludes "/" (year follows, handled by Pattern 1) and ":" (time
         # range like "1/3:30pm" — second number is hours, not a day).
         pattern4 = re.search(r'\b(\d{1,2})/(\d{1,2})\b(?![/:])', channel_name)
         if pattern4:
-            month, day = map(int, pattern4.groups())
-            try:
-                extracted_date = datetime(current_year, month, day)
-                logger.debug(f"Extracted date {extracted_date.date()} from pattern MM/DD in '{channel_name}'")
+            first, second = map(int, pattern4.groups())
+            extracted_date = self._resolve_numeric_date_pair(first, second, current_year, date_format)
+            if extracted_date is not None:
+                logger.debug(f"Extracted date {extracted_date.date()} from pattern M/D ({date_format}) in '{channel_name}'")
                 return extracted_date
-            except ValueError:
-                pass
 
         logger.debug(f"No date found in channel name: '{channel_name}'")
         return None
@@ -1402,7 +1437,7 @@ class Plugin:
             return False, None
 
         elif rule_name == "PastDate":
-            extracted_date = self._extract_date_from_channel_name(channel_name, logger)
+            extracted_date = self._extract_date_from_channel_name(channel_name, logger, settings)
             if extracted_date is None:
                 return False, None  # Skip rule if no date found
 
@@ -1441,7 +1476,7 @@ class Plugin:
             return False, None
         
         elif rule_name == "FutureDate":
-            extracted_date = self._extract_date_from_channel_name(channel_name, logger)
+            extracted_date = self._extract_date_from_channel_name(channel_name, logger, settings)
             if extracted_date is None:
                 return False, None  # Skip rule if no date found
             
@@ -2524,7 +2559,7 @@ class Plugin:
 
                 # Update undated-channel tracker: record channels with no extractable date,
                 # drop those that now have a date.
-                if self._extract_date_from_channel_name(channel_name, logger) is None:
+                if self._extract_date_from_channel_name(channel_name, logger, settings) is None:
                     self._record_undated_channel(self._undated_tracker, channel.id, channel_name, today_str)
                     tracked_this_scan.add(str(channel.id))
                 else:

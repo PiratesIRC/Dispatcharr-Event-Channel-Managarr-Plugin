@@ -164,13 +164,19 @@ The plugin can extract dates from channel names in the following formats (checke
 | **start:YYYY-MM-DD HH:MM:SS** | `start:2024-12-25 20:00:00` | Highest priority. Matches exact datetime in channel name. |
 | **stop:YYYY-MM-DD HH:MM:SS** | `stop:2024-12-25 23:00:00` | Matches end datetime in channel name. |
 | **(YYYY-MM-DD HH:MM:SS)** | `(2025-11-22 15:10:00)` | Matches datetime within parentheses. |
-| **MM/DD/YYYY** or **MM/DD/YY** | `12/25/2024` or `12/25/24` | Standard slash-separated date format. |
+| **M/D/YYYY** or **M/D/YY** | `12/25/2024` or `15/04/2026` | Slash-separated date with year. Interpreted per the **Date Format in Channel Names** setting (Auto / US / EU). |
 | **(MONTH DD)** | `(Dec 25)` or `(December 25)` | Month name and day in parentheses. |
 | **DDth/st/nd/rd MONTH** | `25th Dec` or `1st January` | Day with ordinal suffix followed by month name. |
 | **MONTH DD** | `Dec 25` or `December 25` | Month name followed by day (no parentheses). |
 | **YYYY MM DD** | `2024 12 25` | Space-separated year, month, day. |
-| **MM.DD** | `12.25` | Dot-separated month and day (assumes current year). |
-| **MM/DD** | `12/25` | Slash-separated month and day (assumes current year). Skipped when followed by a colon (e.g. `1/3:30pm`) so time ranges aren't misread as dates. |
+| **M.D** | `12.25` or `15.04` | Dot-separated date (assumes current year). Interpreted per the **Date Format in Channel Names** setting. |
+| **M/D** | `12/25` or `15/04` | Slash-separated date (assumes current year). Interpreted per the **Date Format in Channel Names** setting. Skipped when followed by a colon (e.g. `1/3:30pm`) so time ranges aren't misread as dates. |
+
+**Date format setting:** The 📅 **Date Format in Channel Names** setting (default `Auto`) controls how numeric `M/D`, `M.D`, and `M/D/YYYY` patterns are interpreted:
+
+* **Auto (recommended)** — try MM/DD first; if the month is invalid (> 12), retry as DD/MM. Handles most regional data without configuration.
+* **US (MM/DD)** — always month first. Use this if you want to force US-style parsing (e.g. ambiguous `04/05` always means April 5).
+* **EU (DD/MM)** — always day first (e.g. `15/04` = April 15, ambiguous `04/05` means May 4).
 
 **Note:** When using `[PastDate]` or `[FutureDate]` rules, the plugin will attempt to extract a date using these formats. If no date is found, the rule will not match and the next rule in your priority list will be checked. The `[UndatedAge]` rule handles the "no date found" case directly.
 

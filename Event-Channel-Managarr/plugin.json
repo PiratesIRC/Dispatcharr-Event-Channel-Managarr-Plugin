@@ -1,6 +1,6 @@
 {
   "name": "Event Channel Managarr",
-  "version": "1.26.1152350",
+  "version": "1.26.1172336",
   "description": "Automates channel visibility by hiding channels without events and showing those with events, based on EPG data and channel names. Optionally manages dummy EPG for channels without real EPG.",
   "author": "PiratesIRC",
   "license": "MIT",
@@ -10,9 +10,10 @@
   "fields": [
     {"id": "_section_scope", "label": "📍 Scope", "type": "info", "description": "Which channels this plugin monitors and how it identifies them."},
     {"id": "timezone", "label": "🌍 Timezone", "type": "select", "default": "America/Chicago"},
-    {"id": "channel_profile_name", "label": "📺 Channel Profile Names (Required)", "type": "text", "default": "", "placeholder": "e.g. All, Favorites"},
+    {"id": "channel_profile_name", "label": "📺 Channel Profile Names (Required)", "type": "string", "default": "", "placeholder": "e.g. All, Favorites"},
     {"id": "channel_groups", "label": "📂 Channel Groups", "type": "text", "default": "", "placeholder": "e.g. PPV Live Events, Sports"},
     {"id": "name_source", "label": "🔤 Name Source", "type": "select", "default": "Channel_Name"},
+    {"id": "date_format", "label": "📅 Date Format in Channel Names", "type": "select", "default": "Auto"},
 
     {"id": "_section_rules", "label": "🎯 Hide Rules", "type": "info", "description": "Priority-ordered rules that decide which channels to hide."},
     {"id": "hide_rules_priority", "label": "📜 Hide Rules Priority", "type": "text", "default": "[InactiveRegex],[BlankName],[WrongDayOfWeek],[NoEventPattern],[EmptyPlaceholder],[PastDate:0],[FutureDate:2],[UndatedAge:2],[ShortDescription],[ShortChannelName]"},
