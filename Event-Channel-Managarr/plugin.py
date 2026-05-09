@@ -2122,6 +2122,57 @@ class Plugin:
         
         return duplicate_hide_list
 
+    def _localized_template_props(self, settings):
+        """
+        Returns overrides for the three rewritable title templates plus
+        `output_timezone` for the managed dummy EPG source.
+
+        - When source TZ == display TZ, or either TZ is invalid/empty:
+          returns DEFAULTS (plain templates) and writes
+          `output_timezone=""` so any previously-saved value is cleared
+          (the diff-and-save loop never deletes keys).
+        - Otherwise: returns localized templates with the date placeholder
+          driven by `date_format` (US/Auto -> {month}/{day};
+          EU -> {day}/{month}) and a TZ abbreviation suffix computed for
+          "now" in the display TZ. If %Z returns a numeric offset
+          (e.g., +0530), the suffix is omitted but time conversion still
+          happens via Dispatcharr's output_timezone.
+
+        `fallback_title_template` is set in the base `managed_props` and
+        is never overridden here.
+        """
+        DEFAULTS = {
+            "output_timezone": "",
+            "title_template": "{title}",
+            "upcoming_title_template": "Upcoming at {starttime}: {title}",
+            "ended_title_template": "Ended at {endtime}: {title}",
+        }
+
+        source_tz_name = str(settings.get("dummy_epg_event_timezone", "")).strip()
+        display_tz_name = str(settings.get("timezone", "")).strip()
+
+        if not source_tz_name or not display_tz_name or source_tz_name == display_tz_name:
+            return DEFAULTS
+
+        try:
+            pytz.timezone(source_tz_name)
+            display_tz = pytz.timezone(display_tz_name)
+        except pytz.exceptions.UnknownTimeZoneError:
+            return DEFAULTS
+
+        abbrev = datetime.now(display_tz).strftime("%Z")
+        suffix = f" {abbrev}" if abbrev and abbrev.isalpha() else ""
+
+        fmt = str(settings.get("date_format", "Auto")).strip()
+        date_ph = "{day}/{month}" if fmt == "EU" else "{month}/{day}"
+
+        return {
+            "output_timezone": display_tz_name,
+            "title_template": f"{{title}} {date_ph} {{starttime}}{suffix}",
+            "upcoming_title_template": f"Upcoming at {date_ph} {{starttime}}{suffix}: {{title}}",
+            "ended_title_template": f"Ended at {date_ph} {{endtime}}{suffix}: {{title}}",
+        }
+
     def _get_or_create_managed_epg_source(self, settings, logger):
         """Create (if missing) or refresh the shared plugin-managed dummy EPGSource.
 
