@@ -2226,6 +2226,8 @@ class Plugin:
             "managed_by": "event-channel-managarr",
         }
 
+        managed_props.update(self._localized_template_props(settings))
+
         try:
             source, created = EPGSource.objects.get_or_create(
                 name="ECM Managed Dummy",
