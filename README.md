@@ -194,6 +194,26 @@ When **🗓️ Manage Dummy EPG** is enabled:
   * **For names with no parseable time**: a 24-hour program with the channel name (fallback template).
 * Toggling **Manage Dummy EPG** off cleanly unbinds every channel the plugin attached — on the next scan, `epg_data` is set to `None` for any channel still pointing at the managed source. The source row itself is preserved for cheap re-adoption.
 
+### Localized Time in EPG Titles
+
+When **`Event Time Zone`** (`dummy_epg_event_timezone`) and the scheduler **`Time Zone`** (`timezone`) are different, ECM rewrites the dummy EPG titles to show the program's local time and zone abbreviation:
+
+| Setup | Title in guide |
+|---|---|
+| Event TZ `US/Eastern`, scheduler TZ `America/Chicago` | `Boxing 5/9 11:00 PM CST` |
+| Same as above, after DST starts | `Boxing 5/9 11:00 PM CDT` |
+| Event TZ == scheduler TZ | `Boxing` (plain — today's behavior) |
+
+**The scheduler `Time Zone` setting doubles as the display time zone.** If you set it to `UTC` for predictable scheduled runs, EPG titles will show UTC times. If this becomes a problem, open an issue — a separate `dummy_epg_display_timezone` setting is on the deferred list.
+
+**DST caveat:** the abbreviation (`CST` vs `CDT`) is recomputed every time ECM runs. If you disable scheduling and don't trigger a manual run after a DST transition, the abbreviation will be stale (the *time itself* is always correct, only the trailing label lags). Run ECM once after a DST change to refresh.
+
+**Date format inside titles** follows your existing `Date Format` setting:
+- `US` or `Auto` → `M/D` (e.g., `5/9`)
+- `EU` → `D/M` (e.g., `9/5`)
+
+**Numeric-offset zones** (e.g., `Etc/GMT+5`) suppress the abbreviation suffix — ECM still converts the time but writes no trailing label, since `+0500` would look wrong in a title.
+
 ## Action Reference
 
 | Action | Style | Description |
