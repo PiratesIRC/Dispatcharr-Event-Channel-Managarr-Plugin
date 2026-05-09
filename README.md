@@ -196,15 +196,15 @@ When **🗓️ Manage Dummy EPG** is enabled:
 
 ### Localized Time in EPG Titles
 
-When **`Event Time Zone`** (`dummy_epg_event_timezone`) and the scheduler **`Time Zone`** (`timezone`) are different, ECM rewrites the dummy EPG titles to show the program's local time and zone abbreviation:
+When **`Event Timezone`** (`dummy_epg_event_timezone`) and the scheduler **`Timezone`** (`timezone`) are different, ECM rewrites the dummy EPG titles to show the program's local time and zone abbreviation:
 
-| Setup | Title in guide |
-|---|---|
-| Event TZ `US/Eastern`, scheduler TZ `America/Chicago` | `Boxing 5/9 11:00 PM CST` |
-| Same as above, after DST starts | `Boxing 5/9 11:00 PM CDT` |
-| Event TZ == scheduler TZ | `Boxing` (plain — today's behavior) |
+| Setup | Channel name | Title in guide |
+|---|---|---|
+| Event TZ `US/Eastern`, scheduler TZ `America/Chicago` (DST active, e.g., May) | `Boxing 5/9 8:30 PM ET` | `Boxing 5/9 7:30 PM CDT` |
+| Same setup, standard time (e.g., November) | `Boxing 11/9 8:30 PM ET` | `Boxing 11/9 7:30 PM CST` |
+| Event TZ == scheduler TZ | (any) | `Boxing` (plain — today's behavior) |
 
-**The scheduler `Time Zone` setting doubles as the display time zone.** If you set it to `UTC` for predictable scheduled runs, EPG titles will show UTC times. If this becomes a problem, open an issue — a separate `dummy_epg_display_timezone` setting is on the deferred list.
+**The scheduler `Timezone` setting doubles as the display time zone.** If you set it to `UTC` for predictable scheduled runs, EPG titles will show UTC times. If this becomes a problem, open an issue — a separate `dummy_epg_display_timezone` setting is on the deferred list.
 
 **DST caveat:** the abbreviation (`CST` vs `CDT`) is recomputed every time ECM runs. If you disable scheduling and don't trigger a manual run after a DST transition, the abbreviation will be stale (the *time itself* is always correct, only the trailing label lags). Run ECM once after a DST change to refresh.
 
