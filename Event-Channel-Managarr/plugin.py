@@ -2155,7 +2155,7 @@ class Plugin:
             return DEFAULTS
 
         try:
-            pytz.timezone(source_tz_name)
+            pytz.timezone(source_tz_name)  # validate only; renderer resolves source TZ itself
             display_tz = pytz.timezone(display_tz_name)
         except pytz.exceptions.UnknownTimeZoneError:
             return DEFAULTS
@@ -2163,7 +2163,7 @@ class Plugin:
         abbrev = datetime.now(display_tz).strftime("%Z")
         suffix = f" {abbrev}" if abbrev and abbrev.isalpha() else ""
 
-        fmt = str(settings.get("date_format", "Auto")).strip()
+        fmt = str(settings.get("date_format", "Auto")).strip().upper()
         date_ph = "{day}/{month}" if fmt == "EU" else "{month}/{day}"
 
         return {
