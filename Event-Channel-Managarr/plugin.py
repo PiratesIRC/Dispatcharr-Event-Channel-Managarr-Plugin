@@ -1177,15 +1177,15 @@ class Plugin:
             meridiem = meridiem.upper()
             if meridiem == "AM":
                 return 0 if hour == 12 else hour
-            # PM
-            return hour if hour == 12 else hour + 12
+            else:
+                return hour if hour == 12 else hour + 12
 
         # Pattern 0: start:YYYY-MM-DD HH:MM:SS[ AM/PM] or stop:YYYY-MM-DD HH:MM:SS[ AM/PM]
         for prefix in ["start:", "stop:"]:
-            pattern0 = re.search(rf'{prefix}(\d{{4}})-(\d{{2}})-(\d{{2}})\s+(\d{{1,2}}):(\d{{2}}):(\d{{2}})\s*([AaPp][Mm])?', channel_name)
+            pattern0 = re.search(rf'{prefix}(\d{{4}})-(\d{{2}})-(\d{{2}})\s+(\d{{1,2}}):(\d{{2}}):(\d{{2}})\s*(?P<ap>[AaPp][Mm])?', channel_name)
             if pattern0:
                 year, month, day, hour, minute, second = map(int, pattern0.groups()[:6])
-                hour = _apply_meridiem(hour, pattern0.group(7))
+                hour = _apply_meridiem(hour, pattern0.group("ap"))
                 try:
                     extracted_date = datetime(year, month, day, hour, minute, second)
                     logger.debug(f"Extracted datetime {extracted_date} from pattern {prefix}YYYY-MM-DD HH:MM:SS[ AM/PM] in '{channel_name}'")
@@ -1194,10 +1194,10 @@ class Plugin:
                     pass
 
         # Pattern 0a: (YYYY-MM-DD HH:MM:SS[ AM/PM]) in parentheses
-        pattern0a = re.search(r'\((\d{4})-(\d{2})-(\d{2})\s+(\d{1,2}):(\d{2}):(\d{2})\s*([AaPp][Mm])?\)', channel_name)
+        pattern0a = re.search(r'\((\d{4})-(\d{2})-(\d{2})\s+(\d{1,2}):(\d{2}):(\d{2})\s*(?P<ap>[AaPp][Mm])?\)', channel_name)
         if pattern0a:
             year, month, day, hour, minute, second = map(int, pattern0a.groups()[:6])
-            hour = _apply_meridiem(hour, pattern0a.group(7))
+            hour = _apply_meridiem(hour, pattern0a.group("ap"))
             try:
                 extracted_date = datetime(year, month, day, hour, minute, second)
                 logger.debug(f"Extracted datetime {extracted_date} from pattern (YYYY-MM-DD HH:MM:SS[ AM/PM]) in '{channel_name}'")
