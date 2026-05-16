@@ -60,6 +60,8 @@ Thumbs.db
 # AI/Tool config
 .claude/
 .serena/
+.wolf/
+CLAUDE.md
 GEMINI.md
 
 # Local files

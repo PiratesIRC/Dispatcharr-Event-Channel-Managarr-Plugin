@@ -41,7 +41,7 @@ _scheduler_lock = threading.Lock()  # Prevent concurrent scheduler starts
 class PluginConfig:
     """Centralized configuration constants for Event Channel Managarr."""
 
-    PLUGIN_VERSION = "1.26.1291442"
+    PLUGIN_VERSION = "1.26.1362004"
 
     # Default timezone for scheduling
     DEFAULT_TIMEZONE = "America/Chicago"
@@ -1170,25 +1170,37 @@ class Plugin:
         today = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
         date_format = (settings or {}).get("date_format", "Auto")
 
-        # Pattern 0: start:YYYY-MM-DD HH:MM:SS or stop:YYYY-MM-DD HH:MM:SS
+        def _apply_meridiem(hour, meridiem):
+            """Convert a 12-hour clock hour to 24-hour given an optional AM/PM token."""
+            if not meridiem:
+                return hour
+            meridiem = meridiem.upper()
+            if meridiem == "AM":
+                return 0 if hour == 12 else hour
+            # PM
+            return hour if hour == 12 else hour + 12
+
+        # Pattern 0: start:YYYY-MM-DD HH:MM:SS[ AM/PM] or stop:YYYY-MM-DD HH:MM:SS[ AM/PM]
         for prefix in ["start:", "stop:"]:
-            pattern0 = re.search(rf'{prefix}(\d{{4}})-(\d{{2}})-(\d{{2}})\s+(\d{{2}}):(\d{{2}}):(\d{{2}})', channel_name)
+            pattern0 = re.search(rf'{prefix}(\d{{4}})-(\d{{2}})-(\d{{2}})\s+(\d{{1,2}}):(\d{{2}}):(\d{{2}})\s*([AaPp][Mm])?', channel_name)
             if pattern0:
-                year, month, day, hour, minute, second = map(int, pattern0.groups())
+                year, month, day, hour, minute, second = map(int, pattern0.groups()[:6])
+                hour = _apply_meridiem(hour, pattern0.group(7))
                 try:
                     extracted_date = datetime(year, month, day, hour, minute, second)
-                    logger.debug(f"Extracted datetime {extracted_date} from pattern {prefix}YYYY-MM-DD HH:MM:SS in '{channel_name}'")
+                    logger.debug(f"Extracted datetime {extracted_date} from pattern {prefix}YYYY-MM-DD HH:MM:SS[ AM/PM] in '{channel_name}'")
                     return extracted_date
                 except ValueError:
                     pass
 
-        # Pattern 0a: (YYYY-MM-DD HH:MM:SS) in parentheses
-        pattern0a = re.search(r'\((\d{4})-(\d{2})-(\d{2})\s+(\d{2}):(\d{2}):(\d{2})\)', channel_name)
+        # Pattern 0a: (YYYY-MM-DD HH:MM:SS[ AM/PM]) in parentheses
+        pattern0a = re.search(r'\((\d{4})-(\d{2})-(\d{2})\s+(\d{1,2}):(\d{2}):(\d{2})\s*([AaPp][Mm])?\)', channel_name)
         if pattern0a:
-            year, month, day, hour, minute, second = map(int, pattern0a.groups())
+            year, month, day, hour, minute, second = map(int, pattern0a.groups()[:6])
+            hour = _apply_meridiem(hour, pattern0a.group(7))
             try:
                 extracted_date = datetime(year, month, day, hour, minute, second)
-                logger.debug(f"Extracted datetime {extracted_date} from pattern (YYYY-MM-DD HH:MM:SS) in '{channel_name}'")
+                logger.debug(f"Extracted datetime {extracted_date} from pattern (YYYY-MM-DD HH:MM:SS[ AM/PM]) in '{channel_name}'")
                 return extracted_date
             except ValueError:
                 pass
