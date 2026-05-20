@@ -41,7 +41,7 @@ _scheduler_lock = threading.Lock()  # Prevent concurrent scheduler starts
 class PluginConfig:
     """Centralized configuration constants for Event Channel Managarr."""
 
-    PLUGIN_VERSION = "1.26.1362004"
+    PLUGIN_VERSION = "1.26.1401103"
 
     # Default timezone for scheduling
     DEFAULT_TIMEZONE = "America/Chicago"
@@ -1331,13 +1331,24 @@ class Plugin:
             now_in_tz = datetime.now(local_tz)
             today_day = now_in_tz.weekday()
 
+            # ±1 day tolerance: a channel named for a US/EU day can roll over the
+            # viewer's local calendar (e.g. "Monday Night Football" is Tuesday in
+            # Australia). Earth's TZ span is UTC-12..UTC+14, so the named day will
+            # always be within ±1 of the viewer's day for any live event.
+            allowed_days = {(today_day - 1) % 7, today_day, (today_day + 1) % 7}
+
             day_names = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday']
             extracted_day_name = day_names[extracted_day]
             today_day_name = day_names[today_day]
 
-            if extracted_day != today_day:
+            if extracted_day not in allowed_days:
                 return True, f"[WrongDayOfWeek] Channel is for {extracted_day_name}, but today is {today_day_name}"
 
+            if extracted_day != today_day:
+                logger.debug(
+                    f"[WrongDayOfWeek] allowing '{channel_name}': named day {extracted_day_name} "
+                    f"is within ±1 of today ({today_day_name}) in {tz_str} — cross-TZ rollover tolerance"
+                )
             return False, None
 
         elif rule_name == "NoEventPattern":

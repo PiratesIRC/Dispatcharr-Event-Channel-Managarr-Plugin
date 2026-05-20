@@ -141,7 +141,7 @@ The plugin checks channels against the **Hide Rules Priority** list in the order
 | :--- | :--- | :--- |
 | **[NoEPG]** | — | Hides if no EPG is assigned OR if the assigned EPG has no program data for the next 24 hours. (Skips custom dummy EPG, including the plugin-managed source.) |
 | **[BlankName]** | — | Hides if the channel name is blank. |
-| **[WrongDayOfWeek]** | — | Hides if the name contains a day name (e.g., "MONDAY", "Mon", "Saturday", "Sat") and today is not that day. Recognizes full and abbreviated day names. |
+| **[WrongDayOfWeek]** | — | Hides if the name contains a day name (e.g., "MONDAY", "Mon", "Saturday", "Sat") and the named day is not yesterday, today, or tomorrow in your timezone. The ±1 day tolerance keeps US/EU named channels visible to viewers in distant timezones (e.g., Australia seeing "Monday Night Football" on local Tuesday). Recognizes full/abbreviated day names plus MNF/TNF/SNF. |
 | **[NoEventPattern]** | — | Hides if the name contains patterns like "no event", "offline", "no games scheduled". |
 | **[EmptyPlaceholder]** | — | Hides if the name ends with a separator (`:`, `\|`, `-`) and has no event title after it, OR if the name contains a parenthesized literal template token like `(MM.DD h:mmAM/PM ET)` indicating an unpopulated stub channel. |
 | **[ShortDescription]** | — | Hides if the event title (text after a separator) is less than 15 characters long. |
