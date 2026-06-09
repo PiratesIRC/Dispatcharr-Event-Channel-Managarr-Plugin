@@ -41,7 +41,7 @@ _scheduler_lock = threading.Lock()  # Prevent concurrent scheduler starts
 class PluginConfig:
     """Centralized configuration constants for Event Channel Managarr."""
 
-    PLUGIN_VERSION = "1.26.1600123"
+    PLUGIN_VERSION = "1.26.1600138"
 
     # Default timezone for scheduling
     DEFAULT_TIMEZONE = "America/Chicago"
@@ -1160,8 +1160,23 @@ class Plugin:
             except ValueError:
                 return None
 
-    def _extract_date_from_channel_name(self, channel_name, logger, settings=None):
-        """Extract date from channel name using various patterns, including hour if present"""
+    def _name_has_stop_timestamp(self, channel_name):
+        """True if the channel name carries an explicit `stop:YYYY-MM-DD HH:MM:SS`
+        event-end timestamp. [PastDate] uses this to compare the real end time rather
+        than just the calendar date (issue #22)."""
+        if not channel_name:
+            return False
+        return bool(re.search(r'stop:\d{4}-\d{2}-\d{2}\s+\d{1,2}:\d{2}:\d{2}', channel_name))
+
+    def _extract_date_from_channel_name(self, channel_name, logger, settings=None, prefer="start"):
+        """Extract date from channel name using various patterns, including hour if present.
+
+        When a name carries both `start:` and `stop:` timestamps, `prefer` selects which one
+        Pattern 0 returns: `prefer="start"` (default) for rules asking "when does it start /
+        how far out is it" ([FutureDate], [UndatedAge], NoEPG); `prefer="stop"` for [PastDate],
+        which asks "has the event ended?" (issue #22). Falls back to the other prefix when the
+        preferred one is absent, so single-timestamp names are unaffected.
+        """
         if not channel_name:
             return None
         from dateutil import parser as dateutil_parser
@@ -1181,7 +1196,9 @@ class Plugin:
                 return hour if hour == 12 else hour + 12
 
         # Pattern 0: start:YYYY-MM-DD HH:MM:SS[ AM/PM] or stop:YYYY-MM-DD HH:MM:SS[ AM/PM]
-        for prefix in ["start:", "stop:"]:
+        # Order by caller preference so [PastDate] can evaluate against stop: (issue #22).
+        prefixes = ["stop:", "start:"] if prefer == "stop" else ["start:", "stop:"]
+        for prefix in prefixes:
             pattern0 = re.search(rf'{prefix}(\d{{4}})-(\d{{2}})-(\d{{2}})\s+(\d{{1,2}}):(\d{{2}}):(\d{{2}})\s*(?P<ap>[AaPp][Mm])?', channel_name)
             if pattern0:
                 year, month, day, hour, minute, second = map(int, pattern0.groups()[:6])
@@ -1460,7 +1477,9 @@ class Plugin:
             return False, None
 
         elif rule_name == "PastDate":
-            extracted_date = self._extract_date_from_channel_name(channel_name, logger, settings)
+            # Use the event's stop: time when present ("has it ended?"), falling back to
+            # start:/other date patterns otherwise (issue #22).
+            extracted_date = self._extract_date_from_channel_name(channel_name, logger, settings, prefer="stop")
             if extracted_date is None:
                 return False, None  # Skip rule if no date found
 
@@ -1484,18 +1503,28 @@ class Plugin:
                 local_tz = pytz.timezone(self.DEFAULT_TIMEZONE)
 
             now_in_tz = datetime.now(local_tz)
-            now_adjusted = now_in_tz - timedelta(hours=grace_hours)
-            today = now_adjusted.date()
 
             # Make extracted_date timezone-aware for correct comparison if it's naive
             if extracted_date.tzinfo is None:
                 extracted_date = local_tz.localize(extracted_date)
 
+            # When the name carries an explicit stop: timestamp, compare the actual event
+            # end datetime so an event that ended earlier *today* is hidden once stop: +
+            # grace has elapsed, instead of staying visible until the next calendar day
+            # (issue #22). extracted_date is already the stop: time here (prefer="stop").
+            # Names without stop: keep the original day-granularity behaviour.
+            if self._name_has_stop_timestamp(channel_name):
+                cutoff = extracted_date + timedelta(days=days_threshold, hours=grace_hours)
+                if now_in_tz > cutoff:
+                    return True, f"[PastDate:{days_threshold}] Event ended {extracted_date.strftime('%m/%d/%Y %I:%M %p')} (past stop: + {days_threshold}d/{grace_hours}h grace)"
+                return False, None
+
+            now_adjusted = now_in_tz - timedelta(hours=grace_hours)
             days_diff = (now_adjusted.date() - extracted_date.date()).days
-            
+
             if days_diff > days_threshold:
                 return True, f"[PastDate:{days_threshold}] Event date {extracted_date.strftime('%m/%d/%Y')} is {days_diff} days in the past (grace period: {grace_hours}h)"
-            
+
             return False, None
         
         elif rule_name == "FutureDate":
