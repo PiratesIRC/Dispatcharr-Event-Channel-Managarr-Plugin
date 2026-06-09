@@ -321,6 +321,7 @@ Pull requests welcome. To submit changes:
 
 ### To this repo (`PiratesIRC/Dispatcharr-Event-Channel-Managarr-Plugin`)
 
+0. **Check open issues and PRs first** — review open issues + PRs on this repo (and any open `[event-channel-managarr]` PRs on `Dispatcharr/Plugins`) before cutting a release, so in-flight reports/fixes are included and nothing conflicts or duplicates.
 1. Bump version: `python3 bump_version.py` (auto-stamps with current UTC day-of-year + HHMM).
 2. Commit, push, tag, and release:
    ```bash
