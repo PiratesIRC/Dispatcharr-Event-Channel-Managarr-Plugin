@@ -41,7 +41,7 @@ _scheduler_lock = threading.Lock()  # Prevent concurrent scheduler starts
 class PluginConfig:
     """Centralized configuration constants for Event Channel Managarr."""
 
-    PLUGIN_VERSION = "1.26.1401103"
+    PLUGIN_VERSION = "1.26.1600037"
 
     # Default timezone for scheduling
     DEFAULT_TIMEZONE = "America/Chicago"
@@ -2189,9 +2189,18 @@ class Plugin:
         fmt = str(settings.get("date_format", "Auto")).strip().upper()
         date_ph = "{day}/{month}" if fmt == "EU" else "{month}/{day}"
 
+        # The main (currently-live) title stays plain "{title}". The inline
+        # {month}/{day} {starttime} placeholders only resolve when the channel
+        # name carries a parseable date AND time; event channels without one
+        # (e.g. "LIVE EVENT 31 - GOBI Live From Coachella 2026") would otherwise
+        # render the literal placeholder text. The program's start/end slot is
+        # still TZ-converted via output_timezone, so the guide shows the right
+        # time column. upcoming/ended templates keep the localized date/time —
+        # they only render when date_info AND time_info both matched, so their
+        # placeholders are always filled.
         return {
             "output_timezone": display_tz_name,
-            "title_template": f"{{title}} {date_ph} {{starttime}}{suffix}",
+            "title_template": "{title}",
             "upcoming_title_template": f"Upcoming at {date_ph} {{starttime}}{suffix}: {{title}}",
             "ended_title_template": f"Ended at {date_ph} {{endtime}}{suffix}: {{title}}",
         }
@@ -2222,11 +2231,14 @@ class Plugin:
         #   "LIVE EVENT 01   9:45am Suslenkov v Mann"           -> title="Suslenkov v Mann"
         #   "PPV EVENT 25: OUTDOOR THEATRE Live From Coachella" -> title="OUTDOOR THEATRE Live From Coachella"
         #   "PPV02 | UFC 327: English Apr 14 4:30 PM"           -> title="UFC 327: English"
+        #   "LIVE EVENT 31 - GOBI Live From Coachella 2026"     -> title="GOBI Live From Coachella 2026"
         # The title capture stops at the first of: " (", a time token, or a month-name token.
         # leading_time handles names where the time appears BEFORE the event text (LIVE format).
+        # The separator class includes '-' so " - " between the event number and the
+        # title is consumed (otherwise the leading dash leaks into {title}).
         managed_props = {
             "title_pattern": (
-                r"(?:PPV|LIVE)\s*(?:EVENT\s*)?\d+\s*[:|\s]\s*"
+                r"(?:PPV|LIVE)\s*(?:EVENT\s*)?\d+\s*[:|\-\s]\s*"
                 r"(?:(?P<leading_time>\d{1,2}(?::\d{2})?\s*[AaPp][Mm])\s+)?"
                 r"(?P<title>.+?)"
                 r"(?=\s*\(|\s+\d{1,2}(?::\d{2})?\s*[AaPp][Mm]|"
@@ -2242,7 +2254,16 @@ class Plugin:
             #   Ended at 11:00 PM: Cage Fury FC 153
             "upcoming_title_template": "Upcoming at {starttime}: {title}",
             "ended_title_template": "Ended at {endtime}: {title}",
-            "fallback_title_template": "{channel_name}",
+            # Dispatcharr's dummy renderer uses fallback_title_template VERBATIM —
+            # it never substitutes {channel_name} (see apps/output/views.py
+            # generate_fallback_programs: `title = fallback_title if fallback_title
+            # else channel_name`). An empty title therefore makes the renderer fall
+            # back to the real channel name. A non-empty description is required to
+            # enter the fallback path at all, because generate_dummy_programs gates on
+            # `if fallback_title or fallback_description`. So: empty title (-> real
+            # name) + static description.
+            "fallback_title_template": "",
+            "fallback_description_template": "Live event — guide information is currently unavailable.",
             "program_duration": duration_hours * 60,
             "timezone": tz_value,
             "include_date": False,
