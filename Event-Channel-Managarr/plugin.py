@@ -32,6 +32,15 @@ from core.utils import send_websocket_update
 LOGGER = logging.getLogger("plugins.event_channel_managarr")
 LOG_PREFIX = "[EventChannelManagarr]"
 
+# Single source of truth for the `start:`/`stop:YYYY-MM-DD HH:MM:SS[ AM/PM]` event
+# timestamps. Compiled once and shared by both the date extractor (Pattern 0) and the
+# [PastDate] stop-time check so the two can never drift apart.
+_EVENT_TS_SUFFIX = r"(\d{4})-(\d{2})-(\d{2})\s+(\d{1,2}):(\d{2}):(\d{2})\s*(?P<ap>[AaPp][Mm])?"
+_EVENT_TS_RE = {
+    "start:": re.compile("start:" + _EVENT_TS_SUFFIX),
+    "stop:": re.compile("stop:" + _EVENT_TS_SUFFIX),
+}
+
 # Background scheduling globals
 _bg_thread = None
 _stop_event = threading.Event()
@@ -41,7 +50,7 @@ _scheduler_lock = threading.Lock()  # Prevent concurrent scheduler starts
 class PluginConfig:
     """Centralized configuration constants for Event Channel Managarr."""
 
-    PLUGIN_VERSION = "1.26.1600138"
+    PLUGIN_VERSION = "1.26.1600157"
 
     # Default timezone for scheduling
     DEFAULT_TIMEZONE = "America/Chicago"
@@ -1166,7 +1175,7 @@ class Plugin:
         than just the calendar date (issue #22)."""
         if not channel_name:
             return False
-        return bool(re.search(r'stop:\d{4}-\d{2}-\d{2}\s+\d{1,2}:\d{2}:\d{2}', channel_name))
+        return bool(_EVENT_TS_RE["stop:"].search(channel_name))
 
     def _extract_date_from_channel_name(self, channel_name, logger, settings=None, prefer="start"):
         """Extract date from channel name using various patterns, including hour if present.
@@ -1199,7 +1208,7 @@ class Plugin:
         # Order by caller preference so [PastDate] can evaluate against stop: (issue #22).
         prefixes = ["stop:", "start:"] if prefer == "stop" else ["start:", "stop:"]
         for prefix in prefixes:
-            pattern0 = re.search(rf'{prefix}(\d{{4}})-(\d{{2}})-(\d{{2}})\s+(\d{{1,2}}):(\d{{2}}):(\d{{2}})\s*(?P<ap>[AaPp][Mm])?', channel_name)
+            pattern0 = _EVENT_TS_RE[prefix].search(channel_name)
             if pattern0:
                 year, month, day, hour, minute, second = map(int, pattern0.groups()[:6])
                 hour = _apply_meridiem(hour, pattern0.group("ap"))
@@ -2314,19 +2323,34 @@ class Plugin:
         # Pattern keys are user-customizable via Dispatcharr's Pattern Configuration UI.
         # Issue #21: enforcing them on every run clobbered users whose channel names don't
         # match the PPV/LIVE default. On refresh we only (re)apply our default to a pattern
-        # the user hasn't touched — one that is absent or still equals a plugin-shipped
-        # default. `stock_patterns` recognizes the current defaults plus their Python-style
-        # (?P<name>) and pre-'-'-separator variants, so stock installs still auto-upgrade
-        # while genuine user customizations are preserved across runs.
+        # the user hasn't touched — one that is absent or still equals a default this plugin
+        # has shipped. `stock_patterns` must therefore list EVERY historically-shipped
+        # default so stock installs (the source is created once, very early for some users)
+        # still auto-upgrade while genuine user customizations are preserved across runs.
+        # _py_named() covers the (?P<name>) variants of the current defaults; the pre-'-'-
+        # separator title and the original mandatory-:minute title/time defaults are listed
+        # explicitly. When the defaults change, append the previous default here.
         PATTERN_KEYS = ("title_pattern", "time_pattern", "date_pattern")
 
         def _py_named(p):
             return p.replace("(?<", "(?P<")
 
+        # Original shipped defaults (commit b1ef257-era): mandatory ":minute" leading time
+        # and optional am/pm. Carried by ~22 early releases' source rows.
+        _orig_title = (
+            r"(?:PPV|LIVE)\s*(?:EVENT\s*)?\d+\s*[:|\s]\s*"
+            r"(?:(?P<leading_time>\d{1,2}:\d{2}\s*[AaPp][Mm])\s+)?"
+            r"(?P<title>.+?)"
+            r"(?=\s*\(|\s+\d{1,2}(?::\d{2})?\s*[AaPp][Mm]|"
+            r"\s+(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)\s+\d+|$)"
+        )
+        _orig_time = r"(?P<hour>\d{1,2}):(?P<minute>\d{2})\s*(?P<ampm>[AaPp][Mm])?"
+
         stock_patterns = {
             "title_pattern": {title_pattern, _py_named(title_pattern),
-                              _py_named(title_pattern).replace(r"[:|\-\s]", r"[:|\s]")},
-            "time_pattern": {time_pattern, _py_named(time_pattern)},
+                              _py_named(title_pattern).replace(r"[:|\-\s]", r"[:|\s]"),
+                              _orig_title},
+            "time_pattern": {time_pattern, _py_named(time_pattern), _orig_time},
             "date_pattern": {date_pattern, _py_named(date_pattern)},
         }
 
