@@ -41,7 +41,7 @@ _scheduler_lock = threading.Lock()  # Prevent concurrent scheduler starts
 class PluginConfig:
     """Centralized configuration constants for Event Channel Managarr."""
 
-    PLUGIN_VERSION = "1.26.1600037"
+    PLUGIN_VERSION = "1.26.1600123"
 
     # Default timezone for scheduling
     DEFAULT_TIMEZONE = "America/Chicago"
@@ -2236,16 +2236,26 @@ class Plugin:
         # leading_time handles names where the time appears BEFORE the event text (LIVE format).
         # The separator class includes '-' so " - " between the event number and the
         # title is consumed (otherwise the leading dash leaks into {title}).
+        #
+        # Named groups use JS-style (?<name>) rather than Python (?P<name>): Dispatcharr's
+        # frontend Pattern Configuration validator is JavaScript and rejects (?P<name>) with
+        # "Invalid group" (issue #21), while its renderer converts (?<name>) -> (?P<name>)
+        # server-side. The renderer accepts either form; the JS form keeps the UI test panel
+        # happy so users can validate their own patterns.
+        title_pattern = (
+            r"(?:PPV|LIVE)\s*(?:EVENT\s*)?\d+\s*[:|\-\s]\s*"
+            r"(?:(?<leading_time>\d{1,2}(?::\d{2})?\s*[AaPp][Mm])\s+)?"
+            r"(?<title>.+?)"
+            r"(?=\s*\(|\s+\d{1,2}(?::\d{2})?\s*[AaPp][Mm]|"
+            r"\s+(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)\s+\d+|$)"
+        )
+        time_pattern = r"(?<hour>\d{1,2})(?::(?<minute>\d{2}))?\s*(?<ampm>[AaPp][Mm])"
+        date_pattern = r"\b(?<month>\d{1,2})[./](?<day>\d{1,2})(?:[./](?<year>\d{2,4}))?\b"
+
         managed_props = {
-            "title_pattern": (
-                r"(?:PPV|LIVE)\s*(?:EVENT\s*)?\d+\s*[:|\-\s]\s*"
-                r"(?:(?P<leading_time>\d{1,2}(?::\d{2})?\s*[AaPp][Mm])\s+)?"
-                r"(?P<title>.+?)"
-                r"(?=\s*\(|\s+\d{1,2}(?::\d{2})?\s*[AaPp][Mm]|"
-                r"\s+(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)\s+\d+|$)"
-            ),
-            "time_pattern": r"(?P<hour>\d{1,2})(?::(?P<minute>\d{2}))?\s*(?P<ampm>[AaPp][Mm])",
-            "date_pattern": r"\b(?P<month>\d{1,2})[./](?P<day>\d{1,2})(?:[./](?P<year>\d{2,4}))?\b",
+            "title_pattern": title_pattern,
+            "time_pattern": time_pattern,
+            "date_pattern": date_pattern,
             "title_template": "{title}",
             # Informative pre/post-event titles using Dispatcharr's
             # auto-computed {starttime}/{endtime} placeholders plus the
@@ -2272,6 +2282,25 @@ class Plugin:
 
         managed_props.update(self._localized_template_props(settings))
 
+        # Pattern keys are user-customizable via Dispatcharr's Pattern Configuration UI.
+        # Issue #21: enforcing them on every run clobbered users whose channel names don't
+        # match the PPV/LIVE default. On refresh we only (re)apply our default to a pattern
+        # the user hasn't touched — one that is absent or still equals a plugin-shipped
+        # default. `stock_patterns` recognizes the current defaults plus their Python-style
+        # (?P<name>) and pre-'-'-separator variants, so stock installs still auto-upgrade
+        # while genuine user customizations are preserved across runs.
+        PATTERN_KEYS = ("title_pattern", "time_pattern", "date_pattern")
+
+        def _py_named(p):
+            return p.replace("(?<", "(?P<")
+
+        stock_patterns = {
+            "title_pattern": {title_pattern, _py_named(title_pattern),
+                              _py_named(title_pattern).replace(r"[:|\-\s]", r"[:|\s]")},
+            "time_pattern": {time_pattern, _py_named(time_pattern)},
+            "date_pattern": {date_pattern, _py_named(date_pattern)},
+        }
+
         try:
             source, created = EPGSource.objects.get_or_create(
                 name="ECM Managed Dummy",
@@ -2294,6 +2323,12 @@ class Plugin:
         current = dict(source.custom_properties or {})
         changed = False
         for k, v in managed_props.items():
+            if k in PATTERN_KEYS:
+                cur = current.get(k)
+                # Preserve a user-customized pattern; only (re)apply our default to a
+                # pattern that is unset or still on a plugin-shipped default (issue #21).
+                if cur is not None and cur not in stock_patterns[k]:
+                    continue
             if current.get(k) != v:
                 current[k] = v
                 changed = True
