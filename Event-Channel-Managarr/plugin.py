@@ -767,6 +767,7 @@ class Plugin:
                 "update_schedule": self.update_schedule_action,
                 "dry_run": self.dry_run_action,
                 "run_now": self.run_now_action,
+                "on_m3u_refresh": self.on_m3u_refresh_action,
                 "remove_epg_from_hidden": self.remove_epg_from_hidden_action,
                 "clear_csv_exports": self.clear_csv_exports_action,
                 "cleanup_periodic_tasks": self.cleanup_periodic_tasks_action,
@@ -3202,6 +3203,48 @@ class Plugin:
         summary = self._compact_scan_summary("Run Now", result)
         if summary:
             result["message"] = summary
+        return result
+
+    def on_m3u_refresh_action(self, settings, logger):
+        """Re-run the visibility scan after an M3U refresh.
+
+        Wired to Dispatcharr's 'm3u_refresh' connect event via the action's
+        "events": ["m3u_refresh"]. Dispatcharr calls run() with
+        params={"event": "m3u_refresh", "payload": {...}}, which run() merges
+        into settings -- so settings.get("event") tells us event vs manual click.
+
+        Event path is gated on the opt-in setting and mirrors the scheduler's
+        direct synchronous call to _scan_and_update_channels (the event fires in
+        a Celery worker; no UI spinner thread needed). The cross-process
+        SCAN_LOCK_FILE flock inside _scan_and_update_channels serializes against
+        manual/scheduled runs.
+        """
+        triggered_by_event = settings.get("event") == "m3u_refresh"
+
+        if triggered_by_event and not self._get_bool_setting(
+            settings, "auto_rescan_on_m3u_refresh", self.DEFAULT_AUTO_RESCAN_ON_M3U_REFRESH
+        ):
+            # Disabled: no-op. Return None (not a dict) so run() does NOT emit a
+            # per-refresh WebSocket notification -- avoids UI noise on every refresh.
+            logger.debug(f"{LOG_PREFIX} [m3u_refresh] auto-rescan disabled, skipping")
+            return None
+
+        if triggered_by_event:
+            payload = settings.get("payload") or {}
+            # The real m3u_refresh payload carries the account under 'account_name'.
+            account = payload.get("account_name") or payload.get("account") or "unknown"
+            logger.info(f"{LOG_PREFIX} [m3u_refresh] Auto-rescan triggered by account '{account}'")
+        else:
+            logger.info(f"{LOG_PREFIX} Manual rescan (Rescan Now) requested")
+
+        result = self._scan_and_update_channels(
+            settings, logger, dry_run=False, is_scheduled_run=True
+        )
+
+        if isinstance(result, dict):
+            summary = self._compact_scan_summary("M3U Rescan", result)
+            if summary:
+                result["message"] = summary
         return result
 
     def remove_epg_from_hidden_action(self, settings, logger):
