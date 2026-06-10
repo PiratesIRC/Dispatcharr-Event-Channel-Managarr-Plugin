@@ -94,13 +94,13 @@ Settings are grouped into six sections in the UI.
 | :--- | :--- | :--- | :--- |
 | **⏰ Scheduled Run Times** | `text` | — | Comma-separated times (24-hour HHMM format) to run daily. Leave blank to disable. |
 | **📄 Enable Scheduled CSV Export** | `boolean` | `False` | If enabled, a CSV report will be created when the plugin runs on a schedule. |
+| **🔄 Auto-rescan after M3U refresh** | `boolean` | `False` | If enabled, the plugin re-runs its visibility scan automatically after each M3U account refresh. Dispatcharr's Auto Channel Sync re-enables (un-hides) channels in synced groups on every refresh; this re-hides them right after. Leave off if you do not use Auto Channel Sync. |
 
 ### ⚙️ Advanced
 
 | Setting | Type | Default | Description |
 | :--- | :--- | :--- | :--- |
 | **🐢 Rate Limiting** | `select` | `none` | Pause between per-channel ORM operations. Options: `None (fastest)` / `Low (~0.05s)` / `Medium (~0.2s)` / `High (~0.5s)` per channel. Useful for very large profiles or constrained databases. |
-| **🔄 Auto-rescan after M3U refresh** | `boolean` | `False` | If enabled, the plugin re-runs its visibility scan automatically after each M3U account refresh. Dispatcharr's Auto Channel Sync re-enables (un-hides) channels in synced groups on every refresh; this re-hides them right after. Leave off if you do not use Auto Channel Sync. |
 
 ## Usage Guide
 
@@ -287,7 +287,7 @@ Every CSV includes a block of summary header lines (prefixed with `#`) before th
 * **Scheduler Not Running**: After changing the schedule, you must click **💾 Save Schedule** to save and activate it. Ensure the times are in `HHMM` format (e.g., `0700` for 7 AM).
 * **Channels Aren't Hiding/Showing**: Run a **Dry Run** and check the `reason` and `hide_rule` columns for that channel. This will tell you exactly why a decision was made. You may need to adjust your **Hide Rules Priority** list.
 * **"Another scan is already running"**: A cross-process lock prevents concurrent scans. Wait for the current scan to finish. Scheduled runs will skip cleanly when a manual scan is in progress.
-* **Hidden channels reappear after a while / after an M3U refresh**: Dispatcharr's **Auto Channel Sync** re-enables every channel in a synced group on each M3U refresh, overriding the plugin's hide. To fix this, enable **🔄 Auto-rescan after M3U refresh** (in the **⚙️ Advanced** section) so the plugin re-runs its scan automatically right after each M3U refresh and re-hides affected channels. Alternatively, turn off Auto Channel Sync for the managed groups in Dispatcharr's M3U account settings.
+* **Hidden channels reappear after a while / after an M3U refresh**: Dispatcharr's **Auto Channel Sync** re-enables every channel in a synced group on each M3U refresh, overriding the plugin's hide. To fix this, enable **🔄 Auto-rescan after M3U refresh** (in the **⏰ Scheduling & Export** section) so the plugin re-runs its scan automatically right after each M3U refresh and re-hides affected channels. Alternatively, turn off Auto Channel Sync for the managed groups in Dispatcharr's M3U account settings.
 
 ### Managed Dummy EPG Issues
 * **Guide still shows nothing for a channel after enabling Manage Dummy EPG**: Check the CSV; the channel is likely not in `enabled_channel_ids` post-scan (e.g., it was hidden by a rule). Only channels that end up visible are attached.
