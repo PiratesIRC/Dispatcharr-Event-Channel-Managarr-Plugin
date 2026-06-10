@@ -515,6 +515,13 @@ class Plugin:
                 "help_text": "If enabled, a CSV file of the scan results will be created when the plugin runs on a schedule. If disabled, no CSV will be created for scheduled runs.",
             },
             {
+                "id": "auto_rescan_on_m3u_refresh",
+                "label": "🔄 Auto-rescan after M3U refresh",
+                "type": "boolean",
+                "default": self.DEFAULT_AUTO_RESCAN_ON_M3U_REFRESH,
+                "help_text": "If enabled, the plugin re-runs its visibility scan automatically after each M3U account refresh. Dispatcharr's Auto Channel Sync re-enables (un-hides) channels in synced groups on every refresh; this re-hides them right after. Leave off if you do not use Auto Channel Sync.",
+            },
+            {
                 "id": "_section_advanced",
                 "label": "⚙️ Advanced",
                 "type": "info",
@@ -964,6 +971,9 @@ class Plugin:
             if "enable_scheduled_csv_export" not in settings:
                 LOGGER.info(f"  Setting missing 'enable_scheduled_csv_export', adding default: {self.DEFAULT_SCHEDULED_CSV_EXPORT}")
                 settings["enable_scheduled_csv_export"] = self.DEFAULT_SCHEDULED_CSV_EXPORT
+            if "auto_rescan_on_m3u_refresh" not in settings:
+                LOGGER.info(f"  Setting missing 'auto_rescan_on_m3u_refresh', adding default: {self.DEFAULT_AUTO_RESCAN_ON_M3U_REFRESH}")
+                settings["auto_rescan_on_m3u_refresh"] = self.DEFAULT_AUTO_RESCAN_ON_M3U_REFRESH
             if "keep_duplicates" not in settings:
                 settings["keep_duplicates"] = self.DEFAULT_KEEP_DUPLICATES
             if "auto_set_dummy_epg_on_hide" not in settings:

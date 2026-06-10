@@ -35,6 +35,7 @@
     {"id": "_section_scheduling", "label": "⏰ Scheduling & Export", "type": "info", "description": "Scheduled runs and CSV export options."},
     {"id": "scheduled_times", "label": "⏰ Scheduled Run Times (24-hour)", "type": "text", "default": "", "placeholder": "0600,1300,1800"},
     {"id": "enable_scheduled_csv_export", "label": "📄 Enable Scheduled CSV Export", "type": "boolean", "default": false},
+    {"id": "auto_rescan_on_m3u_refresh", "label": "🔄 Auto-rescan after M3U refresh", "type": "boolean", "default": false},
 
     {"id": "_section_advanced", "label": "⚙️ Advanced", "type": "info", "description": "Performance and pacing controls for large channel profiles."},
     {"id": "rate_limiting", "label": "🐢 Rate Limiting", "type": "select", "default": "none"}
