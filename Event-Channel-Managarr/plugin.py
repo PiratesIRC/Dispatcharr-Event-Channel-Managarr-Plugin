@@ -73,6 +73,10 @@ class PluginConfig:
     # Default CSV export for scheduled runs
     DEFAULT_SCHEDULED_CSV_EXPORT = False
 
+    # Auto-rescan after each M3U refresh (re-hides channels that Dispatcharr's
+    # Auto Channel Sync re-enables). Opt-in, default off — no behavior change on upgrade.
+    DEFAULT_AUTO_RESCAN_ON_M3U_REFRESH = False
+
     # Default keep duplicates setting
     DEFAULT_KEEP_DUPLICATES = False
 
@@ -233,6 +237,7 @@ class Plugin:
     DEFAULT_PAST_DATE_GRACE_HOURS = PluginConfig.DEFAULT_PAST_DATE_GRACE_HOURS
     DEFAULT_AUTO_REMOVE_EPG = PluginConfig.DEFAULT_AUTO_REMOVE_EPG
     DEFAULT_SCHEDULED_CSV_EXPORT = PluginConfig.DEFAULT_SCHEDULED_CSV_EXPORT
+    DEFAULT_AUTO_RESCAN_ON_M3U_REFRESH = PluginConfig.DEFAULT_AUTO_RESCAN_ON_M3U_REFRESH
     DEFAULT_KEEP_DUPLICATES = PluginConfig.DEFAULT_KEEP_DUPLICATES
     DEFAULT_MANAGE_DUMMY_EPG = PluginConfig.DEFAULT_MANAGE_DUMMY_EPG
     DEFAULT_EVENT_DURATION_HOURS = PluginConfig.DEFAULT_EVENT_DURATION_HOURS
