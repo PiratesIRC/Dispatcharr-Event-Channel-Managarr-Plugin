@@ -50,7 +50,7 @@ _scheduler_lock = threading.Lock()  # Prevent concurrent scheduler starts
 class PluginConfig:
     """Centralized configuration constants for Event Channel Managarr."""
 
-    PLUGIN_VERSION = "1.26.1600157"
+    PLUGIN_VERSION = "1.26.1612227"
 
     # Default timezone for scheduling
     DEFAULT_TIMEZONE = "America/Chicago"
