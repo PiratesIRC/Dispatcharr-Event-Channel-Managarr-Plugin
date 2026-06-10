@@ -50,7 +50,7 @@ _scheduler_lock = threading.Lock()  # Prevent concurrent scheduler starts
 class PluginConfig:
     """Centralized configuration constants for Event Channel Managarr."""
 
-    PLUGIN_VERSION = "1.26.1600157"
+    PLUGIN_VERSION = "1.26.1612227"
 
     # Default timezone for scheduling
     DEFAULT_TIMEZONE = "America/Chicago"
@@ -72,6 +72,10 @@ class PluginConfig:
 
     # Default CSV export for scheduled runs
     DEFAULT_SCHEDULED_CSV_EXPORT = False
+
+    # Auto-rescan after each M3U refresh (re-hides channels that Dispatcharr's
+    # Auto Channel Sync re-enables). Opt-in, default off — no behavior change on upgrade.
+    DEFAULT_AUTO_RESCAN_ON_M3U_REFRESH = False
 
     # Default keep duplicates setting
     DEFAULT_KEEP_DUPLICATES = False
@@ -233,6 +237,7 @@ class Plugin:
     DEFAULT_PAST_DATE_GRACE_HOURS = PluginConfig.DEFAULT_PAST_DATE_GRACE_HOURS
     DEFAULT_AUTO_REMOVE_EPG = PluginConfig.DEFAULT_AUTO_REMOVE_EPG
     DEFAULT_SCHEDULED_CSV_EXPORT = PluginConfig.DEFAULT_SCHEDULED_CSV_EXPORT
+    DEFAULT_AUTO_RESCAN_ON_M3U_REFRESH = PluginConfig.DEFAULT_AUTO_RESCAN_ON_M3U_REFRESH
     DEFAULT_KEEP_DUPLICATES = PluginConfig.DEFAULT_KEEP_DUPLICATES
     DEFAULT_MANAGE_DUMMY_EPG = PluginConfig.DEFAULT_MANAGE_DUMMY_EPG
     DEFAULT_EVENT_DURATION_HOURS = PluginConfig.DEFAULT_EVENT_DURATION_HOURS
@@ -510,6 +515,13 @@ class Plugin:
                 "help_text": "If enabled, a CSV file of the scan results will be created when the plugin runs on a schedule. If disabled, no CSV will be created for scheduled runs.",
             },
             {
+                "id": "auto_rescan_on_m3u_refresh",
+                "label": "🔄 Auto-rescan after M3U refresh",
+                "type": "boolean",
+                "default": self.DEFAULT_AUTO_RESCAN_ON_M3U_REFRESH,
+                "help_text": "If enabled, the plugin re-runs its visibility scan automatically after each M3U account refresh. Dispatcharr's Auto Channel Sync re-enables (un-hides) channels in synced groups on every refresh; this re-hides them right after. Leave off if you do not use Auto Channel Sync.",
+            },
+            {
                 "id": "_section_advanced",
                 "label": "⚙️ Advanced",
                 "type": "info",
@@ -540,6 +552,7 @@ class Plugin:
         {"id": "update_schedule", "label": "Update Schedule", "description": "Save settings and update the scheduled run times", "button_label": "💾 Save Schedule", "button_variant": "filled", "button_color": "green"},
         {"id": "dry_run", "label": "Dry Run (Export to CSV)", "description": "Preview which channels would be hidden/shown without making changes", "button_label": "👁️ Dry Run", "button_variant": "outline", "button_color": "cyan"},
         {"id": "run_now", "label": "Run Now", "description": "Immediately scan and update channel visibility based on current EPG data", "button_label": "▶️ Run Now", "button_variant": "filled", "button_color": "green", "confirm": {"message": "This will apply visibility changes and (if enabled) attach/detach managed EPG. Continue?"}},
+        {"id": "on_m3u_refresh", "label": "Auto-rescan after M3U refresh", "description": "Runs a visibility scan automatically after each M3U refresh when '🔄 Auto-rescan after M3U refresh' is enabled in settings. Click to rescan now.", "events": ["m3u_refresh"], "button_label": "🔄 Rescan Now", "button_variant": "outline", "button_color": "cyan"},
         {"id": "remove_epg_from_hidden", "label": "Remove EPG from Hidden Channels", "description": "Remove all EPG data from channels that are disabled/hidden in the selected profile", "button_label": "🧹 Remove EPG from Hidden", "button_variant": "filled", "button_color": "red", "confirm": {"message": "This will CLEAR EPG data from every hidden channel in the selected profile. Cannot be undone by this plugin. Continue?"}},
         {"id": "clear_csv_exports", "label": "Clear CSV Exports", "description": "Delete all CSV export files created by this plugin", "button_label": "🗑️ Clear CSV Exports", "button_variant": "filled", "button_color": "red", "confirm": {"message": "This will delete every CSV file in /data/exports created by this plugin. Continue?"}},
         {"id": "cleanup_periodic_tasks", "label": "Cleanup Orphaned Tasks", "description": "Remove any orphaned Celery periodic tasks from old plugin versions", "button_label": "🧼 Cleanup Orphaned Tasks", "button_variant": "outline", "button_color": "orange", "confirm": {"message": "This removes orphaned Celery periodic tasks left by older plugin versions. Continue?"}},
@@ -754,6 +767,7 @@ class Plugin:
                 "update_schedule": self.update_schedule_action,
                 "dry_run": self.dry_run_action,
                 "run_now": self.run_now_action,
+                "on_m3u_refresh": self.on_m3u_refresh_action,
                 "remove_epg_from_hidden": self.remove_epg_from_hidden_action,
                 "clear_csv_exports": self.clear_csv_exports_action,
                 "cleanup_periodic_tasks": self.cleanup_periodic_tasks_action,
@@ -959,6 +973,9 @@ class Plugin:
             if "enable_scheduled_csv_export" not in settings:
                 LOGGER.info(f"  Setting missing 'enable_scheduled_csv_export', adding default: {self.DEFAULT_SCHEDULED_CSV_EXPORT}")
                 settings["enable_scheduled_csv_export"] = self.DEFAULT_SCHEDULED_CSV_EXPORT
+            if "auto_rescan_on_m3u_refresh" not in settings:
+                LOGGER.info(f"  Setting missing 'auto_rescan_on_m3u_refresh', adding default: {self.DEFAULT_AUTO_RESCAN_ON_M3U_REFRESH}")
+                settings["auto_rescan_on_m3u_refresh"] = self.DEFAULT_AUTO_RESCAN_ON_M3U_REFRESH
             if "keep_duplicates" not in settings:
                 settings["keep_duplicates"] = self.DEFAULT_KEEP_DUPLICATES
             if "auto_set_dummy_epg_on_hide" not in settings:
@@ -3186,6 +3203,48 @@ class Plugin:
         summary = self._compact_scan_summary("Run Now", result)
         if summary:
             result["message"] = summary
+        return result
+
+    def on_m3u_refresh_action(self, settings, logger):
+        """Re-run the visibility scan after an M3U refresh.
+
+        Wired to Dispatcharr's 'm3u_refresh' connect event via the action's
+        "events": ["m3u_refresh"]. Dispatcharr calls run() with
+        params={"event": "m3u_refresh", "payload": {...}}, which run() merges
+        into settings -- so settings.get("event") tells us event vs manual click.
+
+        Event path is gated on the opt-in setting and mirrors the scheduler's
+        direct synchronous call to _scan_and_update_channels (the event fires in
+        a Celery worker; no UI spinner thread needed). The cross-process
+        SCAN_LOCK_FILE flock inside _scan_and_update_channels serializes against
+        manual/scheduled runs.
+        """
+        triggered_by_event = settings.get("event") == "m3u_refresh"
+
+        if triggered_by_event and not self._get_bool_setting(
+            settings, "auto_rescan_on_m3u_refresh", self.DEFAULT_AUTO_RESCAN_ON_M3U_REFRESH
+        ):
+            # Disabled: no-op. Return None (not a dict) so run() does NOT emit a
+            # per-refresh WebSocket notification -- avoids UI noise on every refresh.
+            logger.debug(f"{LOG_PREFIX} [m3u_refresh] auto-rescan disabled, skipping")
+            return None
+
+        if triggered_by_event:
+            payload = settings.get("payload") or {}
+            # The real m3u_refresh payload carries the account under 'account_name'.
+            account = payload.get("account_name") or payload.get("account") or "unknown"
+            logger.info(f"{LOG_PREFIX} [m3u_refresh] Auto-rescan triggered by account '{account}'")
+        else:
+            logger.info(f"{LOG_PREFIX} Manual rescan (Rescan Now) requested")
+
+        result = self._scan_and_update_channels(
+            settings, logger, dry_run=False, is_scheduled_run=True
+        )
+
+        if isinstance(result, dict):
+            summary = self._compact_scan_summary("M3U Rescan", result)
+            if summary:
+                result["message"] = summary
         return result
 
     def remove_epg_from_hidden_action(self, settings, logger):
