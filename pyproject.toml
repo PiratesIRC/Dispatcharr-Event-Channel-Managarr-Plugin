@@ -1,0 +1,14 @@
+[tool.ruff]
+target-version = "py311"
+line-length = 120
+extend-exclude = [".serena", ".wolf", "docs"]
+
+[tool.ruff.lint]
+# Pragmatic: this is a large legacy plugin. Start lenient; tighten over time.
+select = ["E", "F", "W", "I"]
+ignore = ["E501"]  # line length handled by formatter; legacy lines are long
+
+[tool.pytest.ini_options]
+pythonpath = ["Event-Channel-Managarr"]
+testpaths = ["tests"]
+addopts = "-q"
