@@ -32,14 +32,21 @@ from core.utils import send_websocket_update
 LOGGER = logging.getLogger("plugins.event_channel_managarr")
 LOG_PREFIX = "[EventChannelManagarr]"
 
-# Single source of truth for the `start:`/`stop:YYYY-MM-DD HH:MM:SS[ AM/PM]` event
-# timestamps. Compiled once and shared by both the date extractor (Pattern 0) and the
-# [PastDate] stop-time check so the two can never drift apart.
-_EVENT_TS_SUFFIX = r"(\d{4})-(\d{2})-(\d{2})\s+(\d{1,2}):(\d{2}):(\d{2})\s*(?P<ap>[AaPp][Mm])?"
-_EVENT_TS_RE = {
-    "start:": re.compile("start:" + _EVENT_TS_SUFFIX),
-    "stop:": re.compile("stop:" + _EVENT_TS_SUFFIX),
-}
+# Pure parsing logic lives in the Django-free sibling module `ecm_parsing` so it
+# can be unit-tested without a running container. Dispatcharr loads plugin.py as a
+# submodule but does NOT put the plugin's own directory on sys.path, so add it here
+# to make the sibling import resolve regardless of loader internals.
+import sys as _sys
+_PLUGIN_DIR = os.path.dirname(os.path.abspath(__file__))
+if _PLUGIN_DIR not in _sys.path:
+    _sys.path.insert(0, _PLUGIN_DIR)
+import ecm_parsing
+
+# Backwards-compatible aliases: existing references to these names elsewhere in
+# plugin.py (e.g. the [PastDate] stop-time check) keep working, now backed by the
+# shared module so the extractor and the rule can never drift apart.
+_EVENT_TS_SUFFIX = ecm_parsing.EVENT_TS_SUFFIX
+_EVENT_TS_RE = ecm_parsing.EVENT_TS_RE
 
 # Background scheduling globals
 _bg_thread = None
@@ -1162,37 +1169,15 @@ class Plugin:
         """Resolve a (first, second) numeric pair into a datetime using the configured format.
 
         date_format: "US" → MM/DD, "EU" → DD/MM, "Auto" → MM/DD with DD/MM fallback if month > 12.
-        Returns datetime or None if the pair can't form a valid date.
+        Returns datetime or None if the pair can't form a valid date. Delegates to ecm_parsing.
         """
-        fmt = (date_format or "Auto").strip()
-        if fmt == "EU":
-            day, month = first, second
-            try:
-                return datetime(current_year, month, day)
-            except ValueError:
-                return None
-        if fmt == "US":
-            month, day = first, second
-            try:
-                return datetime(current_year, month, day)
-            except ValueError:
-                return None
-        # Auto: MM/DD first; if month > 12 (or invalid), retry DD/MM.
-        try:
-            return datetime(current_year, first, second)
-        except ValueError:
-            try:
-                return datetime(current_year, second, first)
-            except ValueError:
-                return None
+        return ecm_parsing.resolve_numeric_date_pair(first, second, current_year, date_format)
 
     def _name_has_stop_timestamp(self, channel_name):
         """True if the channel name carries an explicit `stop:YYYY-MM-DD HH:MM:SS`
         event-end timestamp. [PastDate] uses this to compare the real end time rather
-        than just the calendar date (issue #22)."""
-        if not channel_name:
-            return False
-        return bool(_EVENT_TS_RE["stop:"].search(channel_name))
+        than just the calendar date (issue #22). Delegates to ecm_parsing."""
+        return ecm_parsing.name_has_stop_timestamp(channel_name)
 
     def _extract_date_from_channel_name(self, channel_name, logger, settings=None, prefer="start"):
         """Extract date from channel name using various patterns, including hour if present.
@@ -1203,115 +1188,10 @@ class Plugin:
         which asks "has the event ended?" (issue #22). Falls back to the other prefix when the
         preferred one is absent, so single-timestamp names are unaffected.
         """
-        if not channel_name:
-            return None
-        from dateutil import parser as dateutil_parser
-
-        current_year = datetime.now().year
-        today = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
         date_format = (settings or {}).get("date_format", "Auto")
-
-        def _apply_meridiem(hour, meridiem):
-            """Convert a 12-hour clock hour to 24-hour given an optional AM/PM token."""
-            if not meridiem:
-                return hour
-            meridiem = meridiem.upper()
-            if meridiem == "AM":
-                return 0 if hour == 12 else hour
-            else:
-                return hour if hour == 12 else hour + 12
-
-        # Pattern 0: start:YYYY-MM-DD HH:MM:SS[ AM/PM] or stop:YYYY-MM-DD HH:MM:SS[ AM/PM]
-        # Order by caller preference so [PastDate] can evaluate against stop: (issue #22).
-        prefixes = ["stop:", "start:"] if prefer == "stop" else ["start:", "stop:"]
-        for prefix in prefixes:
-            pattern0 = _EVENT_TS_RE[prefix].search(channel_name)
-            if pattern0:
-                year, month, day, hour, minute, second = map(int, pattern0.groups()[:6])
-                hour = _apply_meridiem(hour, pattern0.group("ap"))
-                try:
-                    extracted_date = datetime(year, month, day, hour, minute, second)
-                    logger.debug(f"Extracted datetime {extracted_date} from pattern {prefix}YYYY-MM-DD HH:MM:SS[ AM/PM] in '{channel_name}'")
-                    return extracted_date
-                except ValueError:
-                    pass
-
-        # Pattern 0a: (YYYY-MM-DD HH:MM:SS[ AM/PM]) in parentheses
-        pattern0a = re.search(r'\((\d{4})-(\d{2})-(\d{2})\s+(\d{1,2}):(\d{2}):(\d{2})\s*(?P<ap>[AaPp][Mm])?\)', channel_name)
-        if pattern0a:
-            year, month, day, hour, minute, second = map(int, pattern0a.groups()[:6])
-            hour = _apply_meridiem(hour, pattern0a.group("ap"))
-            try:
-                extracted_date = datetime(year, month, day, hour, minute, second)
-                logger.debug(f"Extracted datetime {extracted_date} from pattern (YYYY-MM-DD HH:MM:SS[ AM/PM]) in '{channel_name}'")
-                return extracted_date
-            except ValueError:
-                pass
-
-        # Pattern 1: M/D/YYYY or M/D/YY — interpreted per date_format setting.
-        pattern1 = re.search(r'\b(\d{1,2})/(\d{1,2})/(\d{2,4})\b', channel_name)
-        if pattern1:
-            first, second, year = map(int, pattern1.groups())
-            if year < 100:
-                year += 2000
-            extracted_date = self._resolve_numeric_date_pair(first, second, year, date_format)
-            if extracted_date is not None:
-                logger.debug(f"Extracted date {extracted_date.date()} from pattern M/D/YYYY ({date_format}) in '{channel_name}'")
-                return extracted_date
-
-        # Pattern 2c: DDth MONTH e.g., "28th Apr"
-        pattern2c = re.search(r'\b(\d{1,2})(?:st|nd|rd|th)?\s+(JAN|FEB|MAR|APR|MAY|JUN|JUL|AUG|SEP|OCT|NOV|DEC)\b', channel_name, re.IGNORECASE)
-        if pattern2c:
-            day, month_str = pattern2c.groups()
-            try:
-                temp_date = dateutil_parser.parse(f"{month_str} {day} {current_year}")
-                extracted_date = datetime(temp_date.year, temp_date.month, temp_date.day)
-                if (today - extracted_date).days > 180:
-                    extracted_date = datetime(current_year + 1, temp_date.month, temp_date.day)
-                logger.debug(f"Extracted date {extracted_date.date()} from pattern DDth MONTH in '{channel_name}'")
-                return extracted_date
-            except (ValueError, dateutil_parser.ParserError):
-                pass
-
-        # Pattern 2b: MONTH DD e.g., "Nov 8" or "Nov 8 16:00"
-        pattern2b = re.search(r'\b(JAN|FEB|MAR|APR|MAY|JUN|JUL|AUG|SEP|OCT|NOV|DEC)\s+(\d{1,2})(?:\s+(\d{1,2}:\d{2}))?', channel_name, re.IGNORECASE)
-        if pattern2b:
-            month_str, day, hour_minute = pattern2b.groups()
-            try:
-                date_str = f"{month_str} {day} {current_year}"
-                if hour_minute:
-                    date_str += f" {hour_minute}"
-                temp_date = dateutil_parser.parse(date_str)
-                extracted_date = datetime(temp_date.year, temp_date.month, temp_date.day, temp_date.hour, temp_date.minute)
-                if (today - extracted_date).days > 180:
-                    extracted_date = datetime(current_year + 1, temp_date.month, temp_date.day, temp_date.hour, temp_date.minute)
-                logger.debug(f"Extracted date {extracted_date} from pattern MONTH DD[ HH:MM] in '{channel_name}'")
-                return extracted_date
-            except (ValueError, dateutil_parser.ParserError):
-                pass
-
-        # Pattern 3: M.D without year e.g., "10.25" — interpreted per date_format setting.
-        pattern3 = re.search(r'\b(\d{1,2})\.(\d{1,2})\b', channel_name)
-        if pattern3:
-            first, second = map(int, pattern3.groups())
-            extracted_date = self._resolve_numeric_date_pair(first, second, current_year, date_format)
-            if extracted_date is not None:
-                logger.debug(f"Extracted date {extracted_date.date()} from pattern M.D ({date_format}) in '{channel_name}'")
-                return extracted_date
-
-        # Pattern 4: M/D without year e.g., "10/27" or "15/04" — interpreted per date_format setting.
-        # Lookahead excludes "/" (year follows, handled by Pattern 1) and ":" (time
-        # range like "1/3:30pm" — second number is hours, not a day).
-        pattern4 = re.search(r'\b(\d{1,2})/(\d{1,2})\b(?![/:])', channel_name)
-        if pattern4:
-            first, second = map(int, pattern4.groups())
-            extracted_date = self._resolve_numeric_date_pair(first, second, current_year, date_format)
-            if extracted_date is not None:
-                logger.debug(f"Extracted date {extracted_date.date()} from pattern M/D ({date_format}) in '{channel_name}'")
-                return extracted_date
-
-        logger.debug(f"No date found in channel name: '{channel_name}'")
-        return None
+        return ecm_parsing.extract_date_from_channel_name(
+            channel_name, date_format=date_format, prefer=prefer, logger=logger
+        )
 
 
     def _check_hide_rule(self, rule_name, rule_param, channel, channel_name, logger, settings):
