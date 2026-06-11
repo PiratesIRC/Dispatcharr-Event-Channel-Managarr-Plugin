@@ -1,0 +1,36 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: pip install pytest python-dateutil ruff
+
+      - name: Compile check
+        run: python -m py_compile Event-Channel-Managarr/plugin.py Event-Channel-Managarr/ecm_parsing.py
+
+      - name: Validate plugin.json
+        run: python -c "import json; json.load(open('Event-Channel-Managarr/plugin.json'))"
+
+      - name: Lint
+        # continue-on-error: true — lint noise from legacy code doesn't block the pipeline yet.
+        # TODO: remove continue-on-error once the legacy plugin.py is cleaned up.
+        run: ruff check .
+        continue-on-error: true
+
+      - name: Tests
+        run: pytest
