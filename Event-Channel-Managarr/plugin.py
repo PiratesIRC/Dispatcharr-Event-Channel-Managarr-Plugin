@@ -351,14 +351,6 @@ class Plugin:
                 "description": "Which channels this plugin monitors and how it identifies them."
             },
             {
-                "id": "timezone",
-                "label": "🌍 Timezone",
-                "type": "select",
-                "default": self.DEFAULT_TIMEZONE,
-                "help_text": "Timezone for scheduled runs. Select the timezone for scheduling. Only one can be selected.",
-                "options": self._load_timezones_from_file()
-            },
-            {
                 "id": "channel_profile_name",
                 "label": "📺 Channel Profile Names (Required)",
                 "type": "string",
@@ -510,7 +502,7 @@ class Plugin:
                 "label": "📺 Channel Name Event Timezone",
                 "type": "select",
                 "default": self.DEFAULT_DUMMY_EPG_TIMEZONE,
-                "help_text": "Timezone encoded in the event times inside channel names (e.g., US/Eastern for channels like '(4.17 8:30 PM ET)'). Different from the scheduler timezone above.",
+                "help_text": "Timezone encoded in the event times inside channel names (e.g., US/Eastern for channels like '(4.17 8:30 PM ET)'). Independent of Dispatcharr's display time zone.",
                 "options": self._load_timezones_from_file()
             },
             {

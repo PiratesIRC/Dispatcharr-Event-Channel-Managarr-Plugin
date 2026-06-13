@@ -9,7 +9,6 @@
   "min_dispatcharr_version": "v0.20.0",
   "fields": [
     {"id": "_section_scope", "label": "📍 Scope", "type": "info", "description": "Which channels this plugin monitors and how it identifies them."},
-    {"id": "timezone", "label": "🌍 Timezone", "type": "select", "default": "America/Chicago"},
     {"id": "channel_profile_name", "label": "📺 Channel Profile Names (Required)", "type": "string", "default": "", "placeholder": "e.g. All, Favorites"},
     {"id": "channel_groups", "label": "📂 Channel Groups", "type": "text", "default": "", "placeholder": "e.g. PPV Live Events, Sports"},
     {"id": "name_source", "label": "🔤 Name Source", "type": "select", "default": "Channel_Name"},
