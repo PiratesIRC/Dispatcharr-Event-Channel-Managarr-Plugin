@@ -137,7 +137,7 @@ COERCE_TZ_CASES = [
     ("   ", "UTC"),         # whitespace only
     (None, "UTC"),          # missing row -> getattr default
     ("Not/AZone", "UTC"),   # invalid name
-    (123, "UTC"),           # non-string
+    (123, "UTC"),           # non-string (e.g. mis-configured int)
 ]
 
 

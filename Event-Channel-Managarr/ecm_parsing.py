@@ -199,8 +199,9 @@ def extract_date_from_channel_name(channel_name, date_format="Auto", prefer="sta
 def coerce_timezone(value):
     """Return a valid IANA timezone name, or ``"UTC"`` as a safe fallback.
 
-    `value` is whatever Dispatcharr has stored for its global time zone — it may
-    be ``None`` (no settings row), blank, non-string, or an invalid name. pytz is
+    Accepts whatever Dispatcharr has stored for its global time zone — ``None``
+    (no settings row), blank, non-string, or an invalid name all return ``"UTC"``.
+    The returned string is always stripped of surrounding whitespace. pytz is
     imported lazily so importing this module carries no hard pytz dependency.
     """
     if not isinstance(value, str) or not value.strip():
@@ -210,5 +211,7 @@ def coerce_timezone(value):
         import pytz
         pytz.timezone(candidate)
     except Exception:
+        # Catches both pytz.exceptions.UnknownTimeZoneError (bad name) and
+        # ImportError (pytz not installed in the current environment).
         return "UTC"
     return candidate
