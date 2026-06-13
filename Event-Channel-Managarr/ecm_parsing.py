@@ -194,3 +194,21 @@ def extract_date_from_channel_name(channel_name, date_format="Auto", prefer="sta
 
     log.debug(f"No date found in channel name: '{channel_name}'")
     return None
+
+
+def coerce_timezone(value):
+    """Return a valid IANA timezone name, or ``"UTC"`` as a safe fallback.
+
+    `value` is whatever Dispatcharr has stored for its global time zone — it may
+    be ``None`` (no settings row), blank, non-string, or an invalid name. pytz is
+    imported lazily so importing this module carries no hard pytz dependency.
+    """
+    if not isinstance(value, str) or not value.strip():
+        return "UTC"
+    candidate = value.strip()
+    try:
+        import pytz
+        pytz.timezone(candidate)
+    except Exception:
+        return "UTC"
+    return candidate

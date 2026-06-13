@@ -12,6 +12,7 @@ from datetime import datetime
 import ecm_parsing
 from ecm_parsing import (
     apply_meridiem,
+    coerce_timezone,
     extract_date_from_channel_name,
     name_has_stop_timestamp,
     resolve_numeric_date_pair,
@@ -121,3 +122,25 @@ def test_resolve_numeric_date_pair(first, second, year, fmt, expected):
 ])
 def test_name_has_stop_timestamp(name, expected):
     assert name_has_stop_timestamp(name) == expected
+
+
+# ---------------------------------------------------------------------------
+# coerce_timezone — validate Dispatcharr's global tz, fall back to UTC
+# ---------------------------------------------------------------------------
+
+COERCE_TZ_CASES = [
+    ("America/New_York", "America/New_York"),
+    ("Europe/Stockholm", "Europe/Stockholm"),
+    ("  Europe/Stockholm  ", "Europe/Stockholm"),  # trimmed
+    ("UTC", "UTC"),
+    ("", "UTC"),            # blank
+    ("   ", "UTC"),         # whitespace only
+    (None, "UTC"),          # missing row -> getattr default
+    ("Not/AZone", "UTC"),   # invalid name
+    (123, "UTC"),           # non-string
+]
+
+
+@pytest.mark.parametrize("value,expected", COERCE_TZ_CASES)
+def test_coerce_timezone(value, expected):
+    assert coerce_timezone(value) == expected
