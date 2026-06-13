@@ -194,3 +194,41 @@ def extract_date_from_channel_name(channel_name, date_format="Auto", prefer="sta
 
     log.debug(f"No date found in channel name: '{channel_name}'")
     return None
+
+
+def coerce_timezone(value):
+    """Return a valid IANA timezone name, or ``"UTC"`` as a safe fallback.
+
+    Accepts whatever Dispatcharr has stored for its global time zone — ``None``
+    (no settings row), blank, non-string, or an invalid name all return ``"UTC"``.
+    The returned string is always stripped of surrounding whitespace. pytz is
+    imported lazily so importing this module carries no hard pytz dependency.
+    """
+    if not isinstance(value, str) or not value.strip():
+        return "UTC"
+    candidate = value.strip()
+    try:
+        import pytz
+        pytz.timezone(candidate)
+    except Exception:
+        # Catches both pytz.exceptions.UnknownTimeZoneError (bad name) and
+        # ImportError (pytz not installed in the current environment).
+        return "UTC"
+    return candidate
+
+
+def lock_is_stale(mtime, now, max_age_seconds):
+    """Return True if a lock acquired at ``mtime`` is older than ``max_age_seconds``.
+
+    Used to decide whether a held scan flock has been leaked/abandoned (e.g. an
+    fd inherited by a forked worker that never released it). A real scan finishes
+    in seconds, so a lock far older than any plausible scan is treated as stale
+    and may be broken. Boundary is exclusive: age == max_age is NOT stale.
+
+    ``mtime`` and ``now`` are epoch seconds (floats). Non-numeric input returns
+    False (fail safe: never break a lock we cannot reason about).
+    """
+    try:
+        return (now - mtime) > max_age_seconds
+    except TypeError:
+        return False

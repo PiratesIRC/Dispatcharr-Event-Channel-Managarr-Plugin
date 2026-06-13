@@ -57,10 +57,10 @@ _scheduler_lock = threading.Lock()  # Prevent concurrent scheduler starts
 class PluginConfig:
     """Centralized configuration constants for Event Channel Managarr."""
 
-    PLUGIN_VERSION = "1.26.1641345"
+    PLUGIN_VERSION = "1.26.1641827"
 
-    # Default timezone for scheduling
-    DEFAULT_TIMEZONE = "America/Chicago"
+    # Fallback timezone when Dispatcharr's global time zone is unset/invalid.
+    DEFAULT_TIMEZONE = "UTC"
 
     # Default name source for channel matching
     DEFAULT_NAME_SOURCE = "Channel_Name"  # Options: "Channel_Name" or "Stream_Name"
@@ -108,6 +108,10 @@ class PluginConfig:
     # File paths
     LAST_RUN_FILE = "/data/event_channel_managarr_last_run.json"
     SCAN_LOCK_FILE = "/data/event_channel_managarr_scan.lock"
+    # A real scan finishes in seconds. If the scan flock is held but its file is
+    # older than this, the holder is assumed dead/leaked (e.g. an fd inherited by
+    # a forked uwsgi/celery worker that never released it) and the lock is broken.
+    SCAN_LOCK_STALE_SECONDS = 900  # 15 min
     SETTINGS_FILE = "/data/event_channel_managarr_settings.json"
     RESULTS_FILE = "/data/event_channel_managarr_results.json"
     VERSION_CHECK_FILE = "/data/event_channel_managarr_version_check.json"
@@ -351,14 +355,6 @@ class Plugin:
                 "description": "Which channels this plugin monitors and how it identifies them."
             },
             {
-                "id": "timezone",
-                "label": "🌍 Timezone",
-                "type": "select",
-                "default": self.DEFAULT_TIMEZONE,
-                "help_text": "Timezone for scheduled runs. Select the timezone for scheduling. Only one can be selected.",
-                "options": self._load_timezones_from_file()
-            },
-            {
                 "id": "channel_profile_name",
                 "label": "📺 Channel Profile Names (Required)",
                 "type": "string",
@@ -510,7 +506,7 @@ class Plugin:
                 "label": "📺 Channel Name Event Timezone",
                 "type": "select",
                 "default": self.DEFAULT_DUMMY_EPG_TIMEZONE,
-                "help_text": "Timezone encoded in the event times inside channel names (e.g., US/Eastern for channels like '(4.17 8:30 PM ET)'). Different from the scheduler timezone above.",
+                "help_text": "Timezone encoded in the event times inside channel names (e.g., US/Eastern for channels like '(4.17 8:30 PM ET)'). Independent of Dispatcharr's display time zone.",
                 "options": self._load_timezones_from_file()
             },
             {
@@ -572,7 +568,7 @@ class Plugin:
         {"id": "update_schedule", "label": "Update Schedule", "description": "Save settings and update the scheduled run times", "button_label": "💾 Save Schedule", "button_variant": "filled", "button_color": "green"},
         {"id": "dry_run", "label": "Dry Run (Export to CSV)", "description": "Preview which channels would be hidden/shown without making changes", "button_label": "👁️ Dry Run", "button_variant": "outline", "button_color": "cyan"},
         {"id": "run_now", "label": "Run Now", "description": "Immediately scan and update channel visibility based on current EPG data", "button_label": "▶️ Run Now", "button_variant": "filled", "button_color": "green", "confirm": {"message": "This will apply visibility changes and (if enabled) attach/detach managed EPG. Continue?"}},
-        {"id": "on_m3u_refresh", "label": "Auto-rescan after M3U refresh", "description": "Runs a visibility scan automatically after each M3U refresh when '🔄 Auto-rescan after M3U refresh' is enabled in settings. Click to rescan now.", "events": ["m3u_refresh"], "button_label": "🔄 Rescan Now", "button_variant": "outline", "button_color": "cyan"},
+        {"id": "on_m3u_refresh", "label": "Auto-rescan after M3U refresh", "description": "Runs a visibility scan automatically after each M3U refresh when '🔄 Auto-rescan after M3U refresh' is enabled in settings.", "events": ["m3u_refresh"]},
         {"id": "remove_epg_from_hidden", "label": "Remove EPG from Hidden Channels", "description": "Remove all EPG data from channels that are disabled/hidden in the selected profile", "button_label": "🧹 Remove EPG from Hidden", "button_variant": "filled", "button_color": "red", "confirm": {"message": "This will CLEAR EPG data from every hidden channel in the selected profile. Cannot be undone by this plugin. Continue?"}},
         {"id": "clear_csv_exports", "label": "Clear CSV Exports", "description": "Delete all CSV export files created by this plugin", "button_label": "🗑️ Clear CSV Exports", "button_variant": "filled", "button_color": "red", "confirm": {"message": "This will delete every CSV file in /data/exports created by this plugin. Continue?"}},
         {"id": "cleanup_periodic_tasks", "label": "Cleanup Orphaned Tasks", "description": "Remove any orphaned Celery periodic tasks from old plugin versions", "button_label": "🧼 Cleanup Orphaned Tasks", "button_variant": "outline", "button_color": "orange", "confirm": {"message": "This removes orphaned Celery periodic tasks left by older plugin versions. Continue?"}},
@@ -1673,6 +1669,7 @@ class Plugin:
         """
         global _bg_thread
         try:
+            settings["timezone"] = self._dispatcharr_timezone()
             # --- This worker's scheduler thread ---
             worker_pid = os.getpid()
             scheduler_threads = [t for t in threading.enumerate() if "event-channel-managarr-scheduler" in t.name]
@@ -1752,6 +1749,7 @@ class Plugin:
     def update_schedule_action(self, settings, logger):
         """Save settings and update scheduled tasks"""
         try:
+            settings["timezone"] = self._dispatcharr_timezone()
             scheduled_times_str = settings.get("scheduled_times", "").strip()
             logger.info(f"Update Schedule - scheduled_times value: '{scheduled_times_str}'")
 
@@ -1781,6 +1779,26 @@ class Plugin:
         except Exception as e:
             logger.error(f"Error updating schedule: {e}")
             return {"status": "error", "message": f"Error updating schedule: {e}"}
+
+    def _dispatcharr_timezone(self):
+        """Resolve the effective timezone from Dispatcharr's global setting.
+
+        Reads Dispatcharr's General Settings -> Time Zone, which is stored in
+        core.models.CoreSettings under the "system_settings" group (NOT the
+        unused apps.dashboard.models.Settings table). Uses the official
+        CoreSettings.get_system_time_zone() accessor, which itself falls back
+        to Django's TIME_ZONE then "UTC". Returns "UTC" when the value is
+        missing, blank, or invalid, or if anything raises (e.g. running
+        outside Dispatcharr, or the DB is unavailable during migrations).
+        Validation and the UTC fallback live in ecm_parsing.coerce_timezone
+        (Django-free, unit-tested).
+        """
+        try:
+            from core.models import CoreSettings
+            return ecm_parsing.coerce_timezone(CoreSettings.get_system_time_zone())
+        except Exception as e:
+            LOGGER.debug(f"{LOG_PREFIX} Could not read Dispatcharr timezone, using UTC: {e}")
+            return "UTC"
 
     def _get_system_timezone(self, settings):
         """Get the system timezone from settings"""
@@ -1812,6 +1830,10 @@ class Plugin:
     def _start_background_scheduler(self, settings):
         """Start background scheduler thread"""
         global _bg_thread, _scheduler_lock
+
+        # Source the timezone from Dispatcharr BEFORE the thread captures it:
+        # scheduler_loop computes local_tz once from this dict and never re-reads.
+        settings["timezone"] = self._dispatcharr_timezone()
 
         # Use lock to prevent concurrent scheduler starts
         with _scheduler_lock:
@@ -2125,7 +2147,9 @@ class Plugin:
         }
 
         source_tz_name = str(settings.get("dummy_epg_event_timezone", "")).strip()
-        display_tz_name = str(settings.get("timezone", "")).strip()
+        # Display tz comes from Dispatcharr (already injected into settings by the
+        # caller via _dispatcharr_timezone); _get_system_timezone is the reader.
+        display_tz_name = self._get_system_timezone(settings)
 
         if not source_tz_name:
             return DEFAULTS
@@ -2529,19 +2553,82 @@ class Plugin:
             logger.warning(f"Error getting visibility for channel {channel_id}: {e}")
             return False
 
+    def _acquire_scan_lock(self, logger):
+        """Acquire the cross-worker scan flock, breaking a stale/leaked lock.
+
+        Returns an open, flock-held file object on success, or None if a *live*
+        scan currently holds the lock. If the lock is held but its file mtime is
+        older than SCAN_LOCK_STALE_SECONDS, the holder is assumed dead or leaked
+        (e.g. an fd inherited by a forked uwsgi/celery worker that never released
+        it) and the lock is forcibly broken by unlinking the file and acquiring
+        on a fresh inode. The old, orphaned flock then refers to an unlinked
+        inode and blocks nothing.
+
+        The lock file is opened in append mode (never truncates, and opening does
+        not touch mtime), so a failed acquire by a waiter does NOT reset the
+        staleness clock. On success we stamp mtime to mark this holder's start.
+        """
+        path = PluginConfig.SCAN_LOCK_FILE
+        for attempt in (1, 2):
+            try:
+                fd = open(path, 'a')
+            except OSError as e:
+                logger.warning(f"{LOG_PREFIX} Could not open scan lock file {path}: {e}")
+                return None
+            try:
+                fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except (OSError, IOError):
+                fd.close()
+                stale = False
+                age = None
+                try:
+                    mtime = os.path.getmtime(path)
+                    now = time.time()
+                    age = now - mtime
+                    stale = ecm_parsing.lock_is_stale(
+                        mtime, now, PluginConfig.SCAN_LOCK_STALE_SECONDS
+                    )
+                except OSError:
+                    stale = False
+                if attempt == 1 and stale:
+                    logger.warning(
+                        f"{LOG_PREFIX} Breaking stale scan lock (age {age:.0f}s > "
+                        f"{PluginConfig.SCAN_LOCK_STALE_SECONDS}s); previous holder "
+                        f"likely crashed or leaked the lock fd"
+                    )
+                    try:
+                        os.unlink(path)
+                    except OSError:
+                        pass
+                    continue  # retry once on a fresh inode
+                return None
+            # Acquired. Stamp mtime so staleness reflects THIS holder's start time
+            # (a leaked holder never stamps again, so its lock ages out).
+            # NOTE: mtime is stamped once here and NOT refreshed during the scan.
+            # A real scan finishes in seconds, so SCAN_LOCK_STALE_SECONDS (900s)
+            # is never reached by a live scan. If the scan body ever gains slow
+            # work (e.g. an external HTTP/EPG fetch) that could exceed that, add a
+            # periodic os.utime(path) heartbeat or raise the threshold — otherwise
+            # a waiter could break a still-running scan and run a second one.
+            try:
+                os.utime(path, None)
+            except OSError:
+                pass
+            return fd
+        return None
+
     def _scan_and_update_channels(self, settings, logger, dry_run=True, is_scheduled_run=False):
         """Scan channels and update visibility based on hide rules priority"""
+        # Source the timezone from Dispatcharr's global setting (overwrites any
+        # stale/absent disk value). MUST stay first: every per-channel date rule
+        # and _localized_template_props below reads settings["timezone"].
+        settings["timezone"] = self._dispatcharr_timezone()
         # Cross-worker serialization: one scan at a time across all uwsgi workers.
         # Covers manual Run Now / Dry Run as well as scheduled runs.
         lock_fd = None
         if fcntl:
-            try:
-                lock_fd = open(PluginConfig.SCAN_LOCK_FILE, 'w')
-                fcntl.flock(lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
-            except (OSError, IOError):
-                if lock_fd:
-                    lock_fd.close()
-                lock_fd = None
+            lock_fd = self._acquire_scan_lock(logger)
+            if lock_fd is None:
                 msg = "Another scan is already running in this or another worker. Skipping."
                 if is_scheduled_run:
                     logger.info(f"{LOG_PREFIX} {msg}")
@@ -2947,6 +3034,11 @@ class Plugin:
                     "scheduled_times",
                     "enable_scheduled_csv_export",
                 ]
+                # The plugin no longer owns a timezone setting; the scheduler/display
+                # timezone is sourced from Dispatcharr's General Settings -> Time Zone
+                # (injected into settings["timezone"] at scan start). Label it so the
+                # self-describing CSV makes the source obvious.
+                settings_labels = {"timezone": "timezone (from Dispatcharr)"}
                 header_lines.append("Settings:")
                 for k in settings_keys:
                     v = settings.get(k, "")
@@ -2954,7 +3046,7 @@ class Plugin:
                         v_str = "(empty)"
                     else:
                         v_str = str(v)
-                    header_lines.append(f"  {k}: {v_str}")
+                    header_lines.append(f"  {settings_labels.get(k, k)}: {v_str}")
 
                 fieldnames = ['channel_id', 'channel_name', 'channel_number', 'channel_group',
                             'current_visibility', 'action', 'reason', 'hide_rule', 'has_epg',

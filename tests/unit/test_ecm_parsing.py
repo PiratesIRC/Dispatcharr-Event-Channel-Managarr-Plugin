@@ -12,7 +12,9 @@ from datetime import datetime
 import ecm_parsing
 from ecm_parsing import (
     apply_meridiem,
+    coerce_timezone,
     extract_date_from_channel_name,
+    lock_is_stale,
     name_has_stop_timestamp,
     resolve_numeric_date_pair,
 )
@@ -121,3 +123,46 @@ def test_resolve_numeric_date_pair(first, second, year, fmt, expected):
 ])
 def test_name_has_stop_timestamp(name, expected):
     assert name_has_stop_timestamp(name) == expected
+
+
+# ---------------------------------------------------------------------------
+# coerce_timezone — validate Dispatcharr's global tz, fall back to UTC
+# ---------------------------------------------------------------------------
+
+COERCE_TZ_CASES = [
+    ("America/New_York", "America/New_York"),
+    ("Europe/Stockholm", "Europe/Stockholm"),
+    ("  Europe/Stockholm  ", "Europe/Stockholm"),  # trimmed
+    ("UTC", "UTC"),
+    ("", "UTC"),            # blank
+    ("   ", "UTC"),         # whitespace only
+    (None, "UTC"),          # missing row -> getattr default
+    ("Not/AZone", "UTC"),   # invalid name
+    (123, "UTC"),           # non-string (e.g. mis-configured int)
+]
+
+
+@pytest.mark.parametrize("value,expected", COERCE_TZ_CASES)
+def test_coerce_timezone(value, expected):
+    assert coerce_timezone(value) == expected
+
+
+# ---------------------------------------------------------------------------
+# lock_is_stale — decide whether a held scan lock is leaked/abandoned
+# ---------------------------------------------------------------------------
+
+def test_lock_is_stale_basic():
+    assert lock_is_stale(0.0, 1000.0, 900.0) is True       # 1000 > 900
+    assert lock_is_stale(500.0, 1000.0, 900.0) is False    # 500 < 900
+    assert lock_is_stale(1000.0, 1000.0, 900.0) is False   # age 0
+
+
+def test_lock_is_stale_boundary_is_exclusive():
+    # age exactly == max_age is NOT stale (strictly greater-than)
+    assert lock_is_stale(100.0, 1000.0, 900.0) is False    # age 900 == threshold
+
+
+def test_lock_is_stale_handles_bad_input():
+    assert lock_is_stale(None, 1000.0, 900.0) is False
+    assert lock_is_stale(0.0, None, 900.0) is False
+    assert lock_is_stale(0.0, 1000.0, None) is False
