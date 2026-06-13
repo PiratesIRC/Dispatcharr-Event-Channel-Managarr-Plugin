@@ -28,7 +28,7 @@ A Dispatcharr plugin that automatically manages channel visibility based on EPG 
 * **Configurable Duplicate Handling**: Choose your strategy for handling duplicate events: keep the one with the **lowest number**, **highest number**, or **longest name**. Optionally keep all duplicate channels visible.
 * **Direct Django ORM Integration**: Operates directly within Dispatcharr's Django environment for fast, reliable channel management without API overhead.
 * **WebSocket Progress Updates**: Real-time adaptive progress notifications during scans via WebSocket.
-* **Cross-Worker Safe**: A cross-process `fcntl` lock on the scan file ensures at most one scan runs at a time across all uwsgi workers, whether triggered by the scheduler or manually via Run Now / Dry Run.
+* **Cross-Worker Safe**: A cross-process `fcntl` lock on the scan file ensures at most one scan runs at a time across all uwsgi workers, whether triggered by the scheduler or manually via Run Now / Dry Run. The lock self-heals: if a previous scan's lock is ever leaked or orphaned (e.g. inherited by a forked worker), a stale lock older than 15 minutes is automatically broken and re-acquired, so scans can never wedge permanently.
 * **Configurable Rate Limiting (new in v1.26.1081141)**: Select `none` / `low` / `medium` / `high` to pace per-channel ORM writes (0 / 0.05 / 0.2 / 0.5 seconds each). Defaults to `none`; useful when scanning very large profiles on a small database.
 * **Sectioned UI (new in v1.26.1081141)**: Settings are grouped into **Scope**, **Hide Rules**, **Duplicates**, **EPG Management**, **Scheduling & Export**, and **Advanced** sections for easier navigation.
 * **Force Visibility**: Use a regular expression to **force specific channels** (like news or weather) to remain visible, overriding all hide rules.
@@ -239,7 +239,6 @@ When **`Event Timezone`** (`dummy_epg_event_timezone`) and **Dispatcharr's globa
 | **💾 Save Schedule** | Filled green | Save all settings and update/activate the scheduled run times. |
 | **👁️ Dry Run** | Outline cyan | Preview which channels would be hidden or shown without making any changes. Pure preview — never creates/modifies the managed dummy EPG source. Runs synchronously; the button's loading spinner covers the busy state and a single notification appears on completion with a compact one-line summary (`Dry run: N channels \| X hide / Y show \| EPG +A/-D \| CSV: <file>`). Full details land in the CSV header and logs. |
 | **▶️ Run Now** | Filled green, with confirm | Immediately scan and apply visibility updates based on the current EPG data. Same synchronous + compact-notification behavior as Dry Run. |
-| **🔄 Rescan Now** | Outline cyan | Manually trigger the same rescan that fires automatically after an M3U refresh (requires the **🔄 Auto-rescan after M3U refresh** setting to be on for event-driven firing; the button works regardless). |
 | **🧹 Remove EPG from Hidden** | Filled red, with confirm | Delete all EPG data from channels that are currently hidden/disabled in the selected profile(s). Destructive; requires confirmation. |
 | **🗑️ Clear CSV Exports** | Filled red, with confirm | Delete all CSV export files created by this plugin to free up disk space. Requires confirmation. |
 | **🧼 Cleanup Orphaned Tasks** | Outline orange, with confirm | Remove any orphaned Celery periodic tasks from old plugin versions. Requires confirmation. |
@@ -262,7 +261,7 @@ When **`Event Timezone`** (`dummy_epg_event_timezone`) and **Dispatcharr's globa
 Every CSV includes a block of summary header lines (prefixed with `#`) before the column row. After the counts and rule effectiveness, a `Settings:` snapshot records the configuration the scan ran with, so each export is self-describing. The display/scheduler time zone is sourced from Dispatcharr's General Settings → Time Zone and is reported as `timezone (from Dispatcharr)`:
 
 ```
-# Event Channel Managarr v1.26.1641804 - Applied - 20260613_182324
+# Event Channel Managarr v1.26.1641827 - Applied - 20260613_182324
 # Total Channels Processed: 489
 # Channels to Hide: 55
 # Channels to Show: 0
