@@ -32,7 +32,7 @@ A Dispatcharr plugin that automatically manages channel visibility based on EPG 
 * **Configurable Rate Limiting (new in v1.26.1081141)**: Select `none` / `low` / `medium` / `high` to pace per-channel ORM writes (0 / 0.05 / 0.2 / 0.5 seconds each). Defaults to `none`; useful when scanning very large profiles on a small database.
 * **Sectioned UI (new in v1.26.1081141)**: Settings are grouped into **Scope**, **Hide Rules**, **Duplicates**, **EPG Management**, **Scheduling & Export**, and **Advanced** sections for easier navigation.
 * **Force Visibility**: Use a regular expression to **force specific channels** (like news or weather) to remain visible, overriding all hide rules.
-* **Flexible Scheduling**: Run scans automatically at specific times each day (e.g., `0600,1300,1800`) with a simple dropdown for timezone selection.
+* **Flexible Scheduling**: Run scans automatically at specific times each day (e.g., `0600,1300,1800`). Scheduled-run and guide-display times use Dispatcharr's global time zone (General Settings → Time Zone).
 * **Auto-EPG Management**: When a channel is hidden, the plugin can automatically remove its EPG assignment to keep your guide clean.
 * **Automatic Update Notifications**: Displays a notification in the plugin settings when a new version is available on GitHub, keeping you informed of the latest features and fixes.
 * **Safe Dry Run Mode**: Preview all proposed visibility changes in a CSV export without modifying your channel lineup. Dry runs never create the managed dummy EPG source or write attach/detach bindings — they're pure previews.
@@ -58,7 +58,6 @@ Settings are grouped into six sections in the UI.
 
 | Setting | Type | Default | Description |
 | :--- | :--- | :--- | :--- |
-| **🌍 Timezone** | `select` | `America/Chicago` | Timezone for scheduled runs. Select from the dropdown. |
 | **📺 Channel Profile Names (Required)** | `text` | — | Channel Profile(s) to monitor. Use comma-separated names for multiple profiles. |
 | **📂 Channel Groups** | `text` | — | Comma-separated group names to monitor. Leave empty for all groups in the profile(s). |
 | **🔤 Name Source** | `select` | `Channel_Name` | Choose the source for rule matching: `Channel_Name` uses the channel name, `Stream_Name` uses the first stream's name in the channel. |
@@ -88,7 +87,7 @@ Settings are grouped into six sections in the UI.
 | **🗓️ Manage Dummy EPG** | `boolean` | `False` | If enabled, visible channels with no EPG get bound to the plugin-managed dummy EPG source. Disables cleanly: toggling off detaches all channels from the managed source on the next scan. |
 | **📡 Channel Name Format** | `select` | `US` | How channel names are structured for the dummy EPG parser. `US` = `PPV/LIVE EVENT ##: Title (MM.DD HH:MM AM/PM TZ)`. `SE` = pipe-delimited `PREFIX \| Title \| DDD DD Mon HH:MM TZ \| extras \| channel name` (24-hour time, textual month); the last pipe segment (e.g. `SE: VIAPLAY PPV 20`) is stored as the EPG display name so the guide's channel list shows the broadcaster instead of the full stream name. |
 | **⏱️ Event Duration (hours)** | `number` | `3` | How long each scheduled event appears in the guide. Before this window the guide shows `Upcoming at <start-time>: <title>`; after, `Ended at <end-time>: <title>`. |
-| **📺 Channel Name Event Timezone** | `select` | `US/Eastern` | Timezone encoded in event times within channel names (e.g., `US/Eastern` for channels like `(4.17 8:30 PM ET)`). Independent of the scheduler timezone. |
+| **📺 Channel Name Event Timezone** | `select` | `US/Eastern` | Timezone encoded in event times within channel names (e.g., `US/Eastern` for channels like `(4.17 8:30 PM ET)`). Independent of Dispatcharr's global time zone. |
 
 ### ⏰ Scheduling & Export
 
@@ -145,7 +144,7 @@ The plugin checks channels against the **Hide Rules Priority** list in the order
 | :--- | :--- | :--- |
 | **[NoEPG]** | — | Hides if no EPG is assigned OR if the assigned EPG has no program data for the next 24 hours. (Skips custom dummy EPG, including the plugin-managed source.) |
 | **[BlankName]** | — | Hides if the channel name is blank. |
-| **[WrongDayOfWeek]** | — | Hides if the name contains a day name (e.g., "MONDAY", "Mon", "Saturday", "Sat") and the named day is not yesterday, today, or tomorrow in your timezone. The ±1 day tolerance keeps US/EU named channels visible to viewers in distant timezones (e.g., Australia seeing "Monday Night Football" on local Tuesday). Recognizes full/abbreviated day names plus MNF/TNF/SNF. |
+| **[WrongDayOfWeek]** | — | Hides if the name contains a day name (e.g., "MONDAY", "Mon", "Saturday", "Sat") and the named day is not yesterday, today, or tomorrow in Dispatcharr's time zone. The ±1 day tolerance keeps US/EU named channels visible to viewers in distant timezones (e.g., Australia seeing "Monday Night Football" on local Tuesday). Recognizes full/abbreviated day names plus MNF/TNF/SNF. |
 | **[NoEventPattern]** | — | Hides if the name contains patterns like "no event", "offline", "no games scheduled". |
 | **[EmptyPlaceholder]** | — | Hides if the name ends with a separator (`:`, `\|`, `-`) and has no event title after it, OR if the name contains a parenthesized literal template token like `(MM.DD h:mmAM/PM ET)` indicating an unpopulated stub channel. |
 | **[ShortDescription]** | — | Hides if the event title (text after a separator) is less than 15 characters long. |
@@ -214,15 +213,15 @@ The **📡 Channel Name Format** setting tells the parser how event titles, time
 
 ### Localized Time in EPG Titles
 
-When **`Event Timezone`** (`dummy_epg_event_timezone`) and the scheduler **`Timezone`** (`timezone`) are different, ECM rewrites the dummy EPG titles to show the program's local time and zone abbreviation:
+When **`Event Timezone`** (`dummy_epg_event_timezone`) and **Dispatcharr's global time zone** (General Settings → Time Zone) are different, ECM rewrites the dummy EPG titles to show the program's local time and zone abbreviation:
 
 | Setup | Channel name | Title in guide |
 |---|---|---|
-| Event TZ `US/Eastern`, scheduler TZ `America/Chicago` (DST active, e.g., May) | `Boxing 5/9 8:30 PM ET` | `Boxing 5/9 7:30 PM CDT` |
+| Event TZ `US/Eastern`, Dispatcharr TZ `America/Chicago` (DST active, e.g., May) | `Boxing 5/9 8:30 PM ET` | `Boxing 5/9 7:30 PM CDT` |
 | Same setup, standard time (e.g., November) | `Boxing 11/9 8:30 PM ET` | `Boxing 11/9 7:30 PM CST` |
-| Event TZ == scheduler TZ | (any) | `Boxing` (plain — today's behavior) |
+| Event TZ == Dispatcharr TZ | (any) | `Boxing` (plain) |
 
-**The scheduler `Timezone` setting doubles as the display time zone.** If you set it to `UTC` for predictable scheduled runs, EPG titles will show UTC times. If this becomes a problem, open an issue — a separate `dummy_epg_display_timezone` setting is on the deferred list.
+**The display time zone comes from Dispatcharr's General Settings → Time Zone** (it also drives when scheduled runs fire and the day-of-week/date rules). When that is unset, ECM falls back to `UTC`, so EPG titles will show UTC times until you set a zone in Dispatcharr.
 
 **DST caveat:** the abbreviation (`CST` vs `CDT`) is recomputed every time ECM runs. If you disable scheduling and don't trigger a manual run after a DST transition, the abbreviation will be stale (the *time itself* is always correct, only the trailing label lags). Run ECM once after a DST change to refresh.
 
@@ -306,7 +305,7 @@ Every CSV includes a block of summary header lines (prefixed with `#`) before th
 
 ### Managed Dummy EPG Issues
 * **Guide still shows nothing for a channel after enabling Manage Dummy EPG**: Check the CSV; the channel is likely not in `enabled_channel_ids` post-scan (e.g., it was hidden by a rule). Only channels that end up visible are attached.
-* **Guide shows the wrong time**: Verify the **Channel Name Event Timezone** setting matches the timezone encoded in channel names. This is separate from the scheduler timezone.
+* **Guide shows the wrong time**: Verify the **Channel Name Event Timezone** setting matches the timezone encoded in channel names, and that Dispatcharr's **General Settings → Time Zone** is set to your display zone (ECM uses it for guide display; it falls back to UTC when unset).
 * **Swedish (pipe-delimited) channels show no title, or the wrong guide name**: Set **📡 Channel Name Format** to `SE` and re-run a scan. `SE` parses `… \| Title \| DDD DD Mon HH:MM TZ \| … \| channel name` and stores the last pipe segment as the broadcaster display name. If you'd left it on `US`, the PPV/LIVE pattern won't match and the channel falls back to its plain name. (Switching formats auto-refreshes the patterns unless you've customized them.)
 * **Want the managed source gone**: Toggle **Manage Dummy EPG** off and run a scan — every managed binding is detached. The source row itself stays in the DB (inert) for cheap re-adoption later.
 * **Guide shows the literal text `{channel_name}` as the programme title** (e.g. in Emby/Jellyfin EPG): **fixed.** This affected managed channels whose names don't match the event title pattern, so they fall back to `fallback_title_template`. Dispatcharr's dummy-EPG renderer uses that template *verbatim* — it never substitutes `{channel_name}` (the description only showed the real name because ECM left the description template empty, triggering the renderer's built-in default). ECM now sets `fallback_title_template = ""`, which makes the renderer fall back to the real channel name, plus a static `fallback_description_template`. If you still see the literal text, re-run a scan so the plugin rewrites the managed source's templates, then refresh your EPG.
