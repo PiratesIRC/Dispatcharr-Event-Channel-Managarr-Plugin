@@ -48,6 +48,7 @@ venv.bak/
 
 # IDE
 .vscode/
+.vs/
 .idea/
 *.swp
 *.swo

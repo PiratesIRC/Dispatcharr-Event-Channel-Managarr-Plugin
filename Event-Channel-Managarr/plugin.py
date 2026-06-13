@@ -57,7 +57,7 @@ _scheduler_lock = threading.Lock()  # Prevent concurrent scheduler starts
 class PluginConfig:
     """Centralized configuration constants for Event Channel Managarr."""
 
-    PLUGIN_VERSION = "1.26.1612227"
+    PLUGIN_VERSION = "1.26.1621359"
 
     # Default timezone for scheduling
     DEFAULT_TIMEZONE = "America/Chicago"
@@ -91,6 +91,7 @@ class PluginConfig:
     DEFAULT_MANAGE_DUMMY_EPG = False
     DEFAULT_EVENT_DURATION_HOURS = "3"
     DEFAULT_DUMMY_EPG_TIMEZONE = "US/Eastern"
+    DEFAULT_DUMMY_EPG_CHANNEL_FORMAT = "US"
 
     # Pacing for per-channel ORM writes ("none", "low", "medium", "high")
     DEFAULT_RATE_LIMITING = "none"
@@ -249,6 +250,7 @@ class Plugin:
     DEFAULT_MANAGE_DUMMY_EPG = PluginConfig.DEFAULT_MANAGE_DUMMY_EPG
     DEFAULT_EVENT_DURATION_HOURS = PluginConfig.DEFAULT_EVENT_DURATION_HOURS
     DEFAULT_DUMMY_EPG_TIMEZONE = PluginConfig.DEFAULT_DUMMY_EPG_TIMEZONE
+    DEFAULT_DUMMY_EPG_CHANNEL_FORMAT = PluginConfig.DEFAULT_DUMMY_EPG_CHANNEL_FORMAT
     DEFAULT_RATE_LIMITING = PluginConfig.DEFAULT_RATE_LIMITING
     VERSION_CHECK_INTERVAL = PluginConfig.VERSION_CHECK_INTERVAL
     SCHEDULER_CHECK_INTERVAL = PluginConfig.SCHEDULER_CHECK_INTERVAL
@@ -484,6 +486,17 @@ class Plugin:
                 "type": "boolean",
                 "default": self.DEFAULT_MANAGE_DUMMY_EPG,
                 "help_text": "If enabled, visible channels with no EPG assigned will be bound to a plugin-managed dummy EPG source. The guide shows the extracted event during its time window (and 'Offline' outside it), or the channel name as a 24-hour fallback if no time is parseable.",
+            },
+            {
+                "id": "dummy_epg_channel_format",
+                "label": "📡 Channel Name Format",
+                "type": "select",
+                "default": self.DEFAULT_DUMMY_EPG_CHANNEL_FORMAT,
+                "help_text": "How channel names are structured for the dummy EPG parser. US = 'PPV EVENT 12: Title (MM.DD HH:MM AM/PM TZ)'. SE = 'PREFIX | Event Title | DDD DD Mon HH:MM TZ | extras | channel name' — the last segment (e.g. 'SE: VIAPLAY PPV 20') is stored as the EPG display name so the guide channel list shows the broadcaster instead of the full stream name.",
+                "options": [
+                    {"label": "US  –  PPV/LIVE EVENT ##: Title (MM.DD HH:MM AM/PM TZ)",             "value": "US"},
+                    {"label": "SE  –  PREFIX | Title | DDD DD Mon HH:MM TZ | extras | channel name", "value": "SE"},
+                ]
             },
             {
                 "id": "dummy_epg_event_duration_hours",
@@ -993,6 +1006,8 @@ class Plugin:
                 settings["dummy_epg_event_duration_hours"] = self.DEFAULT_EVENT_DURATION_HOURS
             if "dummy_epg_event_timezone" not in settings:
                 settings["dummy_epg_event_timezone"] = self.DEFAULT_DUMMY_EPG_TIMEZONE
+            if "dummy_epg_channel_format" not in settings:
+                settings["dummy_epg_channel_format"] = self.DEFAULT_DUMMY_EPG_CHANNEL_FORMAT
             if "rate_limiting" not in settings:
                 settings["rate_limiting"] = self.DEFAULT_RATE_LIMITING
 
@@ -2085,10 +2100,13 @@ class Plugin:
         Returns overrides for the three rewritable title templates plus
         `output_timezone` for the managed dummy EPG source.
 
-        - When source TZ == display TZ, or either TZ is invalid/empty:
-          returns DEFAULTS (plain templates) and writes
-          `output_timezone=""` so any previously-saved value is cleared
+        - When source TZ is invalid/empty: returns DEFAULTS (plain templates,
+          `output_timezone=""`) so any previously-saved value is cleared
           (the diff-and-save loop never deletes keys).
+        - When display TZ is empty or equal to source TZ: returns plain
+          templates but with `output_timezone=source_tz_name` so Dispatcharr
+          formats {starttime}/{endtime} in the correct locale (e.g. 24h for
+          European zones instead of defaulting to 12h AM/PM).
         - Otherwise: returns localized templates with the date placeholder
           driven by `date_format` (US/Auto -> {month}/{day};
           EU -> {day}/{month}) and a TZ abbreviation suffix computed for
@@ -2109,14 +2127,24 @@ class Plugin:
         source_tz_name = str(settings.get("dummy_epg_event_timezone", "")).strip()
         display_tz_name = str(settings.get("timezone", "")).strip()
 
-        if not source_tz_name or not display_tz_name or source_tz_name == display_tz_name:
+        if not source_tz_name:
             return DEFAULTS
 
         try:
             pytz.timezone(source_tz_name)  # validate only; renderer resolves source TZ itself
-            display_tz = pytz.timezone(display_tz_name)
         except pytz.exceptions.UnknownTimeZoneError:
             return DEFAULTS
+
+        # No display TZ configured, or same as source: no time conversion needed,
+        # but still pass output_timezone so Dispatcharr formats {starttime}/{endtime}
+        # in the correct locale (e.g. 24h for European zones rather than 12h AM/PM).
+        if not display_tz_name or source_tz_name == display_tz_name:
+            return {**DEFAULTS, "output_timezone": source_tz_name}
+
+        try:
+            display_tz = pytz.timezone(display_tz_name)
+        except pytz.exceptions.UnknownTimeZoneError:
+            return {**DEFAULTS, "output_timezone": source_tz_name}
 
         abbrev = datetime.now(display_tz).strftime("%Z")
         suffix = f" {abbrev}" if abbrev and abbrev.isalpha() else ""
@@ -2161,7 +2189,14 @@ class Plugin:
                                     self.DEFAULT_DUMMY_EPG_TIMEZONE)).strip() or self.DEFAULT_DUMMY_EPG_TIMEZONE
 
         # Keys the plugin owns. Any other keys on the source are left untouched.
-        # Regexes validated against these four real channel names:
+        #
+        # Named groups use JS-style (?<name>) rather than Python (?P<name>): Dispatcharr's
+        # frontend Pattern Configuration validator is JavaScript and rejects (?P<name>) with
+        # "Invalid group" (issue #21), while its renderer converts (?<name>) -> (?P<name>)
+        # server-side. The renderer accepts either form; the JS form keeps the UI test panel
+        # happy so users can validate their own patterns.
+        #
+        # Format: "US" (default). Regexes validated against these real channel names:
         #   "PPV EVENT 12: Cage Fury FC 153 (4.17 8:30 PM ET)"  -> title="Cage Fury FC 153"
         #   "LIVE EVENT 01   9:45am Suslenkov v Mann"           -> title="Suslenkov v Mann"
         #   "PPV EVENT 25: OUTDOOR THEATRE Live From Coachella" -> title="OUTDOOR THEATRE Live From Coachella"
@@ -2171,21 +2206,36 @@ class Plugin:
         # leading_time handles names where the time appears BEFORE the event text (LIVE format).
         # The separator class includes '-' so " - " between the event number and the
         # title is consumed (otherwise the leading dash leaks into {title}).
-        #
-        # Named groups use JS-style (?<name>) rather than Python (?P<name>): Dispatcharr's
-        # frontend Pattern Configuration validator is JavaScript and rejects (?P<name>) with
-        # "Invalid group" (issue #21), while its renderer converts (?<name>) -> (?P<name>)
-        # server-side. The renderer accepts either form; the JS form keeps the UI test panel
-        # happy so users can validate their own patterns.
-        title_pattern = (
+        us_title_pattern = (
             r"(?:PPV|LIVE)\s*(?:EVENT\s*)?\d+\s*[:|\-\s]\s*"
             r"(?:(?<leading_time>\d{1,2}(?::\d{2})?\s*[AaPp][Mm])\s+)?"
             r"(?<title>.+?)"
             r"(?=\s*\(|\s+\d{1,2}(?::\d{2})?\s*[AaPp][Mm]|"
             r"\s+(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)\s+\d+|$)"
         )
-        time_pattern = r"(?<hour>\d{1,2})(?::(?<minute>\d{2}))?\s*(?<ampm>[AaPp][Mm])"
-        date_pattern = r"\b(?<month>\d{1,2})[./](?<day>\d{1,2})(?:[./](?<year>\d{2,4}))?\b"
+        us_time_pattern = r"(?<hour>\d{1,2})(?::(?<minute>\d{2}))?\s*(?<ampm>[AaPp][Mm])"
+        us_date_pattern = r"\b(?<month>\d{1,2})[./](?<day>\d{1,2})(?:[./](?<year>\d{2,4}))?\b"
+
+        # Format: "SE" (pipe-delimited, 24h time, named month):
+        #   "LIVE | GIRONA - REAL SOCIEDAD | Thu 14 May 19:55 CEST (SE) | 8K EXCLUSIVE | SE: TV4 PLAY PPV 7"
+        #    prefix ^  title ^              ^ air time                   ^ extras        ^ channel name
+        #     -> title="GIRONA - REAL SOCIEDAD"
+        # The date pattern's day/month groups feed Dispatcharr's renderer, which accepts
+        # a textual month under the "month" group name.
+        se_title_pattern = r"\|\s*(?<title>[^|]+?)\s*\|"
+        se_time_pattern = r"(?<hour>\d{1,2}):(?<minute>\d{2})"
+        se_date_pattern = (
+            r"\b(?:Mon|Tue|Wed|Thu|Fri|Sat|Sun)\s+"
+            r"(?<day>\d{1,2})\s+"
+            r"(?<month>Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)\b"
+        )
+
+        channel_format = str(settings.get("dummy_epg_channel_format",
+                                          self.DEFAULT_DUMMY_EPG_CHANNEL_FORMAT)).strip().upper()
+        if channel_format == "SE":
+            title_pattern, time_pattern, date_pattern = se_title_pattern, se_time_pattern, se_date_pattern
+        else:
+            title_pattern, time_pattern, date_pattern = us_title_pattern, us_time_pattern, us_date_pattern
 
         managed_props = {
             "title_pattern": title_pattern,
@@ -2222,11 +2272,12 @@ class Plugin:
         # match the PPV/LIVE default. On refresh we only (re)apply our default to a pattern
         # the user hasn't touched — one that is absent or still equals a default this plugin
         # has shipped. `stock_patterns` must therefore list EVERY historically-shipped
-        # default so stock installs (the source is created once, very early for some users)
-        # still auto-upgrade while genuine user customizations are preserved across runs.
-        # _py_named() covers the (?P<name>) variants of the current defaults; the pre-'-'-
-        # separator title and the original mandatory-:minute title/time defaults are listed
-        # explicitly. When the defaults change, append the previous default here.
+        # default (across both the US and SE channel-name formats) so stock installs (the
+        # source is created once, very early for some users) still auto-upgrade — including
+        # on a US<->SE format switch — while genuine user customizations are preserved
+        # across runs. _py_named() covers the (?P<name>) variants of the current defaults;
+        # the pre-'-'-separator title and the original mandatory-:minute title/time defaults
+        # are listed explicitly. When the defaults change, append the previous default here.
         PATTERN_KEYS = ("title_pattern", "time_pattern", "date_pattern")
 
         def _py_named(p):
@@ -2244,11 +2295,14 @@ class Plugin:
         _orig_time = r"(?P<hour>\d{1,2}):(?P<minute>\d{2})\s*(?P<ampm>[AaPp][Mm])?"
 
         stock_patterns = {
-            "title_pattern": {title_pattern, _py_named(title_pattern),
-                              _py_named(title_pattern).replace(r"[:|\-\s]", r"[:|\s]"),
-                              _orig_title},
-            "time_pattern": {time_pattern, _py_named(time_pattern), _orig_time},
-            "date_pattern": {date_pattern, _py_named(date_pattern)},
+            "title_pattern": {us_title_pattern, _py_named(us_title_pattern),
+                              _py_named(us_title_pattern).replace(r"[:|\-\s]", r"[:|\s]"),
+                              _orig_title,
+                              se_title_pattern, _py_named(se_title_pattern)},
+            "time_pattern": {us_time_pattern, _py_named(us_time_pattern), _orig_time,
+                             se_time_pattern, _py_named(se_time_pattern)},
+            "date_pattern": {us_date_pattern, _py_named(us_date_pattern),
+                             se_date_pattern, _py_named(se_date_pattern)},
         }
 
         try:
@@ -2295,48 +2349,74 @@ class Plugin:
                 return None
         return source
 
-    def _attach_managed_epg(self, channels, managed_source, logger, rate_limiter=None):
-        """Bind each channel in `channels` to the managed dummy source via an EPGData row.
+    def _extract_se_display_name(self, channel_name):
+        """Return the last pipe-separated segment of an SE-format channel name.
+        Falls back to the full name if no pipe is found (e.g. already renamed)."""
+        m = re.search(r'\|\s*([^|]+?)\s*$', channel_name)
+        return m.group(1) if m else channel_name
 
-        Only touches channels where epg_data IS NULL. Returns list of channel IDs that
-        were attached (for result reporting).
+    def _attach_managed_epg(self, channels, managed_source, logger, settings=None, rate_limiter=None):
+        """Bind each channel in `channels` to the managed dummy source via an EPGData row,
+        and keep EPGData.name in sync with the desired display name.
+
+        For US format, the desired name is the full channel name. For SE format, it's
+        the last pipe-segment (broadcaster name, e.g. "SE: VIAPLAY PPV 20") via
+        `_extract_se_display_name`, so the guide's channel list shows the broadcaster
+        instead of the full stream name.
+
+        Channels with epg_data already set are only checked for a name update (no new
+        EPGData row is created). Returns list of channel IDs newly attached (for result
+        reporting).
         """
         from apps.epg.models import EPGData
 
+        channel_format = str((settings or {}).get(
+            "dummy_epg_channel_format", self.DEFAULT_DUMMY_EPG_CHANNEL_FORMAT)).strip().upper()
+
         attached_ids = []
         channels_to_update = []
+        epg_data_to_update = []
 
         # Wrap the entire get_or_create + bulk_update cycle in one transaction so a
         # bulk_update failure doesn't leave orphan EPGData rows pointing nowhere.
         with transaction.atomic():
             for channel in channels:
-                if channel.epg_data_id is not None:
-                    continue
-                try:
-                    epg_data, _ = EPGData.objects.get_or_create(
-                        tvg_id=str(channel.uuid),
-                        epg_source=managed_source,
-                        defaults={"name": channel.name},
-                    )
-                    # Keep EPGData.name in sync with the channel name so {channel_name}
-                    # in the dummy source's fallback template renders correctly.
-                    if epg_data.name != channel.name:
-                        epg_data.name = channel.name
-                        epg_data.save(update_fields=["name"])
-                except Exception as e:
-                    logger.warning(f"{LOG_PREFIX} Failed to get_or_create EPGData for channel {channel.id}: {e}")
-                    continue
+                desired_name = (self._extract_se_display_name(channel.name)
+                                 if channel_format == "SE" else channel.name)
 
-                channel.epg_data = epg_data
-                channels_to_update.append(channel)
-                attached_ids.append(channel.id)
+                if channel.epg_data_id is None:
+                    try:
+                        epg_data, _ = EPGData.objects.get_or_create(
+                            tvg_id=str(channel.uuid),
+                            epg_source=managed_source,
+                            defaults={"name": desired_name},
+                        )
+                    except Exception as e:
+                        logger.warning(f"{LOG_PREFIX} Failed to get_or_create EPGData for channel {channel.id}: {e}")
+                        continue
 
-                if rate_limiter is not None:
-                    rate_limiter.wait()
+                    channel.epg_data = epg_data
+                    channels_to_update.append(channel)
+                    attached_ids.append(channel.id)
+
+                    if rate_limiter is not None:
+                        rate_limiter.wait()
+                else:
+                    epg_data = channel.epg_data
+
+                # Keep EPGData.name in sync with the desired display name so
+                # {channel_name} in the dummy source's fallback template, and the
+                # guide's channel list, render correctly.
+                if epg_data.name != desired_name:
+                    epg_data.name = desired_name
+                    epg_data_to_update.append(epg_data)
 
             if channels_to_update:
                 Channel.objects.bulk_update(channels_to_update, ["epg_data"])
                 logger.info(f"{LOG_PREFIX} Attached managed EPG to {len(channels_to_update)} channel(s)")
+            if epg_data_to_update:
+                EPGData.objects.bulk_update(epg_data_to_update, ["name"])
+                logger.info(f"{LOG_PREFIX} Updated EPG display name for {len(epg_data_to_update)} channel(s)")
         return attached_ids
 
     def _detach_managed_epg(self, managed_source, keep_channel_ids, logger):
@@ -2414,8 +2494,20 @@ class Plugin:
             no_epg_channels = list(Channel.objects.filter(
                 id__in=enabled_channel_ids, epg_data__isnull=True
             ))
+            channels_for_epg = no_epg_channels
+            channel_format = str(settings.get(
+                "dummy_epg_channel_format", self.DEFAULT_DUMMY_EPG_CHANNEL_FORMAT)).strip().upper()
+            if channel_format == "SE":
+                # SE display names are derived from the live channel name, which can
+                # change between runs (e.g. a different broadcaster pipe-segment) —
+                # also resync EPGData.name for channels already bound to managed_source.
+                already_attached = list(Channel.objects.filter(
+                    id__in=enabled_channel_ids, epg_data__epg_source=managed_source
+                ).select_related("epg_data"))
+                channels_for_epg = no_epg_channels + already_attached
             rate_limiter = SmartRateLimiter(settings.get("rate_limiting", self.DEFAULT_RATE_LIMITING))
-            attached_ids = self._attach_managed_epg(no_epg_channels, managed_source, logger, rate_limiter=rate_limiter)
+            attached_ids = self._attach_managed_epg(channels_for_epg, managed_source, logger,
+                                                       settings=settings, rate_limiter=rate_limiter)
 
         keep_ids = set(enabled_channel_ids) if toggle_on else set()
         detached_ids = self._detach_managed_epg(managed_source, keep_ids, logger)
@@ -2851,6 +2943,7 @@ class Plugin:
                     "manage_dummy_epg",
                     "dummy_epg_event_duration_hours",
                     "dummy_epg_event_timezone",
+                    "dummy_epg_channel_format",
                     "scheduled_times",
                     "enable_scheduled_csv_export",
                 ]
