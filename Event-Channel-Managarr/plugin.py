@@ -59,8 +59,8 @@ class PluginConfig:
 
     PLUGIN_VERSION = "1.26.1641345"
 
-    # Default timezone for scheduling
-    DEFAULT_TIMEZONE = "America/Chicago"
+    # Fallback timezone when Dispatcharr's global time zone is unset/invalid.
+    DEFAULT_TIMEZONE = "UTC"
 
     # Default name source for channel matching
     DEFAULT_NAME_SOURCE = "Channel_Name"  # Options: "Channel_Name" or "Stream_Name"
@@ -1781,6 +1781,24 @@ class Plugin:
         except Exception as e:
             logger.error(f"Error updating schedule: {e}")
             return {"status": "error", "message": f"Error updating schedule: {e}"}
+
+    def _dispatcharr_timezone(self):
+        """Resolve the effective timezone from Dispatcharr's global setting.
+
+        Reads apps.dashboard.models.Settings.time_zone (Dispatcharr's
+        General Settings -> Time Zone). Returns "UTC" when the row is missing,
+        blank, or invalid, or if anything raises (e.g. running outside
+        Dispatcharr, or the DB is unavailable during migrations). Validation
+        and the UTC fallback live in ecm_parsing.coerce_timezone (Django-free,
+        unit-tested).
+        """
+        try:
+            from apps.dashboard.models import Settings
+            row = Settings.objects.order_by("id").first()
+            return ecm_parsing.coerce_timezone(getattr(row, "time_zone", None))
+        except Exception as e:
+            LOGGER.debug(f"{LOG_PREFIX} Could not read Dispatcharr timezone, using UTC: {e}")
+            return "UTC"
 
     def _get_system_timezone(self, settings):
         """Get the system timezone from settings"""
