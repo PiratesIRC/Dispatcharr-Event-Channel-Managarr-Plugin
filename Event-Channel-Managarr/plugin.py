@@ -1673,6 +1673,7 @@ class Plugin:
         """
         global _bg_thread
         try:
+            settings["timezone"] = self._dispatcharr_timezone()
             # --- This worker's scheduler thread ---
             worker_pid = os.getpid()
             scheduler_threads = [t for t in threading.enumerate() if "event-channel-managarr-scheduler" in t.name]
@@ -1752,6 +1753,7 @@ class Plugin:
     def update_schedule_action(self, settings, logger):
         """Save settings and update scheduled tasks"""
         try:
+            settings["timezone"] = self._dispatcharr_timezone()
             scheduled_times_str = settings.get("scheduled_times", "").strip()
             logger.info(f"Update Schedule - scheduled_times value: '{scheduled_times_str}'")
 
@@ -1830,6 +1832,10 @@ class Plugin:
     def _start_background_scheduler(self, settings):
         """Start background scheduler thread"""
         global _bg_thread, _scheduler_lock
+
+        # Source the timezone from Dispatcharr BEFORE the thread captures it:
+        # scheduler_loop computes local_tz once from this dict and never re-reads.
+        settings["timezone"] = self._dispatcharr_timezone()
 
         # Use lock to prevent concurrent scheduler starts
         with _scheduler_lock:
@@ -2143,7 +2149,9 @@ class Plugin:
         }
 
         source_tz_name = str(settings.get("dummy_epg_event_timezone", "")).strip()
-        display_tz_name = str(settings.get("timezone", "")).strip()
+        # Display tz comes from Dispatcharr (already injected into settings by the
+        # caller via _dispatcharr_timezone); _get_system_timezone is the reader.
+        display_tz_name = self._get_system_timezone(settings)
 
         if not source_tz_name:
             return DEFAULTS
@@ -2549,6 +2557,10 @@ class Plugin:
 
     def _scan_and_update_channels(self, settings, logger, dry_run=True, is_scheduled_run=False):
         """Scan channels and update visibility based on hide rules priority"""
+        # Source the timezone from Dispatcharr's global setting (overwrites any
+        # stale/absent disk value). MUST stay first: every per-channel date rule
+        # and _localized_template_props below reads settings["timezone"].
+        settings["timezone"] = self._dispatcharr_timezone()
         # Cross-worker serialization: one scan at a time across all uwsgi workers.
         # Covers manual Run Now / Dry Run as well as scheduled runs.
         lock_fd = None
