@@ -57,7 +57,7 @@ _scheduler_lock = threading.Lock()  # Prevent concurrent scheduler starts
 class PluginConfig:
     """Centralized configuration constants for Event Channel Managarr."""
 
-    PLUGIN_VERSION = "1.26.1641741"
+    PLUGIN_VERSION = "1.26.1641804"
 
     # Fallback timezone when Dispatcharr's global time zone is unset/invalid.
     DEFAULT_TIMEZONE = "UTC"
@@ -1783,17 +1783,19 @@ class Plugin:
     def _dispatcharr_timezone(self):
         """Resolve the effective timezone from Dispatcharr's global setting.
 
-        Reads apps.dashboard.models.Settings.time_zone (Dispatcharr's
-        General Settings -> Time Zone). Returns "UTC" when the row is missing,
-        blank, or invalid, or if anything raises (e.g. running outside
-        Dispatcharr, or the DB is unavailable during migrations). Validation
-        and the UTC fallback live in ecm_parsing.coerce_timezone (Django-free,
-        unit-tested).
+        Reads Dispatcharr's General Settings -> Time Zone, which is stored in
+        core.models.CoreSettings under the "system_settings" group (NOT the
+        unused apps.dashboard.models.Settings table). Uses the official
+        CoreSettings.get_system_time_zone() accessor, which itself falls back
+        to Django's TIME_ZONE then "UTC". Returns "UTC" when the value is
+        missing, blank, or invalid, or if anything raises (e.g. running
+        outside Dispatcharr, or the DB is unavailable during migrations).
+        Validation and the UTC fallback live in ecm_parsing.coerce_timezone
+        (Django-free, unit-tested).
         """
         try:
-            from apps.dashboard.models import Settings
-            row = Settings.objects.order_by("id").first()
-            return ecm_parsing.coerce_timezone(getattr(row, "time_zone", None))
+            from core.models import CoreSettings
+            return ecm_parsing.coerce_timezone(CoreSettings.get_system_time_zone())
         except Exception as e:
             LOGGER.debug(f"{LOG_PREFIX} Could not read Dispatcharr timezone, using UTC: {e}")
             return "UTC"
