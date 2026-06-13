@@ -259,22 +259,32 @@ When **`Event Timezone`** (`dummy_epg_event_timezone`) and **Dispatcharr's globa
 
 ### Header Lines
 
-Every CSV includes a block of summary header lines (prefixed with `#`) before the column row:
+Every CSV includes a block of summary header lines (prefixed with `#`) before the column row. After the counts and rule effectiveness, a `Settings:` snapshot records the configuration the scan ran with, so each export is self-describing. The display/scheduler time zone is sourced from Dispatcharr's General Settings → Time Zone and is reported as `timezone (from Dispatcharr)`:
 
 ```
-# Event Channel Managarr v1.26.1081141 - Dry Run - 20260418_111247
-# Total Channels Processed: 103
-# Channels to Hide: 50
+# Event Channel Managarr v1.26.1641804 - Applied - 20260613_182324
+# Total Channels Processed: 489
+# Channels to Hide: 55
 # Channels to Show: 0
 # Channels Ignored: 0
 # Duplicates Hidden: 0
-# Managed EPG Attached: 0
+# Managed EPG Attached: 73
 # Managed EPG Detached: 0
-# Rate Limiting: low
+# Rate Limiting: none
 # Rule Effectiveness:
-#   PastDate:0: 44 channels
-#   EmptyPlaceholder: 5 channels
+#   NoEventPattern: 20 channels
+#   UndatedAge:2: 19 channels
+#   EmptyPlaceholder: 13 channels
+#   PastDate:0: 2 channels
+#   WrongDayOfWeek: 1 channels
 # Hide Rules Priority: [InactiveRegex],[BlankName],…
+# Settings:
+#   timezone (from Dispatcharr): America/Chicago
+#   channel_profile_name: …
+#   …
+#   dummy_epg_event_timezone: America/New_York
+#   scheduled_times: 0400,1000,1100,1200
+#   enable_scheduled_csv_export: False
 ```
 
 ### Columns

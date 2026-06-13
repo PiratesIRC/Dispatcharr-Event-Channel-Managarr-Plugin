@@ -57,7 +57,7 @@ _scheduler_lock = threading.Lock()  # Prevent concurrent scheduler starts
 class PluginConfig:
     """Centralized configuration constants for Event Channel Managarr."""
 
-    PLUGIN_VERSION = "1.26.1641804"
+    PLUGIN_VERSION = "1.26.1641827"
 
     # Fallback timezone when Dispatcharr's global time zone is unset/invalid.
     DEFAULT_TIMEZONE = "UTC"
@@ -3034,6 +3034,11 @@ class Plugin:
                     "scheduled_times",
                     "enable_scheduled_csv_export",
                 ]
+                # The plugin no longer owns a timezone setting; the scheduler/display
+                # timezone is sourced from Dispatcharr's General Settings -> Time Zone
+                # (injected into settings["timezone"] at scan start). Label it so the
+                # self-describing CSV makes the source obvious.
+                settings_labels = {"timezone": "timezone (from Dispatcharr)"}
                 header_lines.append("Settings:")
                 for k in settings_keys:
                     v = settings.get(k, "")
@@ -3041,7 +3046,7 @@ class Plugin:
                         v_str = "(empty)"
                     else:
                         v_str = str(v)
-                    header_lines.append(f"  {k}: {v_str}")
+                    header_lines.append(f"  {settings_labels.get(k, k)}: {v_str}")
 
                 fieldnames = ['channel_id', 'channel_name', 'channel_number', 'channel_group',
                             'current_visibility', 'action', 'reason', 'hide_rule', 'has_epg',
