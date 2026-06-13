@@ -2581,9 +2581,10 @@ class Plugin:
                 age = None
                 try:
                     mtime = os.path.getmtime(path)
-                    age = time.time() - mtime
+                    now = time.time()
+                    age = now - mtime
                     stale = ecm_parsing.lock_is_stale(
-                        mtime, time.time(), PluginConfig.SCAN_LOCK_STALE_SECONDS
+                        mtime, now, PluginConfig.SCAN_LOCK_STALE_SECONDS
                     )
                 except OSError:
                     stale = False
@@ -2601,6 +2602,12 @@ class Plugin:
                 return None
             # Acquired. Stamp mtime so staleness reflects THIS holder's start time
             # (a leaked holder never stamps again, so its lock ages out).
+            # NOTE: mtime is stamped once here and NOT refreshed during the scan.
+            # A real scan finishes in seconds, so SCAN_LOCK_STALE_SECONDS (900s)
+            # is never reached by a live scan. If the scan body ever gains slow
+            # work (e.g. an external HTTP/EPG fetch) that could exceed that, add a
+            # periodic os.utime(path) heartbeat or raise the threshold — otherwise
+            # a waiter could break a still-running scan and run a second one.
             try:
                 os.utime(path, None)
             except OSError:

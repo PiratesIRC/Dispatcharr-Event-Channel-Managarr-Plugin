@@ -165,3 +165,4 @@ def test_lock_is_stale_boundary_is_exclusive():
 def test_lock_is_stale_handles_bad_input():
     assert lock_is_stale(None, 1000.0, 900.0) is False
     assert lock_is_stale(0.0, None, 900.0) is False
+    assert lock_is_stale(0.0, 1000.0, None) is False
