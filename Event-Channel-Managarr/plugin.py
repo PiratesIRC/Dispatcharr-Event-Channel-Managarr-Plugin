@@ -108,6 +108,10 @@ class PluginConfig:
     # File paths
     LAST_RUN_FILE = "/data/event_channel_managarr_last_run.json"
     SCAN_LOCK_FILE = "/data/event_channel_managarr_scan.lock"
+    # A real scan finishes in seconds. If the scan flock is held but its file is
+    # older than this, the holder is assumed dead/leaked (e.g. an fd inherited by
+    # a forked uwsgi/celery worker that never released it) and the lock is broken.
+    SCAN_LOCK_STALE_SECONDS = 900  # 15 min
     SETTINGS_FILE = "/data/event_channel_managarr_settings.json"
     RESULTS_FILE = "/data/event_channel_managarr_results.json"
     VERSION_CHECK_FILE = "/data/event_channel_managarr_version_check.json"
@@ -2547,6 +2551,63 @@ class Plugin:
             logger.warning(f"Error getting visibility for channel {channel_id}: {e}")
             return False
 
+    def _acquire_scan_lock(self, logger):
+        """Acquire the cross-worker scan flock, breaking a stale/leaked lock.
+
+        Returns an open, flock-held file object on success, or None if a *live*
+        scan currently holds the lock. If the lock is held but its file mtime is
+        older than SCAN_LOCK_STALE_SECONDS, the holder is assumed dead or leaked
+        (e.g. an fd inherited by a forked uwsgi/celery worker that never released
+        it) and the lock is forcibly broken by unlinking the file and acquiring
+        on a fresh inode. The old, orphaned flock then refers to an unlinked
+        inode and blocks nothing.
+
+        The lock file is opened in append mode (never truncates, and opening does
+        not touch mtime), so a failed acquire by a waiter does NOT reset the
+        staleness clock. On success we stamp mtime to mark this holder's start.
+        """
+        path = PluginConfig.SCAN_LOCK_FILE
+        for attempt in (1, 2):
+            try:
+                fd = open(path, 'a')
+            except OSError as e:
+                logger.warning(f"{LOG_PREFIX} Could not open scan lock file {path}: {e}")
+                return None
+            try:
+                fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except (OSError, IOError):
+                fd.close()
+                stale = False
+                age = None
+                try:
+                    mtime = os.path.getmtime(path)
+                    age = time.time() - mtime
+                    stale = ecm_parsing.lock_is_stale(
+                        mtime, time.time(), PluginConfig.SCAN_LOCK_STALE_SECONDS
+                    )
+                except OSError:
+                    stale = False
+                if attempt == 1 and stale:
+                    logger.warning(
+                        f"{LOG_PREFIX} Breaking stale scan lock (age {age:.0f}s > "
+                        f"{PluginConfig.SCAN_LOCK_STALE_SECONDS}s); previous holder "
+                        f"likely crashed or leaked the lock fd"
+                    )
+                    try:
+                        os.unlink(path)
+                    except OSError:
+                        pass
+                    continue  # retry once on a fresh inode
+                return None
+            # Acquired. Stamp mtime so staleness reflects THIS holder's start time
+            # (a leaked holder never stamps again, so its lock ages out).
+            try:
+                os.utime(path, None)
+            except OSError:
+                pass
+            return fd
+        return None
+
     def _scan_and_update_channels(self, settings, logger, dry_run=True, is_scheduled_run=False):
         """Scan channels and update visibility based on hide rules priority"""
         # Source the timezone from Dispatcharr's global setting (overwrites any
@@ -2557,13 +2618,8 @@ class Plugin:
         # Covers manual Run Now / Dry Run as well as scheduled runs.
         lock_fd = None
         if fcntl:
-            try:
-                lock_fd = open(PluginConfig.SCAN_LOCK_FILE, 'w')
-                fcntl.flock(lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
-            except (OSError, IOError):
-                if lock_fd:
-                    lock_fd.close()
-                lock_fd = None
+            lock_fd = self._acquire_scan_lock(logger)
+            if lock_fd is None:
                 msg = "Another scan is already running in this or another worker. Skipping."
                 if is_scheduled_run:
                     logger.info(f"{LOG_PREFIX} {msg}")

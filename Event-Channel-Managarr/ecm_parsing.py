@@ -215,3 +215,20 @@ def coerce_timezone(value):
         # ImportError (pytz not installed in the current environment).
         return "UTC"
     return candidate
+
+
+def lock_is_stale(mtime, now, max_age_seconds):
+    """Return True if a lock acquired at ``mtime`` is older than ``max_age_seconds``.
+
+    Used to decide whether a held scan flock has been leaked/abandoned (e.g. an
+    fd inherited by a forked worker that never released it). A real scan finishes
+    in seconds, so a lock far older than any plausible scan is treated as stale
+    and may be broken. Boundary is exclusive: age == max_age is NOT stale.
+
+    ``mtime`` and ``now`` are epoch seconds (floats). Non-numeric input returns
+    False (fail safe: never break a lock we cannot reason about).
+    """
+    try:
+        return (now - mtime) > max_age_seconds
+    except TypeError:
+        return False
