@@ -18,7 +18,7 @@ jobs:
           python-version: "3.11"
 
       - name: Install dependencies
-        run: pip install pytest python-dateutil ruff
+        run: pip install pytest python-dateutil pytz ruff
 
       - name: Compile check
         run: python -m py_compile Event-Channel-Managarr/plugin.py Event-Channel-Managarr/ecm_parsing.py
