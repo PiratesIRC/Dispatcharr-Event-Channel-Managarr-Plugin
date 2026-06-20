@@ -196,6 +196,7 @@ When **🗓️ Manage Dummy EPG** is enabled:
 * Channels that already have a real EPG binding (XMLTV, Schedules Direct) are never touched — **unless** you enable **♻️ Override Empty Existing EPG**, which extends the takeover to channels linked to a non-managed source that has **no programmes in the next 24h** (a blank guide). Channels whose linked EPG has real upcoming programmes are still never touched. (v1.26.1711623)
 * The title parser matches `PPV EVENT ##:`, `LIVE EVENT ##`, and bare `EVENT ##:` names (the `PPV`/`LIVE` prefix is optional as of v1.26.1711623); a bare `<number>:` with no `EVENT` keyword is still ignored.
 * When the managed EPG is detached from a channel, its now-unreferenced managed `EPGData` row is deleted, so the managed source doesn't accumulate orphan rows over time (v1.26.1711623).
+* The detach is **scoped to the groups you actually scan** (v1.26.1711720): running with a narrow **Channel Groups** filter only de-manages channels in those groups and never strips the managed dummy off channels in other groups. Toggling **Manage Dummy EPG** off still performs a full teardown across the whole source.
 * Dispatcharr's `generate_custom_dummy_programs` renders the guide on demand using regex patterns + templates stored in the source's `custom_properties`:
   * **During the event window** (length = Event Duration hours, starting at the time extracted from the channel name in the configured Channel Name Event Timezone): the event title.
   * **Before the event window**: `Upcoming at <start-time>: <title>`.
@@ -265,7 +266,7 @@ When **`Event Timezone`** (`dummy_epg_event_timezone`) and **Dispatcharr's globa
 Every CSV includes a block of summary header lines (prefixed with `#`) before the column row. After the counts and rule effectiveness, a `Settings:` snapshot records the configuration the scan ran with, so each export is self-describing. The display/scheduler time zone is sourced from Dispatcharr's General Settings → Time Zone and is reported as `timezone (from Dispatcharr)`:
 
 ```
-# Event Channel Managarr v1.26.1711623 - Applied - 20260620_182324
+# Event Channel Managarr v1.26.1711720 - Applied - 20260620_182324
 # Total Channels Processed: 489
 # Channels to Hide: 55
 # Channels to Show: 0
@@ -310,7 +311,7 @@ Every CSV includes a block of summary header lines (prefixed with `#`) before th
 
 ### General Issues
 * **"Channel Profile not found"**: Ensure the name(s) entered in the settings exactly match the names in Dispatcharr. Check for typos or extra spaces if using multiple comma-separated names.
-* **"No channels found…"**: Verify that the specified profile(s) have channels assigned and that the group names (if used) are spelled correctly.
+* **"No channels found…"**: Verify that the specified profile(s) have channels assigned and that the group names (if used) are spelled correctly. Run **🔎 Validate** — as of v1.26.1711720 it distinguishes a misspelled group ("not found in Dispatcharr") from a real group that simply has no channels in the selected profile(s) ("will match 0 this scan"), and matches profile names case-insensitively (consistent with Run Now). Group names in the **Channel Groups** box are also matched case-insensitively.
 * **Scheduler Not Running**: After changing the schedule, you must click **💾 Save Schedule** to save and activate it. Ensure the times are in `HHMM` format (e.g., `0700` for 7 AM).
 * **Channels Aren't Hiding/Showing**: Run a **Dry Run** and check the `reason` and `hide_rule` columns for that channel. This will tell you exactly why a decision was made. You may need to adjust your **Hide Rules Priority** list.
 * **"Another scan is already running"**: A cross-process lock prevents concurrent scans. Wait for the current scan to finish. Scheduled runs will skip cleanly when a manual scan is in progress.
