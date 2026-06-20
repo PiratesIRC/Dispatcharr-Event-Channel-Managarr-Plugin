@@ -18,10 +18,11 @@ A Dispatcharr plugin that automatically manages channel visibility based on EPG 
 * **Automatic Visibility Control**: Hides channels without active events and shows channels that have them. Scans ALL channels in the profile (both visible and hidden) to ensure channels with new events are always shown.
 * **Prioritized Hide Rules**: A fully customizable, priority-based rule system. You define the order of rules (e.g., `[BlankName]`, `[PastDate:0]`, `[UndatedAge:2]`, `[ShortDescription]`) to determine *why* and *when* a channel should be hidden.
 * **Undated-Channel Aging**: The `[UndatedAge:N]` rule tracks per-channel first-seen dates and hides channels whose names carry no parseable date once they've been visible for more than N days. Catches stale placeholder channels that date-only rules can't evaluate.
-* **Managed Dummy EPG (new in v1.26.1081141)**: Opt-in. Visible channels with no EPG get bound to a plugin-managed dummy EPG source. Dispatcharr's guide then shows the extracted event title during its time window; before the window it shows `Upcoming at <start-time>: <title>`; after, `Ended at <end-time>: <title>`. For names with no parseable time, a 24-hour program rendering the channel name is used instead. Timezone-aware (channel name time is interpreted in the configured event timezone; the guide renders in the client's local time).
+* **Managed Dummy EPG (new in v1.26.1081141)**: Opt-in. Visible channels with no EPG get bound to a plugin-managed dummy EPG source. Dispatcharr's guide then shows the extracted event title during its time window; before the window it shows `Upcoming at <start-time>: <title>`; after, `Ended at <end-time>: <title>`. For names with no parseable time, a 24-hour program rendering the channel name is used instead. Timezone-aware (channel name time is interpreted in the configured event timezone; the guide renders in the client's local time). The title parser also recognizes bare `EVENT ##:` names (no `PPV`/`LIVE` prefix required) as of v1.26.1711623.
+* **Override Empty Existing EPG (new in v1.26.1711623)**: Opt-in companion to Manage Dummy EPG. Normally the managed dummy only attaches to channels with **no** EPG at all. Enable this to also take over visible channels already linked to a real EPG source that currently has **no programmes** (a blank guide) — e.g. event channels the provider mapped to an empty tvg-id. Channels whose linked EPG has real upcoming programmes are never touched. Default off.
 * **US / SE Channel Name Formats (new in v1.26.1621359)**: A **📡 Channel Name Format** selector tells the dummy-EPG parser how event names are laid out. `US` handles `PPV/LIVE EVENT ##: Title (MM.DD HH:MM AM/PM TZ)`; `SE` handles Swedish pipe-delimited names (`PREFIX \| Title \| DDD DD Mon HH:MM TZ \| … \| channel name`, 24-hour time, textual month) and uses the broadcaster segment as the guide display name. See [Channel Name Formats](#channel-name-formats).
 * **Stream Name Selection**: Choose between using the channel name or the stream name for rule matching. When stream name is selected, the plugin uses the first stream in the channel for all rule evaluations.
-* **Date-Based Logic**: Use rules like `[PastDate:days]` and `[FutureDate:days]` to hide events that are over or too far in the future. Includes a **grace period** for events that run past midnight.
+* **Date-Based Logic**: Use rules like `[PastDate:days]` and `[FutureDate:days]` to hide events that are over or too far in the future. Includes a **grace period** for events that run past midnight. When a name carries a clock time (e.g. `(6.19 7:30 PM ET)`), `[PastDate]` judges by the **actual event time** (start + Event Duration, in the configured event timezone) instead of the calendar day, so a still-live evening event isn't hidden the moment the date rolls past midnight (new in v1.26.1711623).
 * **Enhanced Date Format Support**: Recognizes a wide variety of date formats in channel names, including dates with optional times (e.g., "Nov 8 16:00"), slash-separated dates, ISO formats, and more.
 * **Day-of-Week Logic**: Use the `[WrongDayOfWeek]` rule to hide channels named for a specific day (e.g., "Saturday Night Fights") when it's not that day.
 * **Multi-Profile Support**: Monitor and manage channels across **multiple Channel Profiles** at once (e.g., "PPV Events, Sports Profile").
@@ -59,7 +60,7 @@ Settings are grouped into six sections in the UI.
 | Setting | Type | Default | Description |
 | :--- | :--- | :--- | :--- |
 | **📺 Channel Profile Names (Required)** | `text` | — | Channel Profile(s) to monitor. Use comma-separated names for multiple profiles. |
-| **📂 Channel Groups** | `text` | — | Comma-separated group names to monitor. Leave empty for all groups in the profile(s). |
+| **📂 Channel Groups** | `text` | — | Comma-separated group names to monitor. Leave empty for all groups in the profile(s). Matched **case-insensitively** (as of v1.26.1711623); a configured group name that matches no channels is reported in the scan log / result message instead of being silently ignored. |
 | **🔤 Name Source** | `select` | `Channel_Name` | Choose the source for rule matching: `Channel_Name` uses the channel name, `Stream_Name` uses the first stream's name in the channel. |
 
 ### 🎯 Hide Rules
@@ -70,7 +71,7 @@ Settings are grouped into six sections in the UI.
 | **🚫 Regex: Channel Names to Ignore** | `text` | — | Regular expression to match channel names that should be skipped entirely. |
 | **💤 Regex: Mark Channel as Inactive** | `text` | — | Regular expression to hide channels. Processed as part of the `[InactiveRegex]` hide rule. |
 | **✅ Regex: Force Visible Channels** | `text` | — | Regular expression to match channels that should ALWAYS be visible, overriding any hide rules. |
-| **📅 Past Date Grace Period (Hours)** | `number` | `4` | Hours to wait after midnight before hiding past events. Used by the `[PastDate]` rule. |
+| **📅 Past Date Grace Period (Hours)** | `number` | `4` | Extra hours to wait before hiding a past event, used by the `[PastDate]` rule. For day-only names this is the wait after midnight; for names carrying a clock time it is added on top of the event's start + Event Duration. |
 
 ### 🎭 Duplicates
 
@@ -83,9 +84,10 @@ Settings are grouped into six sections in the UI.
 
 | Setting | Type | Default | Description |
 | :--- | :--- | :--- | :--- |
-| **🔌 Auto-Remove EPG on Hide** | `boolean` | `True` | If enabled, automatically removes EPG data from a channel when it is hidden by the plugin. |
-| **🗓️ Manage Dummy EPG** | `boolean` | `False` | If enabled, visible channels with no EPG get bound to the plugin-managed dummy EPG source. Disables cleanly: toggling off detaches all channels from the managed source on the next scan. |
-| **📡 Channel Name Format** | `select` | `US` | How channel names are structured for the dummy EPG parser. `US` = `PPV/LIVE EVENT ##: Title (MM.DD HH:MM AM/PM TZ)`. `SE` = pipe-delimited `PREFIX \| Title \| DDD DD Mon HH:MM TZ \| extras \| channel name` (24-hour time, textual month); the last pipe segment (e.g. `SE: VIAPLAY PPV 20`) is stored as the EPG display name so the guide's channel list shows the broadcaster instead of the full stream name. |
+| **🔌 Auto-Remove EPG on Hide** | `boolean` | `True` | If enabled, **removes** EPG data from a channel when the plugin hides it (clears stale guide data). This does *not* create EPG — to give visible channels a placeholder guide use **🗓️ Manage Dummy EPG** below. |
+| **🗓️ Manage Dummy EPG** | `boolean` | `False` | The setting that **creates** guide data: visible channels with no EPG get bound to the plugin-managed dummy EPG source. Disables cleanly: toggling off detaches all channels from the managed source on the next scan. |
+| **♻️ Override Empty Existing EPG** | `boolean` | `False` | Requires **🗓️ Manage Dummy EPG**. Lets the managed dummy also take over visible channels already linked to a real (non-managed) EPG source that currently has **no programmes** in the next 24h (a blank guide). Channels whose linked EPG has real upcoming programmes are never touched. Default off so real EPG is never overwritten unless you opt in. (new in v1.26.1711623) |
+| **📡 Channel Name Format** | `select` | `US` | How channel names are structured for the dummy EPG parser. `US` = `PPV/LIVE EVENT ##: Title (MM.DD HH:MM AM/PM TZ)` and also bare `EVENT ##: Title (…)` (no `PPV`/`LIVE` prefix required, as of v1.26.1711623). `SE` = pipe-delimited `PREFIX \| Title \| DDD DD Mon HH:MM TZ \| extras \| channel name` (24-hour time, textual month); the last pipe segment (e.g. `SE: VIAPLAY PPV 20`) is stored as the EPG display name so the guide's channel list shows the broadcaster instead of the full stream name. |
 | **⏱️ Event Duration (hours)** | `number` | `3` | How long each scheduled event appears in the guide. Before this window the guide shows `Upcoming at <start-time>: <title>`; after, `Ended at <end-time>: <title>`. |
 | **📺 Channel Name Event Timezone** | `select` | `US/Eastern` | Timezone encoded in event times within channel names (e.g., `US/Eastern` for channels like `(4.17 8:30 PM ET)`). Independent of Dispatcharr's global time zone. |
 
@@ -150,7 +152,7 @@ The plugin checks channels against the **Hide Rules Priority** list in the order
 | **[ShortDescription]** | — | Hides if the event title (text after a separator) is less than 15 characters long. |
 | **[ShortChannelName]** | — | Hides if the *entire name* is less than 25 characters long and has *no* separator. |
 | **[NumberOnly]** | — | Hides if the channel name is just a prefix followed by a number (e.g., "PPV 12", "EVENT 15") with no event details. |
-| **[PastDate:days]** or **[PastDate:days:Xh]** | `days` (int), optional `Xh` (grace hours) | Hides if the name contains a date that is more than `days` in the past (e.g., `[PastDate:0]` hides yesterday's events). Optionally specify grace period inline like `[PastDate:0:4h]` to override the global grace period setting. If the name carries an explicit `stop:YYYY-MM-DD HH:MM:SS` end timestamp, the rule compares the **actual end time** (`stop:` + `days`/grace), so an event that ended earlier *today* is hidden once its stop time + grace has elapsed instead of staying visible until the next day. Names with only a `start:` (or a date with no `stop:`) keep day-granularity behavior. |
+| **[PastDate:days]** or **[PastDate:days:Xh]** | `days` (int), optional `Xh` (grace hours) | Hides if the name contains a date that is more than `days` in the past (e.g., `[PastDate:0]` hides yesterday's events). Optionally specify grace period inline like `[PastDate:0:4h]` to override the global grace period setting. **Time-aware matching (v1.26.1711623):** if the name carries an explicit `stop:YYYY-MM-DD HH:MM:SS` end timestamp, the rule compares the **actual end time** (`stop:` + `days`/grace); if it carries a clock time but no `stop:` (e.g. `(6.19 7:30 PM ET)`), the event is assumed to end **Event Duration hours** after its start (localized in the **Channel Name Event Timezone**), and the rule hides it once that end + `days`/grace has elapsed. Day-only names (no parseable time) keep the original calendar-day behavior. |
 | **[FutureDate:days]** | `days` (int) | Hides if the name contains a date that is more than `days` in the future (e.g., `[FutureDate:2]` hides events 3+ days from now). |
 | **[UndatedAge:days]** | `days` (int) | Hides channels whose names contain **no parseable date** once they've been visible for more than `days` days. Persists per-channel first-seen state in `/data/event_channel_managarr_undated_first_seen.json`. Resets a channel's age when its name changes. |
 | **[InactiveRegex]** | — | Hides if the name matches the `Regex: Mark Channel as Inactive` setting. |
@@ -172,10 +174,10 @@ The plugin can extract dates from channel names in the following formats (checke
 | **M/D/YYYY** or **M/D/YY** | `12/25/2024` or `15/04/2026` | Slash-separated date with year. Interpreted per the **Date Format in Channel Names** setting (Auto / US / EU). |
 | **(MONTH DD)** | `(Dec 25)` or `(December 25)` | Month name and day in parentheses. |
 | **DDth/st/nd/rd MONTH** | `25th Dec` or `1st January` | Day with ordinal suffix followed by month name. |
-| **MONTH DD** | `Dec 25` or `December 25` | Month name followed by day (no parentheses). |
+| **MONTH DD[ HH:MM[:SS][ AM/PM]]** | `Dec 25`, `Nov 8 16:00`, or `Jun 20 4:00 PM` | Month name followed by day (no parentheses), with an optional time. A 24-hour time works as before; a 12-hour time with `AM`/`PM` is now honored and optional seconds are tolerated (v1.26.1711623). |
 | **YYYY MM DD** | `2024 12 25` | Space-separated year, month, day. |
-| **M.D** | `12.25` or `15.04` | Dot-separated date (assumes current year). Interpreted per the **Date Format in Channel Names** setting. |
-| **M/D** | `12/25` or `15/04` | Slash-separated date (assumes current year). Interpreted per the **Date Format in Channel Names** setting. Skipped when followed by a colon (e.g. `1/3:30pm`) so time ranges aren't misread as dates. |
+| **M.D[ h:mm AM/PM]** | `12.25` or `6.19 7:30 PM` | Dot-separated date (assumes current year). Interpreted per the **Date Format in Channel Names** setting. An optional trailing 12-hour time is captured and attached to the date (v1.26.1711623), so `[PastDate]` can judge by the real event time. |
+| **M/D[ h:mm AM/PM]** | `12/25` or `6/19 8:00 PM` | Slash-separated date (assumes current year). Interpreted per the **Date Format in Channel Names** setting. Skipped when followed by a colon (e.g. `1/3:30pm`) so time ranges aren't misread as dates. An optional trailing 12-hour time is captured as above. |
 
 **Date format setting:** The 📅 **Date Format in Channel Names** setting (default `Auto`) controls how numeric `M/D`, `M.D`, and `M/D/YYYY` patterns are interpreted:
 
@@ -191,7 +193,9 @@ When **🗓️ Manage Dummy EPG** is enabled:
 
 * A single plugin-managed `EPGSource(source_type='dummy', name='ECM Managed Dummy')` row is created on first use.
 * Visible channels in the monitored profile(s) with **no EPG assigned** are bound to it via a per-channel `EPGData` row keyed by `channel.uuid`.
-* Channels that already have a real EPG binding (XMLTV, Schedules Direct) are never touched.
+* Channels that already have a real EPG binding (XMLTV, Schedules Direct) are never touched — **unless** you enable **♻️ Override Empty Existing EPG**, which extends the takeover to channels linked to a non-managed source that has **no programmes in the next 24h** (a blank guide). Channels whose linked EPG has real upcoming programmes are still never touched. (v1.26.1711623)
+* The title parser matches `PPV EVENT ##:`, `LIVE EVENT ##`, and bare `EVENT ##:` names (the `PPV`/`LIVE` prefix is optional as of v1.26.1711623); a bare `<number>:` with no `EVENT` keyword is still ignored.
+* When the managed EPG is detached from a channel, its now-unreferenced managed `EPGData` row is deleted, so the managed source doesn't accumulate orphan rows over time (v1.26.1711623).
 * Dispatcharr's `generate_custom_dummy_programs` renders the guide on demand using regex patterns + templates stored in the source's `custom_properties`:
   * **During the event window** (length = Event Duration hours, starting at the time extracted from the channel name in the configured Channel Name Event Timezone): the event title.
   * **Before the event window**: `Upcoming at <start-time>: <title>`.
@@ -205,7 +209,7 @@ The **📡 Channel Name Format** setting tells the parser how event titles, time
 
 | Format | Example channel name | Parsed title | Notes |
 |---|---|---|---|
-| **US** (default) | `PPV EVENT 12: Cage Fury FC 153 (4.17 8:30 PM ET)` | `Cage Fury FC 153` | 12-hour AM/PM time, numeric `MM.DD` date. Also handles `LIVE EVENT ##` and leading-time variants. |
+| **US** (default) | `PPV EVENT 12: Cage Fury FC 153 (4.17 8:30 PM ET)` | `Cage Fury FC 153` | 12-hour AM/PM time, numeric `MM.DD` date. Also handles `LIVE EVENT ##`, leading-time variants, and bare `EVENT ##: Title (…)` with no `PPV`/`LIVE` prefix (v1.26.1711623). |
 | **SE** | `LIVE \| GIRONA - REAL SOCIEDAD \| Thu 14 May 19:55 CEST (SE) \| 8K EXCLUSIVE \| SE: TV4 PLAY PPV 7` | `GIRONA - REAL SOCIEDAD` | Pipe-delimited; 24-hour time, textual month (`14 May`). The **last** pipe segment (`SE: TV4 PLAY PPV 7`) becomes the EPG display name, so the guide's channel list shows the broadcaster rather than the full stream name. |
 
 * **SE display names resync every run.** Because the broadcaster segment can change between M3U refreshes, SE mode re-checks and updates `EPGData.name` for already-attached channels on each scan (US mode only sets it on first attach).
@@ -261,7 +265,7 @@ When **`Event Timezone`** (`dummy_epg_event_timezone`) and **Dispatcharr's globa
 Every CSV includes a block of summary header lines (prefixed with `#`) before the column row. After the counts and rule effectiveness, a `Settings:` snapshot records the configuration the scan ran with, so each export is self-describing. The display/scheduler time zone is sourced from Dispatcharr's General Settings → Time Zone and is reported as `timezone (from Dispatcharr)`:
 
 ```
-# Event Channel Managarr v1.26.1641827 - Applied - 20260613_182324
+# Event Channel Managarr v1.26.1711623 - Applied - 20260620_182324
 # Total Channels Processed: 489
 # Channels to Hide: 55
 # Channels to Show: 0
@@ -298,7 +302,7 @@ Every CSV includes a block of summary header lines (prefixed with `#`) before th
 | **action** | The action taken by the plugin (`Show`, `Hide`, `Visible`, `No change`, `Ignored`, `Forced Visible`). |
 | **reason** | The reason for the action (e.g., "Event date… is 1 days in the past", "Duplicate channel", "No date in name; first seen …"). |
 | **hide_rule** | The specific rule tag that triggered the hide action (e.g., `PastDate:0`, `UndatedAge:2`, `ShortDescription`). |
-| **has_epg** | Indicates if an EPG is assigned to the channel (`Yes` or `No`). |
+| **has_epg** | Indicates whether an EPG source is *linked* to the channel (`Yes` or `No`) — note this reflects linkage, not whether that source actually has programmes. Reconciled with this run's attach/detach, so a channel attached this run reads `Yes` and one detached reads `No` (v1.26.1711623). |
 | **managed_epg_assigned** | `True` if this scan attached the channel to the plugin-managed dummy EPG source, else `False`. |
 | **managed_epg_detached** | `True` if this scan detached the channel from the plugin-managed dummy EPG source, else `False`. |
 
@@ -313,13 +317,13 @@ Every CSV includes a block of summary header lines (prefixed with `#`) before th
 * **Hidden channels reappear after a while / after an M3U refresh**: Dispatcharr's **Auto Channel Sync** re-enables every channel in a synced group on each M3U refresh, overriding the plugin's hide. To fix this, enable **🔄 Auto-rescan after M3U refresh** (in the **⏰ Scheduling & Export** section) so the plugin re-runs its scan automatically right after each M3U refresh and re-hides affected channels. Alternatively, turn off Auto Channel Sync for the managed groups in Dispatcharr's M3U account settings.
 
 ### Managed Dummy EPG Issues
-* **Guide still shows nothing for a channel after enabling Manage Dummy EPG**: Check the CSV; the channel is likely not in `enabled_channel_ids` post-scan (e.g., it was hidden by a rule). Only channels that end up visible are attached.
+* **Guide still shows nothing for a channel after enabling Manage Dummy EPG**: Check the CSV. Two common causes: (1) the channel didn't end up **visible** post-scan (e.g., a rule hid it) — only visible channels are attached; or (2) `has_epg` is `Yes` but `managed_epg_assigned` is `False`, meaning the channel is **already linked to another EPG source** that simply has no programmes for it. By default the managed dummy never overwrites an existing link — enable **♻️ Override Empty Existing EPG** to let it take over channels whose linked EPG is blank, then re-run a scan. (Alternatively, clear that channel's EPG in Dispatcharr so it has none, and re-run.)
 * **Guide shows the wrong time**: Verify the **Channel Name Event Timezone** setting matches the timezone encoded in channel names, and that Dispatcharr's **General Settings → Time Zone** is set to your display zone (ECM uses it for guide display; it falls back to UTC when unset).
 * **Swedish (pipe-delimited) channels show no title, or the wrong guide name**: Set **📡 Channel Name Format** to `SE` and re-run a scan. `SE` parses `… \| Title \| DDD DD Mon HH:MM TZ \| … \| channel name` and stores the last pipe segment as the broadcaster display name. If you'd left it on `US`, the PPV/LIVE pattern won't match and the channel falls back to its plain name. (Switching formats auto-refreshes the patterns unless you've customized them.)
 * **Want the managed source gone**: Toggle **Manage Dummy EPG** off and run a scan — every managed binding is detached. The source row itself stays in the DB (inert) for cheap re-adoption later.
 * **Guide shows the literal text `{channel_name}` as the programme title** (e.g. in Emby/Jellyfin EPG): **fixed.** This affected managed channels whose names don't match the event title pattern, so they fall back to `fallback_title_template`. Dispatcharr's dummy-EPG renderer uses that template *verbatim* — it never substitutes `{channel_name}` (the description only showed the real name because ECM left the description template empty, triggering the renderer's built-in default). ECM now sets `fallback_title_template = ""`, which makes the renderer fall back to the real channel name, plus a static `fallback_description_template`. If you still see the literal text, re-run a scan so the plugin rewrites the managed source's templates, then refresh your EPG.
 * **Guide shows literal `{month}/{day}` or `{starttime}` in the programme title** (e.g. `GOBI Live From Coachella 2026 {month}/{day} {starttime} CDT`): **fixed.** This hit *matched* event channels whose name has no parseable date **and** time (a bare year like `2026` is not a date). The timezone-localized title template embedded those placeholders, and the renderer leaves any placeholder it can't fill as literal text. ECM now uses a plain `{title}` for the live title — timed channels still land in the correct, timezone-converted guide slot, and the `Upcoming…`/`Ended…` titles keep the localized date/time (they only render when a date and time were parsed). A related fix lets the event-number separator be `-` (e.g. `LIVE EVENT 31 - GOBI …`) so the leading `- ` no longer leaks into the title. Re-run a scan and refresh your EPG if you still see the old behavior.
-* **My channel names don't match the default pattern (not `PPV`/`LIVE EVENT ##`)**: the default `title_pattern` only matches PPV/LIVE-prefixed names, so other formats (e.g. `USA NBA 01: …`, `Pay Per View 19: …`) fall back to the plain channel name. You can set your own regex in Dispatcharr under **EPG Sources → ECM Managed Dummy → Pattern Configuration**. **Your custom `title_pattern` / `time_pattern` / `date_pattern` now persist across plugin runs** — the plugin no longer overwrites a pattern you've changed (it only refreshes patterns left at a default it shipped). Use JS-style named groups `(?<title>…)` / `(?<hour>…)` / `(?<month>…)` (the UI validator rejects Python-style `(?P<…>)`; Dispatcharr converts JS groups server-side). The date group must be named `month` even when matching a text month (e.g. `(?<month>Jan|Feb|…)`).
+* **My channel names don't match the default pattern**: the default `title_pattern` matches `PPV EVENT ##`, `LIVE EVENT ##`, and bare `EVENT ##:` names (the `PPV`/`LIVE` prefix is optional as of v1.26.1711623). Other formats that lack the `EVENT` keyword (e.g. `USA NBA 01: …`, `Pay Per View 19: …`) still fall back to the plain channel name. You can set your own regex in Dispatcharr under **EPG Sources → ECM Managed Dummy → Pattern Configuration**. **Your custom `title_pattern` / `time_pattern` / `date_pattern` now persist across plugin runs** — the plugin no longer overwrites a pattern you've changed (it only refreshes patterns left at a default it shipped). Use JS-style named groups `(?<title>…)` / `(?<hour>…)` / `(?<month>…)` (the UI validator rejects Python-style `(?P<…>)`; Dispatcharr converts JS groups server-side). The date group must be named `month` even when matching a text month (e.g. `(?<month>Jan|Feb|…)`).
 
 ### CSV Export Issues
 * Ensure `/data/exports/` directory exists and is writable
