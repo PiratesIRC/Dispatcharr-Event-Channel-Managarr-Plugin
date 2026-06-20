@@ -57,7 +57,7 @@ _scheduler_lock = threading.Lock()  # Prevent concurrent scheduler starts
 class PluginConfig:
     """Centralized configuration constants for Event Channel Managarr."""
 
-    PLUGIN_VERSION = "1.26.1711623"
+    PLUGIN_VERSION = "1.26.1711720"
 
     # Fallback timezone when Dispatcharr's global time zone is unset/invalid.
     DEFAULT_TIMEZONE = "UTC"
@@ -919,43 +919,48 @@ class Plugin:
         channel_groups_str = settings.get("channel_groups", "").strip()
         if channel_groups_str and db_ok and channel_profile_names_str:
             try:
+                from apps.channels.models import ChannelGroup
                 group_names = [g.strip() for g in channel_groups_str.split(',') if g.strip()]
                 channel_profile_names = [p.strip() for p in channel_profile_names_str.split(',') if p.strip()]
 
-                # Find matching profile IDs via ORM
-                profile_ids = list(
-                    ChannelProfile.objects.filter(
-                        name__in=channel_profile_names
-                    ).values_list('id', flat=True)
-                )
+                # Resolve profile IDs case-insensitively — consistent with step 4 and the
+                # actual scan (name__iexact). Case-sensitive name__in here used to make
+                # Validate contradict Run Now (bug-048).
+                profile_ids = []
+                for pn in channel_profile_names:
+                    profile_ids += list(
+                        ChannelProfile.objects.filter(name__iexact=pn).values_list('id', flat=True)
+                    )
 
                 if profile_ids:
-                    # Get all channels in the profiles
-                    memberships = ChannelProfileMembership.objects.filter(
-                        channel_profile_id__in=profile_ids
-                    ).select_related('channel', 'channel__channel_group')
+                    # Group names (casefolded) that actually have >=1 channel in the
+                    # configured profile(s).
+                    in_profile = {
+                        (m.channel.channel_group.name or "").casefold()
+                        for m in ChannelProfileMembership.objects.filter(
+                            channel_profile_id__in=profile_ids
+                        ).select_related('channel', 'channel__channel_group')
+                        if m.channel.channel_group
+                    }
 
-                    # Get unique group names
-                    available_groups = set()
-                    for membership in memberships:
-                        if membership.channel.channel_group:
-                            available_groups.add(membership.channel.channel_group.name)
-
-                    # Check which groups exist
-                    found_groups = []
-                    missing_groups = []
-
+                    # Distinguish a genuine typo (group absent from Dispatcharr) from a
+                    # real group that simply has no channels in this profile (bug-048).
+                    found_groups, empty_groups, missing_groups = [], [], []
                     for group_name in group_names:
-                        if group_name in available_groups:
+                        if group_name.casefold() in in_profile:
                             found_groups.append(group_name)
+                        elif ChannelGroup.objects.filter(name__iexact=group_name).exists():
+                            empty_groups.append(group_name)
                         else:
                             missing_groups.append(group_name)
 
-                    # Report results
                     if missing_groups:
-                        validation_results.append(f"❌ Groups: Not found - {', '.join(missing_groups)}")
+                        validation_results.append(f"❌ Groups not found in Dispatcharr: {', '.join(missing_groups)}")
                         has_errors = True
-
+                    if empty_groups:
+                        validation_results.append(
+                            f"⚠️ Groups with no channels in the selected profile(s) "
+                            f"(will match 0 this scan): {', '.join(empty_groups)}")
                     if found_groups:
                         validation_results.append(f"✅ Groups: {len(found_groups)}/{len(group_names)} - {', '.join(found_groups)}")
                 else:
@@ -2514,16 +2519,24 @@ class Plugin:
                 logger.info(f"{LOG_PREFIX} Updated EPG display name for {len(epg_data_to_update)} channel(s)")
         return attached_ids
 
-    def _detach_managed_epg(self, managed_source, keep_channel_ids, logger):
+    def _detach_managed_epg(self, managed_source, keep_channel_ids, logger, scope_ids=None):
         """Set epg_data=None on any channel currently bound to the managed source
         whose id is NOT in keep_channel_ids. Returns list of detached channel IDs.
+
+        When `scope_ids` is provided, only channels within that id set are considered —
+        so a group-filtered scan only de-manages channels it actually looked at and never
+        strips the managed dummy off channels in other groups (bug-045). `scope_ids=None`
+        means the whole source (used for the toggle-off full teardown).
         """
         if managed_source is None:
             return []
 
-        stale = list(Channel.objects.filter(
+        stale_q = Channel.objects.filter(
             epg_data__epg_source=managed_source
-        ).exclude(id__in=keep_channel_ids))
+        ).exclude(id__in=keep_channel_ids)
+        if scope_ids is not None:
+            stale_q = stale_q.filter(id__in=scope_ids)
+        stale = list(stale_q)
 
         if not stale:
             return []
@@ -2595,8 +2608,13 @@ class Plugin:
             logger.warning(f"{LOG_PREFIX} override_existing_epg check skipped: {e}")
             return []
 
-    def _run_managed_epg_pass(self, settings, logger, dry_run, enabled_channel_ids):
+    def _run_managed_epg_pass(self, settings, logger, dry_run, enabled_channel_ids, scanned_channel_ids=None):
         """Attach/detach the plugin's managed dummy EPG based on current settings.
+
+        `scanned_channel_ids` is the full in-scope universe this scan looked at (profile +
+        group filtered). When the feature is ON, the detach is restricted to that set so a
+        narrow channel_groups run can't strip the managed dummy off channels in other
+        groups (bug-045). When the feature is OFF, the detach is global (full teardown).
 
         If the master toggle is off, still runs the detach cleanup so turning the
         feature off reliably un-assigns managed EPG. Returns (attached_ids, detached_ids).
@@ -2621,9 +2639,12 @@ class Plugin:
                 ).values_list("id", flat=True))
                 override_ids = self._managed_override_ids(settings, managed_source, enabled_channel_ids, logger)
                 attached_ids = list(dict.fromkeys(list(null_ids) + override_ids))
-                detached_ids = list(Channel.objects.filter(
+                detach_q = Channel.objects.filter(
                     epg_data__epg_source=managed_source
-                ).exclude(id__in=enabled_channel_ids).values_list("id", flat=True))
+                ).exclude(id__in=enabled_channel_ids)
+                if scanned_channel_ids is not None:
+                    detach_q = detach_q.filter(id__in=scanned_channel_ids)
+                detached_ids = list(detach_q.values_list("id", flat=True))
             else:
                 attached_ids = []
                 detached_ids = list(Channel.objects.filter(
@@ -2668,8 +2689,10 @@ class Plugin:
                                                        settings=settings, rate_limiter=rate_limiter,
                                                        override_ids=override_ids)
 
+        # ON: de-manage only within the scanned scope (bug-045). OFF: full teardown.
         keep_ids = set(enabled_channel_ids) if toggle_on else set()
-        detached_ids = self._detach_managed_epg(managed_source, keep_ids, logger)
+        detach_scope = scanned_channel_ids if toggle_on else None
+        detached_ids = self._detach_managed_epg(managed_source, keep_ids, logger, scope_ids=detach_scope)
 
         return attached_ids, detached_ids
 
@@ -3072,8 +3095,12 @@ class Plugin:
                     or ch["channel_id"] in channels_to_show
                 ) and ch["channel_id"] not in duplicate_hide_list
             ]
+            # The full in-scope universe this scan considered (profile + group filtered,
+            # visible AND hidden). The managed-EPG detach is scoped to this so narrowing
+            # channel_groups can't strip the dummy off channels in other groups (bug-045).
+            scanned_channel_ids = [c.id for c in channels]
             managed_attached_ids, managed_detached_ids = self._run_managed_epg_pass(
-                settings, logger, dry_run, enabled_channel_ids
+                settings, logger, dry_run, enabled_channel_ids, scanned_channel_ids
             )
             managed_attached_set = set(managed_attached_ids)
             managed_detached_set = set(managed_detached_ids)
