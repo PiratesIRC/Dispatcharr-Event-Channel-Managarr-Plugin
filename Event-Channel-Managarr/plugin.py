@@ -57,7 +57,7 @@ _scheduler_lock = threading.Lock()  # Prevent concurrent scheduler starts
 class PluginConfig:
     """Centralized configuration constants for Event Channel Managarr."""
 
-    PLUGIN_VERSION = "1.26.1641827"
+    PLUGIN_VERSION = "1.26.1711623"
 
     # Fallback timezone when Dispatcharr's global time zone is unset/invalid.
     DEFAULT_TIMEZONE = "UTC"
@@ -89,6 +89,10 @@ class PluginConfig:
 
     # Managed Dummy EPG feature defaults
     DEFAULT_MANAGE_DUMMY_EPG = False
+    # When True, the managed dummy may also take over channels already linked to a
+    # non-managed EPG source that currently has no programmes (blank guide). Default
+    # OFF so existing real EPG is never overwritten unless the user opts in (bug-043).
+    DEFAULT_OVERRIDE_EXISTING_EPG = False
     DEFAULT_EVENT_DURATION_HOURS = "3"
     DEFAULT_DUMMY_EPG_TIMEZONE = "US/Eastern"
     DEFAULT_DUMMY_EPG_CHANNEL_FORMAT = "US"
@@ -252,6 +256,7 @@ class Plugin:
     DEFAULT_AUTO_RESCAN_ON_M3U_REFRESH = PluginConfig.DEFAULT_AUTO_RESCAN_ON_M3U_REFRESH
     DEFAULT_KEEP_DUPLICATES = PluginConfig.DEFAULT_KEEP_DUPLICATES
     DEFAULT_MANAGE_DUMMY_EPG = PluginConfig.DEFAULT_MANAGE_DUMMY_EPG
+    DEFAULT_OVERRIDE_EXISTING_EPG = PluginConfig.DEFAULT_OVERRIDE_EXISTING_EPG
     DEFAULT_EVENT_DURATION_HOURS = PluginConfig.DEFAULT_EVENT_DURATION_HOURS
     DEFAULT_DUMMY_EPG_TIMEZONE = PluginConfig.DEFAULT_DUMMY_EPG_TIMEZONE
     DEFAULT_DUMMY_EPG_CHANNEL_FORMAT = PluginConfig.DEFAULT_DUMMY_EPG_CHANNEL_FORMAT
@@ -481,7 +486,14 @@ class Plugin:
                 "label": "🗓️ Manage Dummy EPG",
                 "type": "boolean",
                 "default": self.DEFAULT_MANAGE_DUMMY_EPG,
-                "help_text": "If enabled, visible channels with no EPG assigned will be bound to a plugin-managed dummy EPG source. The guide shows the extracted event during its time window (and 'Offline' outside it), or the channel name as a 24-hour fallback if no time is parseable.",
+                "help_text": "If enabled, visible channels with no EPG assigned will be bound to a plugin-managed dummy EPG source. The guide shows the extracted event during its time window (and 'Offline' outside it), or the channel name as a 24-hour fallback if no time is parseable. NOTE: this is the setting that CREATES guide data — not '🔌 Auto-Remove EPG on Hide' above, which clears it.",
+            },
+            {
+                "id": "override_existing_epg",
+                "label": "♻️ Override Empty Existing EPG",
+                "type": "boolean",
+                "default": self.DEFAULT_OVERRIDE_EXISTING_EPG,
+                "help_text": "Requires '🗓️ Manage Dummy EPG'. By default the managed dummy is only attached to visible channels that have NO EPG at all. Enable this to ALSO take over visible channels that are already linked to a real EPG source which currently has no programmes (a blank guide) — e.g. event channels the provider mapped to an empty tvg-id. Channels whose linked EPG actually has upcoming programmes are never touched. Default OFF.",
             },
             {
                 "id": "dummy_epg_channel_format",
@@ -998,6 +1010,8 @@ class Plugin:
                 settings["auto_set_dummy_epg_on_hide"] = self.DEFAULT_AUTO_REMOVE_EPG
             if "manage_dummy_epg" not in settings:
                 settings["manage_dummy_epg"] = self.DEFAULT_MANAGE_DUMMY_EPG
+            if "override_existing_epg" not in settings:
+                settings["override_existing_epg"] = self.DEFAULT_OVERRIDE_EXISTING_EPG
             if "dummy_epg_event_duration_hours" not in settings:
                 settings["dummy_epg_event_duration_hours"] = self.DEFAULT_EVENT_DURATION_HOURS
             if "dummy_epg_event_timezone" not in settings:
@@ -1420,6 +1434,7 @@ class Plugin:
                 local_tz = pytz.timezone(self.DEFAULT_TIMEZONE)
 
             now_in_tz = datetime.now(local_tz)
+            naive_extracted = extracted_date  # parser returns a naive datetime
 
             # Make extracted_date timezone-aware for correct comparison if it's naive
             if extracted_date.tzinfo is None:
@@ -1429,11 +1444,36 @@ class Plugin:
             # end datetime so an event that ended earlier *today* is hidden once stop: +
             # grace has elapsed, instead of staying visible until the next calendar day
             # (issue #22). extracted_date is already the stop: time here (prefer="stop").
-            # Names without stop: keep the original day-granularity behaviour.
             if self._name_has_stop_timestamp(channel_name):
                 cutoff = extracted_date + timedelta(days=days_threshold, hours=grace_hours)
                 if now_in_tz > cutoff:
                     return True, f"[PastDate:{days_threshold}] Event ended {extracted_date.strftime('%m/%d/%Y %I:%M %p')} (past stop: + {days_threshold}d/{grace_hours}h grace)"
+                return False, None
+
+            # When the name carries a clock time but no stop: (e.g. "(6.19 7:30 PM ET)"),
+            # judge by the real event time instead of the calendar date: assume the event
+            # ends `dummy_epg_event_duration_hours` after it starts and hide once end +
+            # threshold/grace has passed (bug-046). The name's clock is in the event
+            # timezone (dummy_epg_event_timezone). This stops a 10pm event from being
+            # hidden minutes into its broadcast just because the calendar rolled past
+            # midnight. Names with no parseable time keep the day-granularity path below.
+            if naive_extracted.hour != 0 or naive_extracted.minute != 0:
+                try:
+                    event_tz = pytz.timezone(str(settings.get(
+                        "dummy_epg_event_timezone", self.DEFAULT_DUMMY_EPG_TIMEZONE)).strip())
+                except Exception:
+                    event_tz = local_tz
+                try:
+                    duration_hours = int(str(settings.get(
+                        "dummy_epg_event_duration_hours", self.DEFAULT_EVENT_DURATION_HOURS)).strip())
+                except (ValueError, TypeError):
+                    duration_hours = int(self.DEFAULT_EVENT_DURATION_HOURS)
+                if duration_hours <= 0:
+                    duration_hours = int(self.DEFAULT_EVENT_DURATION_HOURS)
+                start_aware = event_tz.localize(naive_extracted)
+                cutoff = start_aware + timedelta(hours=duration_hours, days=days_threshold) + timedelta(hours=grace_hours)
+                if now_in_tz > cutoff:
+                    return True, f"[PastDate:{days_threshold}] Event ended {start_aware.strftime('%m/%d %I:%M %p %Z')} (+{duration_hours}h dur, {days_threshold}d/{grace_hours}h grace)"
                 return False, None
 
             now_adjusted = now_in_tz - timedelta(hours=grace_hours)
@@ -1450,9 +1490,18 @@ class Plugin:
                 return False, None  # Skip rule if no date found
             
             days_threshold = rule_param if rule_param is not None else 14
-            today = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
+            # Resolve "today" in the configured Dispatcharr timezone, consistent with
+            # [PastDate]/[WrongDayOfWeek]/[UndatedAge]; a naive datetime.now() here used
+            # the container's wall clock (often UTC) and could shift the future-day
+            # boundary by a day for non-UTC users (bug: FutureDate naive now).
+            tz_str = self._get_system_timezone(settings)
+            try:
+                local_tz = pytz.timezone(tz_str)
+            except pytz.exceptions.UnknownTimeZoneError:
+                local_tz = pytz.timezone(self.DEFAULT_TIMEZONE)
+            today = datetime.now(local_tz).replace(hour=0, minute=0, second=0, microsecond=0, tzinfo=None)
             days_diff = (extracted_date - today).days
-            
+
             if days_diff > days_threshold:
                 return True, f"[FutureDate:{days_threshold}] Event date {extracted_date.strftime('%m/%d/%Y')} is {days_diff} days in the future"
             
@@ -2230,8 +2279,13 @@ class Plugin:
         # leading_time handles names where the time appears BEFORE the event text (LIVE format).
         # The separator class includes '-' so " - " between the event number and the
         # title is consumed (otherwise the leading dash leaks into {title}).
+        # The prefix accepts "PPV EVENT N", "LIVE EVENT N", "PPV N", "LIVE N", and also a
+        # bare "EVENT N" with NO PPV/LIVE prefix (e.g. "EVENT 21: Dirt Zone (6.19 7:30 PM
+        # ET)") so those providers capture a real {title} instead of the static fallback
+        # (bug-051). The "EVENT" keyword is still required when PPV/LIVE is absent, so an
+        # unrelated bare "<number>:" token is NOT matched.
         us_title_pattern = (
-            r"(?:PPV|LIVE)\s*(?:EVENT\s*)?\d+\s*[:|\-\s]\s*"
+            r"(?:(?:PPV|LIVE)\s*(?:EVENT\s*)?|EVENT\s*)\d+\s*[:|\-\s]\s*"
             r"(?:(?<leading_time>\d{1,2}(?::\d{2})?\s*[AaPp][Mm])\s+)?"
             r"(?<title>.+?)"
             r"(?=\s*\(|\s+\d{1,2}(?::\d{2})?\s*[AaPp][Mm]|"
@@ -2318,10 +2372,21 @@ class Plugin:
         )
         _orig_time = r"(?P<hour>\d{1,2}):(?P<minute>\d{2})\s*(?P<ampm>[AaPp][Mm])?"
 
+        # Previous default (pre bug-051, JS form as stored on live sources): required a
+        # PPV/LIVE prefix, so bare "EVENT N:" names fell to the renderer fallback. Listed
+        # here so sources still carrying it auto-upgrade to the prefix-optional default.
+        _prev_us_title = (
+            r"(?:PPV|LIVE)\s*(?:EVENT\s*)?\d+\s*[:|\-\s]\s*"
+            r"(?:(?<leading_time>\d{1,2}(?::\d{2})?\s*[AaPp][Mm])\s+)?"
+            r"(?<title>.+?)"
+            r"(?=\s*\(|\s+\d{1,2}(?::\d{2})?\s*[AaPp][Mm]|"
+            r"\s+(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)\s+\d+|$)"
+        )
+
         stock_patterns = {
             "title_pattern": {us_title_pattern, _py_named(us_title_pattern),
                               _py_named(us_title_pattern).replace(r"[:|\-\s]", r"[:|\s]"),
-                              _orig_title,
+                              _orig_title, _prev_us_title, _py_named(_prev_us_title),
                               se_title_pattern, _py_named(se_title_pattern)},
             "time_pattern": {us_time_pattern, _py_named(us_time_pattern), _orig_time,
                              se_time_pattern, _py_named(se_time_pattern)},
@@ -2379,7 +2444,8 @@ class Plugin:
         m = re.search(r'\|\s*([^|]+?)\s*$', channel_name)
         return m.group(1) if m else channel_name
 
-    def _attach_managed_epg(self, channels, managed_source, logger, settings=None, rate_limiter=None):
+    def _attach_managed_epg(self, channels, managed_source, logger, settings=None, rate_limiter=None,
+                            override_ids=None):
         """Bind each channel in `channels` to the managed dummy source via an EPGData row,
         and keep EPGData.name in sync with the desired display name.
 
@@ -2389,10 +2455,12 @@ class Plugin:
         instead of the full stream name.
 
         Channels with epg_data already set are only checked for a name update (no new
-        EPGData row is created). Returns list of channel IDs newly attached (for result
-        reporting).
+        EPGData row is created) UNLESS their id is in `override_ids` (the opt-in
+        override-existing-EPG set, bug-043), in which case their link is re-pointed to the
+        managed dummy. Returns list of channel IDs newly attached/re-pointed.
         """
         from apps.epg.models import EPGData
+        override_ids = override_ids or set()
 
         channel_format = str((settings or {}).get(
             "dummy_epg_channel_format", self.DEFAULT_DUMMY_EPG_CHANNEL_FORMAT)).strip().upper()
@@ -2408,7 +2476,10 @@ class Plugin:
                 desired_name = (self._extract_se_display_name(channel.name)
                                  if channel_format == "SE" else channel.name)
 
-                if channel.epg_data_id is None:
+                # Re-point an override channel only if it isn't already on the managed source.
+                repoint = (channel.id in override_ids and
+                           getattr(channel.epg_data, "epg_source_id", None) != managed_source.id)
+                if channel.epg_data_id is None or repoint:
                     try:
                         epg_data, _ = EPGData.objects.get_or_create(
                             tvg_id=str(channel.uuid),
@@ -2465,7 +2536,64 @@ class Plugin:
 
         detached_ids = [ch.id for ch in stale]
         logger.info(f"{LOG_PREFIX} Detached managed EPG from {len(detached_ids)} channel(s)")
+
+        # Reap managed EPGData rows orphaned by this (and prior) detaches. _attach_
+        # creates one EPGData per channel (tvg_id=str(channel.uuid)); detach only
+        # nulled the channel link, leaving the row behind forever (bug-044). A managed
+        # row is "live" only while some Channel.epg_data points at it; get_or_create
+        # re-creates it on re-attach, so deleting unreferenced rows is safe. The UUID
+        # regex restricts deletion to attach-created rows and spares the source's own
+        # representative row (non-UUID tvg_id, e.g. 'dummy_ecm_managed_dummy').
+        try:
+            from apps.epg.models import EPGData
+            referenced_ids = set(
+                Channel.objects.filter(epg_data__epg_source=managed_source)
+                .values_list("epg_data_id", flat=True)
+            )
+            orphans = (EPGData.objects.filter(epg_source=managed_source)
+                       .exclude(id__in=referenced_ids)
+                       .filter(tvg_id__regex=r'^[0-9a-fA-F-]{36}$'))
+            orphan_count = orphans.count()
+            if orphan_count:
+                orphans.delete()
+                logger.info(f"{LOG_PREFIX} Reaped {orphan_count} orphaned managed EPGData row(s)")
+        except Exception as e:
+            logger.warning(f"{LOG_PREFIX} Orphan EPGData cleanup skipped: {e}")
+
         return detached_ids
+
+    def _managed_override_ids(self, settings, managed_source, enabled_channel_ids, logger):
+        """Opt-in (override_existing_epg): return the subset of enabled channels whose
+        current EPG is a NON-managed, NON-dummy source with NO programme in the next 24h
+        (a blank guide). These are eligible to be re-pointed to the managed dummy. Returns
+        [] when the toggle is off, the managed source is missing, or nothing qualifies
+        (bug-043). Channels whose linked EPG actually has upcoming programmes are excluded."""
+        if managed_source is None or not self._get_bool_setting(settings, "override_existing_epg", False):
+            return []
+        try:
+            from apps.epg.models import ProgramData
+            from django.utils import timezone as _djtz
+            cand = list(Channel.objects.filter(
+                id__in=enabled_channel_ids, epg_data__isnull=False
+            ).exclude(epg_data__epg_source=managed_source).select_related("epg_data__epg_source"))
+            cand = [c for c in cand
+                    if getattr(c.epg_data.epg_source, "source_type", None) != "dummy"]
+            if not cand:
+                return []
+            now = _djtz.now()
+            window_end = now + timedelta(hours=24)
+            ed_ids = [c.epg_data_id for c in cand]
+            with_progs = set(ProgramData.objects.filter(
+                epg_id__in=ed_ids, start_time__lt=window_end, end_time__gte=now
+            ).values_list("epg_id", flat=True))
+            override = [c.id for c in cand if c.epg_data_id not in with_progs]
+            if override:
+                logger.info(f"{LOG_PREFIX} override_existing_epg: {len(override)} visible channel(s) "
+                            f"with a blank existing EPG eligible for the managed dummy")
+            return override
+        except Exception as e:
+            logger.warning(f"{LOG_PREFIX} override_existing_epg check skipped: {e}")
+            return []
 
     def _run_managed_epg_pass(self, settings, logger, dry_run, enabled_channel_ids):
         """Attach/detach the plugin's managed dummy EPG based on current settings.
@@ -2488,9 +2616,11 @@ class Plugin:
             if managed_source is None:
                 return [], []
             if toggle_on:
-                attached_ids = list(Channel.objects.filter(
+                null_ids = list(Channel.objects.filter(
                     id__in=enabled_channel_ids, epg_data__isnull=True
                 ).values_list("id", flat=True))
+                override_ids = self._managed_override_ids(settings, managed_source, enabled_channel_ids, logger)
+                attached_ids = list(dict.fromkeys(list(null_ids) + override_ids))
                 detached_ids = list(Channel.objects.filter(
                     epg_data__epg_source=managed_source
                 ).exclude(id__in=enabled_channel_ids).values_list("id", flat=True))
@@ -2518,7 +2648,11 @@ class Plugin:
             no_epg_channels = list(Channel.objects.filter(
                 id__in=enabled_channel_ids, epg_data__isnull=True
             ))
-            channels_for_epg = no_epg_channels
+            # Opt-in: also take over visible channels linked to a blank non-managed EPG.
+            override_ids = set(self._managed_override_ids(settings, managed_source, enabled_channel_ids, logger))
+            override_channels = (list(Channel.objects.filter(id__in=override_ids).select_related("epg_data"))
+                                 if override_ids else [])
+            channels_for_epg = no_epg_channels + override_channels
             channel_format = str(settings.get(
                 "dummy_epg_channel_format", self.DEFAULT_DUMMY_EPG_CHANNEL_FORMAT)).strip().upper()
             if channel_format == "SE":
@@ -2528,10 +2662,11 @@ class Plugin:
                 already_attached = list(Channel.objects.filter(
                     id__in=enabled_channel_ids, epg_data__epg_source=managed_source
                 ).select_related("epg_data"))
-                channels_for_epg = no_epg_channels + already_attached
+                channels_for_epg = no_epg_channels + override_channels + already_attached
             rate_limiter = SmartRateLimiter(settings.get("rate_limiting", self.DEFAULT_RATE_LIMITING))
             attached_ids = self._attach_managed_epg(channels_for_epg, managed_source, logger,
-                                                       settings=settings, rate_limiter=rate_limiter)
+                                                       settings=settings, rate_limiter=rate_limiter,
+                                                       override_ids=override_ids)
 
         keep_ids = set(enabled_channel_ids) if toggle_on else set()
         detached_ids = self._detach_managed_epg(managed_source, keep_ids, logger)
@@ -2617,6 +2752,19 @@ class Plugin:
             return fd
         return None
 
+    @staticmethod
+    def _group_name_q(field, group_names):
+        """Build a case-insensitive OR filter matching `field` against any name in
+        `group_names`. Django has no `__in` + `iexact` combo, so this ORs per-name
+        `__iexact` lookups. Mirrors the profile lookup (name__iexact) so configured
+        channel-group names match regardless of case (bug-049) — provider group names
+        carry exotic unicode/casing that is trivial to mistype."""
+        from django.db.models import Q
+        q = Q()
+        for name in group_names:
+            q |= Q(**{f"{field}__iexact": name})
+        return q
+
     def _scan_and_update_channels(self, settings, logger, dry_run=True, is_scheduled_run=False):
         """Scan channels and update visibility based on hide rules priority"""
         # Source the timezone from Dispatcharr's global setting (overwrites any
@@ -2694,18 +2842,37 @@ class Plugin:
             # Get channels query - now includes both visible and hidden channels
             channels_query = Channel.objects.filter(id__in=all_channel_ids).select_related('channel_group', 'epg_data')
             
-            # Apply group filter if specified
+            # Apply group filter if specified. Group names are matched
+            # case-insensitively (like profile names) so minor case differences and
+            # exotic provider unicode still match (bug-049).
             channel_groups_str = settings.get("channel_groups", "").strip()
+            group_names = []
             if channel_groups_str:
                 group_names = [g.strip() for g in channel_groups_str.split(',') if g.strip()]
-                channels_query = channels_query.filter(channel_group__name__in=group_names)
+                channels_query = channels_query.filter(self._group_name_q("channel_group__name", group_names))
                 logger.info(f"Filtering to groups: {', '.join(group_names)}")
-            
+
             channels = list(channels_query)
             total_channels = len(channels)
-            
+
+            # Surface configured group names that matched no channel in scope, instead
+            # of silently dropping them (a typo/case/unicode mismatch otherwise looks
+            # like the plugin "did nothing") (bug-049).
+            unmatched_groups = []
+            if group_names:
+                present = {(c.channel_group.name or "").strip().casefold()
+                           for c in channels if c.channel_group}
+                unmatched_groups = [g for g in group_names if g.casefold() not in present]
+                if unmatched_groups:
+                    logger.warning(
+                        f"{LOG_PREFIX} Configured channel group(s) matched no channels in "
+                        f"profile(s) '{', '.join(found_profile_names)}': "
+                        f"{', '.join(unmatched_groups)} — check spelling/case/unicode.")
+
             if total_channels == 0:
-                return {"status": "error", "message": f"No channels found in profile(s) '{', '.join(found_profile_names)}' with the specified groups."}
+                extra = (f" Unmatched group name(s): {', '.join(unmatched_groups)}."
+                         if unmatched_groups else "")
+                return {"status": "error", "message": f"No channels found in profile(s) '{', '.join(found_profile_names)}' with the specified groups.{extra}"}
             
             logger.info(f"Processing {total_channels} channels...")
             
@@ -2921,8 +3088,10 @@ class Plugin:
                     cid = row.get("channel_id")
                     if cid in managed_detached_set:
                         row["managed_epg_detached"] = True
+                        row["has_epg"] = "No"   # detached this run -> no longer linked
                     if cid in managed_attached_set:
                         row["managed_epg_assigned"] = True
+                        row["has_epg"] = "Yes"  # attached this run -> now linked
 
             # Build final results with duplicate information
             for channel_info in channels_for_duplicate_check:
@@ -2955,6 +3124,15 @@ class Plugin:
                     if bracket_end > 0:
                         hide_rule = reason[1:bracket_end]
                 
+                # has_epg was captured before the managed pass; reconcile it with this
+                # run's attach/detach so the CSV doesn't show e.g. has_epg=No alongside
+                # managed_epg_assigned=True (bug-050).
+                post_has_epg = channel_info['has_epg'] == "Yes"
+                if channel_id in managed_attached_set:
+                    post_has_epg = True
+                elif channel_id in managed_detached_set:
+                    post_has_epg = False
+
                 results.append({
                     "channel_id": channel_id,
                     "channel_name": channel_info['channel_name'],
@@ -2964,7 +3142,7 @@ class Plugin:
                     "action": final_action,
                     "reason": reason,
                     "hide_rule": hide_rule,
-                    "has_epg": channel_info['has_epg'],
+                    "has_epg": "Yes" if post_has_epg else "No",
                     "managed_epg_assigned": channel_id in managed_attached_set,
                     "managed_epg_detached": channel_id in managed_detached_set,
                 })
@@ -3362,7 +3540,8 @@ class Plugin:
             if channel_groups_str:
                 group_names = [g.strip() for g in channel_groups_str.split(',') if g.strip()]
                 if group_names:
-                    hidden_memberships = hidden_memberships.filter(channel__channel_group__name__in=group_names)
+                    hidden_memberships = hidden_memberships.filter(
+                        self._group_name_q("channel__channel_group__name", group_names))
                     logger.info(f"Filtering EPG removal to groups: {', '.join(group_names)}")
             
             if not hidden_memberships.exists():

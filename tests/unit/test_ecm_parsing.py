@@ -47,13 +47,31 @@ EXTRACT_CASES = [
     ("Old 12/25/24",                                             "Auto", "start", "2024-12-25T00:00:00"),
     # MONTH DD[ HH:MM] (Pattern 2b)
     ("NBA Nov 8 16:00",                                          "Auto", "start", "2026-11-08T16:00:00"),
+    # MONTH DD with 12-hour clock + AM/PM (Pattern 2b, bug-047). Meridiem must be applied.
+    ("UFC Fight Night @ Jun 20 4:00 PM",                         "Auto", "start", "2026-06-20T16:00:00"),
+    ("Show @ Jun 20 11:00 PM",                                   "Auto", "start", "2026-06-20T23:00:00"),
+    ("Show @ Jun 20 12:00 AM",                                   "Auto", "start", "2026-06-20T00:00:00"),
+    ("Show @ Jun 20 12:00 PM",                                   "Auto", "start", "2026-06-20T12:00:00"),
+    # MONTH DD with seconds + AM/PM — seconds tolerated, meridiem applied (Pattern 2b)
+    ("Gala Jun 20 4:00:00 PM",                                   "Auto", "start", "2026-06-20T16:00:00"),
+    # MONTH DD with no time still yields a midnight date (Pattern 2b regression guard)
+    ("NBA Nov 8",                                                "Auto", "start", "2026-11-08T00:00:00"),
     # DDth MONTH (Pattern 2c)
     ("Race 28th Apr",                                            "Auto", "start", "2026-04-28T00:00:00"),
     # M.D without year (Pattern 3)
     ("Event 10.25",                                              "Auto", "start", "2026-10-25T00:00:00"),
     ("PPV 6.9",                                                  "Auto", "start", "2026-06-09T00:00:00"),
+    # M.D with a trailing 12-hour event time (Pattern 3, bug-046) — time must be attached
+    ("EVENT 21: Dirt Zone (6.19 7:30 PM ET)",                    "Auto", "start", "2026-06-19T19:30:00"),
+    ("PPV 6.9 10:00 PM",                                         "Auto", "start", "2026-06-09T22:00:00"),
+    ("Game 10.25 12:00 AM",                                      "Auto", "start", "2026-10-25T00:00:00"),
+    ("Game 10.25 12:00 PM",                                      "Auto", "start", "2026-10-25T12:00:00"),
     # M/D without year (Pattern 4) — format variants
     ("Game 10/27",                                               "Auto", "start", "2026-10-27T00:00:00"),
+    # M/D with trailing 12-hour event time (Pattern 4, bug-046)
+    ("Race 10/27 8:00 PM",                                       "Auto", "start", "2026-10-27T20:00:00"),
+    # Lookahead still rejects "1/3:30pm" even with the new optional time group
+    ("Time 1/3:30pm",                                            "Auto", "start", None),
     ("Match 15/04",                                              "Auto", "start", "2026-04-15T00:00:00"),
     ("Match 15/04",                                              "US",   "start", None),
     ("Match 15/04",                                              "EU",   "start", "2026-04-15T00:00:00"),

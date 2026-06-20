@@ -40,6 +40,16 @@ def apply_meridiem(hour, meridiem):
     return hour if hour == 12 else hour + 12
 
 
+def _attach_clock_time(dt, hh, mm, ap):
+    """Return `dt` with an explicit 12-hour clock time applied when one was parsed
+    (hour + AM/PM present); otherwise return `dt` unchanged at midnight. Used by the
+    numeric M.D / M/D patterns so a trailing '(6.19 7:30 PM ET)' time is preserved
+    instead of dropped, letting [PastDate] judge by the real event time (bug-046)."""
+    if hh and ap:
+        return dt.replace(hour=apply_meridiem(int(hh), ap), minute=int(mm) if mm else 0)
+    return dt
+
+
 def resolve_numeric_date_pair(first, second, current_year, date_format):
     """Resolve a (first, second) numeric pair into a datetime using the configured format.
 
@@ -155,41 +165,52 @@ def extract_date_from_channel_name(channel_name, date_format="Auto", prefer="sta
         except (ValueError, dateutil_parser.ParserError):
             pass
 
-    # Pattern 2b: MONTH DD e.g., "Nov 8" or "Nov 8 16:00"
-    pattern2b = re.search(r'\b(JAN|FEB|MAR|APR|MAY|JUN|JUL|AUG|SEP|OCT|NOV|DEC)\s+(\d{1,2})(?:\s+(\d{1,2}:\d{2}))?', channel_name, re.IGNORECASE)
+    # Pattern 2b: MONTH DD e.g., "Nov 8", "Nov 8 16:00", or "Jun 20 4:00 PM".
+    # The time is parsed component-wise (optional :SS, optional AM/PM) and the
+    # meridiem applied via apply_meridiem — dateutil is used only for the date so
+    # a trailing "PM" can't be silently dropped (bug-047).
+    pattern2b = re.search(
+        r'\b(JAN|FEB|MAR|APR|MAY|JUN|JUL|AUG|SEP|OCT|NOV|DEC)\s+(\d{1,2})'
+        r'(?:\s+(\d{1,2}):(\d{2})(?::\d{2})?\s*(?P<ap>[AaPp][Mm])?)?',
+        channel_name, re.IGNORECASE)
     if pattern2b:
-        month_str, day, hour_minute = pattern2b.groups()
+        month_str, day = pattern2b.group(1), pattern2b.group(2)
+        hh, mm, ap = pattern2b.group(3), pattern2b.group(4), pattern2b.group("ap")
         try:
-            date_str = f"{month_str} {day} {current_year}"
-            if hour_minute:
-                date_str += f" {hour_minute}"
-            temp_date = dateutil_parser.parse(date_str)
-            extracted_date = datetime(temp_date.year, temp_date.month, temp_date.day, temp_date.hour, temp_date.minute)
+            temp_date = dateutil_parser.parse(f"{month_str} {day} {current_year}")
+            hour = apply_meridiem(int(hh), ap) if hh else 0
+            minute = int(mm) if mm else 0
+            extracted_date = datetime(temp_date.year, temp_date.month, temp_date.day, hour, minute)
             if (today - extracted_date).days > 180:
-                extracted_date = datetime(current_year + 1, temp_date.month, temp_date.day, temp_date.hour, temp_date.minute)
-            log.debug(f"Extracted date {extracted_date} from pattern MONTH DD[ HH:MM] in '{channel_name}'")
+                extracted_date = datetime(current_year + 1, temp_date.month, temp_date.day, hour, minute)
+            log.debug(f"Extracted date {extracted_date} from pattern MONTH DD[ HH:MM[:SS] AM/PM] in '{channel_name}'")
             return extracted_date
         except (ValueError, dateutil_parser.ParserError):
             pass
 
     # Pattern 3: M.D without year e.g., "10.25" — interpreted per date_format setting.
-    pattern3 = re.search(r'\b(\d{1,2})\.(\d{1,2})\b', channel_name)
+    # An optional trailing 12-hour time ("6.19 7:30 PM") is captured and applied so the
+    # event's clock time isn't dropped (bug-046).
+    pattern3 = re.search(r'\b(\d{1,2})\.(\d{1,2})\b(?:\s+(\d{1,2})(?::(\d{2}))?\s*([AaPp][Mm]))?', channel_name)
     if pattern3:
-        first, second = map(int, pattern3.groups())
+        first, second = int(pattern3.group(1)), int(pattern3.group(2))
         extracted_date = resolve_numeric_date_pair(first, second, current_year, date_format)
         if extracted_date is not None:
-            log.debug(f"Extracted date {extracted_date.date()} from pattern M.D ({date_format}) in '{channel_name}'")
+            extracted_date = _attach_clock_time(extracted_date, pattern3.group(3), pattern3.group(4), pattern3.group(5))
+            log.debug(f"Extracted date {extracted_date} from pattern M.D[ HH:MM AM/PM] ({date_format}) in '{channel_name}'")
             return extracted_date
 
     # Pattern 4: M/D without year e.g., "10/27" or "15/04" — interpreted per date_format setting.
     # Lookahead excludes "/" (year follows, handled by Pattern 1) and ":" (time
-    # range like "1/3:30pm" — second number is hours, not a day).
-    pattern4 = re.search(r'\b(\d{1,2})/(\d{1,2})\b(?![/:])', channel_name)
+    # range like "1/3:30pm" — second number is hours, not a day). An optional trailing
+    # 12-hour time is captured and applied (bug-046).
+    pattern4 = re.search(r'\b(\d{1,2})/(\d{1,2})\b(?![/:])(?:\s+(\d{1,2})(?::(\d{2}))?\s*([AaPp][Mm]))?', channel_name)
     if pattern4:
-        first, second = map(int, pattern4.groups())
+        first, second = int(pattern4.group(1)), int(pattern4.group(2))
         extracted_date = resolve_numeric_date_pair(first, second, current_year, date_format)
         if extracted_date is not None:
-            log.debug(f"Extracted date {extracted_date.date()} from pattern M/D ({date_format}) in '{channel_name}'")
+            extracted_date = _attach_clock_time(extracted_date, pattern4.group(3), pattern4.group(4), pattern4.group(5))
+            log.debug(f"Extracted date {extracted_date} from pattern M/D[ HH:MM AM/PM] ({date_format}) in '{channel_name}'")
             return extracted_date
 
     log.debug(f"No date found in channel name: '{channel_name}'")
