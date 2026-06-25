@@ -299,7 +299,12 @@ Summarize the results and confirm scope before proceeding.
 3. Verify `PLUGIN_VERSION` in plugin.py matches `"version"` in plugin.json (the contract test checks this).
 4. Commit: `git add Event-Channel-Managarr/plugin.py Event-Channel-Managarr/plugin.json && git commit -m "chore: bump version to X.XX.XXXXXXX"`
 5. Tag and push: `git tag vX.XX.XXXXXXX && git push origin main --tags`
-6. Build the ZIP: `zip.cmd` (produces `Event-Channel-Managarr.zip`)
+6. Build the ZIP: `zip.cmd` (produces `Event-Channel-Managarr.zip`), then
+   **`python scripts/validate_zip.py Event-Channel-Managarr.zip`** — must print OK.
+   This guards bug-087: a zip with backslash path separators (as PowerShell
+   `Compress-Archive` / .NET Framework `ZipFile.CreateFromDirectory` produce) fails
+   install on Dispatcharr's Linux host with "missing plugin.py or package
+   __init__.py". `zip.cmd`'s 7-Zip output is fine; this is the regression gate.
 7. Create the GitHub release on `PiratesIRC/Dispatcharr-Event-Channel-Managarr-Plugin` with the ZIP as an asset.
 8. Open (or update) the marketplace PR to `Dispatcharr/Plugins`, copying `Event-Channel-Managarr/` into `plugins/event-channel-managarr/`.
    - **Important:** always branch from `upstream/main`, not from the fork's main — the fork's main may carry stale unmerged upstream changes that contaminate the PR diff.
