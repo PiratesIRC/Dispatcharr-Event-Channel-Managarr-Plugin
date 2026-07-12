@@ -1,6 +1,10 @@
 # Event Channel Managarr
 A Dispatcharr plugin that automatically manages channel visibility based on EPG data and channel names. It hides channels that currently have no event information and shows channels that do — with optional managed dummy EPG so the guide still shows something useful (event title during the window; "Upcoming at <time>: <title>" before; "Ended at <time>: <title>" after) for channels that never have real EPG assigned.
 
+> [!TIP]
+> **New to Dispatcharr plugins?** Start with the **[Dispatcharr Plugin Workflow guide](https://piratesirc.github.io/Dispatcharr-Plugin-Workflow/)**.
+> It explains what each plugin and tool does, where they overlap, and what order to use them in.
+
 [![Dispatcharr plugin](https://img.shields.io/badge/Dispatcharr-plugin-8A2BE2)](https://github.com/Dispatcharr/Dispatcharr)
 [![Ask DeepWiki](https://deepwiki.com/badge.svg)](https://deepwiki.com/PiratesIRC/Dispatcharr-Event-Channel-Managarr-Plugin)
 [![Workflow Guide](https://img.shields.io/badge/%F0%9F%93%96-Workflow_Guide-1F6FEB?style=flat)](https://piratesirc.github.io/Dispatcharr-Plugin-Workflow/workflow/05-event-channel-managarr/)
