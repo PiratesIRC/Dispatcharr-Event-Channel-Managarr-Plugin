@@ -2247,7 +2247,7 @@ class Plugin:
             "ended_title_template": f"Ended at {date_ph} {{endtime}}{suffix}: {{title}}",
         }
 
-    def _epg_binding_is_reroutable(self, channel):
+    def _epg_binding_is_reroutable(self, channel, logger=None):
         """May this channel's EPG binding be moved to another source?
 
         Only when it holds NOTHING, a dummy source, or a real source with no
@@ -2258,10 +2258,13 @@ class Plugin:
         legitimately populated real EPG on some other install. Moving that would
         silently destroy a working guide. This mirrors the guard
         _managed_override_ids already applies (bug-043).
+
+        Fails CLOSED: any error resolves to False (not reroutable), i.e. leave the
+        channel exactly where it is -- the pre-existing behavior -- rather than risk
+        rerouting a channel whose guide status could not actually be confirmed.
         """
         from datetime import timedelta
         from django.utils import timezone as djtz
-        from apps.epg.models import ProgramData
 
         epg_data = channel.epg_data
         if epg_data is None or epg_data.epg_source is None:
@@ -2269,9 +2272,15 @@ class Plugin:
         if getattr(epg_data.epg_source, "source_type", None) == "dummy":
             return True
         now = djtz.now()
-        return not ProgramData.objects.filter(
-            epg_id=epg_data.id, start_time__lt=now + timedelta(hours=24),
-            end_time__gte=now).exists()
+        try:
+            return not ProgramData.objects.filter(
+                epg_id=epg_data.id, start_time__lt=now + timedelta(hours=24),
+                end_time__gte=now).exists()
+        except Exception as exc:
+            if logger is not None:
+                logger.warning(f"{LOG_PREFIX} Reroutable check failed for channel "
+                               f"{channel.id!r}; leaving binding in place: {exc}")
+            return False
 
     def _reap_orphaned_epg_data(self, source, logger):
         """Delete attach-created EPGData rows on `source` that no channel references.
@@ -2358,8 +2367,13 @@ class Plugin:
                 changed = True
         if changed:
             source.custom_properties = current
-            source.save(update_fields=["custom_properties"])
-            logger.info(f"{LOG_PREFIX} Refreshed EPG source {profile.source_name!r}")
+            try:
+                source.save(update_fields=["custom_properties"])
+                logger.info(f"{LOG_PREFIX} Refreshed EPG source {profile.source_name!r}")
+            except Exception as exc:
+                logger.warning(f"{LOG_PREFIX} Could not refresh EPG source "
+                               f"{profile.source_name!r}: {exc}")
+                return None
         return source
 
     def _get_or_create_managed_epg_source(self, settings, logger):
