@@ -143,24 +143,84 @@ def test_real_module_passes_guard(guard):
 # --- every guard must FAIL on a violating module -------------------------------
 
 BAD_SOURCES = {
-    "django_import": "import django\n",
-    "app_import": "from apps.epg.models import EPGSource\n",
-    "unguarded_third_party": "import requests\n",
-    "mutable_dict_literal": "CACHE = {}\n",
-    "mutable_factory": "CACHE = dict()\n",
-    "annotated_mutable": "CACHE: dict = {}\n",
-    "comprehension": "CACHE = [x for x in range(3)]\n",
-    "lru_cache": "from functools import lru_cache\n@lru_cache\ndef f(x):\n    return x\n",
-    "import_in_except": "try:\n    import regex\nexcept ImportError:\n    import requests\n",
+    "django_import": (
+        "import django\n",
+        check_no_django_or_app_imports,
+    ),
+    "app_import": (
+        "from apps.epg.models import EPGSource\n",
+        check_no_django_or_app_imports,
+    ),
+    "core_import": (
+        "import core\n",
+        check_no_django_or_app_imports,
+    ),
+    "unguarded_third_party": (
+        "import requests\n",
+        check_module_imports_are_stdlib_or_guarded,
+    ),
+    "import_in_except": (
+        "try:\n    import regex\nexcept ImportError:\n    import requests\n",
+        check_module_imports_are_stdlib_or_guarded,
+    ),
+    "mutable_dict_literal": (
+        "CACHE = {}\n",
+        check_no_module_level_mutable_state,
+    ),
+    "mutable_factory": (
+        "CACHE = dict()\n",
+        check_no_module_level_mutable_state,
+    ),
+    "list_factory": (
+        "CACHE = list()\n",
+        check_no_module_level_mutable_state,
+    ),
+    "set_factory": (
+        "CACHE = set()\n",
+        check_no_module_level_mutable_state,
+    ),
+    "annotated_mutable": (
+        "CACHE: dict = {}\n",
+        check_no_module_level_mutable_state,
+    ),
+    "comprehension": (
+        "CACHE = [x for x in range(3)]\n",
+        check_no_module_level_mutable_state,
+    ),
+    "lru_cache": (
+        "from functools import lru_cache\n@lru_cache\ndef f(x):\n    return x\n",
+        check_no_caching_decorators,
+    ),
+    "lru_cache_called": (
+        "from functools import lru_cache\n@lru_cache()\ndef f(x):\n    return x\n",
+        check_no_caching_decorators,
+    ),
+    "cache_decorator": (
+        "from functools import cache\n@cache\ndef f(x):\n    return x\n",
+        check_no_caching_decorators,
+    ),
+    "cached_property_decorator": (
+        "from functools import cached_property\n"
+        "class C:\n    @cached_property\n    def f(self):\n        return 1\n",
+        check_no_caching_decorators,
+    ),
 }
 
 
-@pytest.mark.parametrize("label,source", sorted(BAD_SOURCES.items()))
-def test_guards_reject_a_violating_module(label, source, tmp_path):
+@pytest.mark.parametrize(
+    "label,source,expected_guard",
+    [(label, source, guard) for label, (source, guard) in sorted(BAD_SOURCES.items())],
+    ids=[label for label in sorted(BAD_SOURCES)],
+)
+def test_guards_reject_a_violating_module(label, source, expected_guard, tmp_path):
     """Uses a TEMP file - never edits the real module, which rev 1 did and which
-    leaves the repo dirty if the engineer is interrupted."""
+    leaves the repo dirty if the engineer is interrupted.
+
+    Asserts that the SPECIFIC guard named in BAD_SOURCES raises - not merely that
+    some guard in ALL_GUARDS does. A regression in one guard that happens to also
+    trip a neighbouring guard on the same fixture must not pass silently.
+    """
     fake = tmp_path / "ecm_profiles.py"
     fake.write_text(source, encoding="utf-8")
     with pytest.raises(AssertionError):
-        for guard in ALL_GUARDS:
-            guard(path=fake)
+        expected_guard(path=fake)
