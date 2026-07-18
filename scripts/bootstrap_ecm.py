@@ -45,7 +45,8 @@ PLUGIN_KEY = "event-channel-managarr"
 SETTINGS_FILE = Path("/data/event_channel_managarr_settings.json")
 APPLY = os.environ.get("ECM_BOOTSTRAP_APPLY") == "1"
 
-# MUST match ecm_profiles.DAZN_GMT.source_name. Cross-checked by a unit test.
+# MUST match ecm_profiles.DAZN_GMT.source_name. (A cross-artifact drift test
+# for this is planned for a later task -- not present at this commit.)
 DAZN_SOURCE_NAME = "DAZN PPV Dummy (GMT)"
 DAZN_GROUP_ID = 1915
 DAZN_SLOT_REGEX = r"US: DAZN PPV \d+$"   # anchored: no partial-name capture
@@ -143,8 +144,15 @@ def restore_dazn_source():
 
 
 def rebind_dazn_channels(source):
-    if source is None:
-        return 0, 0, 0
+    """Report/rebind the DAZN slot channels matching DAZN_SLOT_REGEX.
+
+    source is None only in dry-run mode when the EPGSource row doesn't exist
+    yet (restore_dazn_source() always creates it before an APPLY run reaches
+    here). Query and count the targets in that case too -- an APPLY run would
+    create the source and bind every matching channel, so the dry-run report
+    must not read "0 targets" in exactly the fresh-box scenario this script
+    exists for.
+    """
     targets = list(
         Channel.objects.filter(channel_group_id=DAZN_GROUP_ID, name__regex=DAZN_SLOT_REGEX)
         .select_related("epg_data").order_by("id"))
@@ -152,10 +160,14 @@ def rebind_dazn_channels(source):
     would_bind, skipped_foreign = 0, 0
     for channel in targets:
         current_source_id = getattr(channel.epg_data, "epg_source_id", None)
-        if current_source_id is not None and current_source_id != source.id:
+        # source is None means the source row doesn't exist yet, so ANY
+        # existing binding is necessarily to some other source -- foreign.
+        is_foreign = current_source_id is not None and (
+            source is None or current_source_id != source.id)
+        if is_foreign:
             skipped_foreign += 1
             continue
-        if not APPLY:
+        if source is None or not APPLY:
             if channel.epg_data_id is None:
                 would_bind += 1
             continue
