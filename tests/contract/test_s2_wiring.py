@@ -118,3 +118,34 @@ def test_reroute_consults_the_reroutability_guard():
 def test_reroute_reaps_orphans_on_sources_it_touched():
     src = ast.get_source_segment(_source(), _fn("_reroute_claimed_channels"))
     assert "_reap_orphaned_epg_data" in src
+
+
+def test_reroute_calls_precede_attach_and_detach_calls():
+    """Reroute must run BEFORE attach/detach in each branch, not after.
+
+    This ordering was an implementation surprise: _run_managed_epg_pass has
+    four return statements (one bailout per branch), so the natural place for
+    a call meant to "finish" the pass landed at the TOP of each branch instead
+    of the end. A review confirmed the resulting order is not just harmless
+    but strictly better: reroute reads pre-pass state and moves a claimed
+    channel directly to its destination source; the NULL-only attach that
+    runs afterward re-queries fresh state and so skips a channel already
+    bound. Reversing the order would let the attach bind the channel to the
+    DEFAULT source first, and reroute would then immediately re-point it --
+    one wasted EPGData write (and orphan-reap) per reclaimed channel, every
+    cycle. Do not "fix" this back to reroute-last.
+    """
+    reroute_calls = sorted(_calls("_run_managed_epg_pass", "_reroute_claimed_channels"))
+    attach_calls = sorted(_calls("_run_managed_epg_pass", "_attach_managed_epg"))
+    detach_calls = sorted(_calls("_run_managed_epg_pass", "_detach_managed_epg"))
+
+    assert reroute_calls, "no _reroute_claimed_channels call found -- ordering check is vacuous"
+    assert attach_calls, "no _attach_managed_epg call found -- ordering check is vacuous"
+    assert detach_calls, "no _detach_managed_epg call found -- ordering check is vacuous"
+
+    assert max(reroute_calls) < min(attach_calls), (
+        "a _reroute_claimed_channels call sits after an _attach_managed_epg call; "
+        "reroute must run first so the later NULL-only attach observes fresh state")
+    assert max(reroute_calls) < min(detach_calls), (
+        "a _reroute_claimed_channels call sits after a _detach_managed_epg call; "
+        "reroute must run first so the later NULL-only attach observes fresh state")

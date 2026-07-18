@@ -2379,13 +2379,25 @@ class Plugin:
     def _reroute_claimed_channels(self, settings, logger, dry_run, enabled_channel_ids):
         """Move claimed, safe-to-move channels onto their profile's own EPGSource.
 
-        Runs at the end of BOTH of _run_managed_epg_pass's exits, so a Dry Run
-        previews exactly what an applied run will do.
+        Runs at the TOP of BOTH of _run_managed_epg_pass's branches, before that
+        branch's own attach and detach -- not after, despite how this might read
+        at first glance. It reads pre-pass state (the channel's *current*
+        epg_data/epg_source), and moves any claimed channel straight to its
+        destination profile source. The NULL-only attach that follows re-queries
+        Channel.objects fresh, so a channel this step already bound no longer
+        shows epg_data__isnull=True and is silently skipped by that attach --
+        no double-write, no race. The detach that follows is scoped to the
+        DEFAULT source and excludes every enabled channel outright, so a
+        rerouted (still-enabled) channel was never a detach candidate either way.
 
-        Why this ends the reclaim: when ECM hides an event-less slot,
-        auto_set_dummy_epg_on_hide nulls its epg_data; the next pass's NULL-only
-        attach binds it to the DEFAULT source; this step then moves it to the
-        profile its name claims -- in the same synchronous pass.
+        Going first also avoids a wasted write: when ECM hides an event-less
+        slot, auto_set_dummy_epg_on_hide nulls its epg_data, so the channel
+        looks NULL to this same pass. Running reroute after the attach would
+        let the NULL-only attach bind it to the DEFAULT source first, then
+        immediately re-point it to the claimed profile source on this step --
+        one throwaway EPGData row (and the orphan-reap that follows it) per
+        reclaimed channel, every cycle. Going first, the channel is written
+        exactly once.
 
         Safety:
           - only names in claimed_targets() are considered; unclaimed and
