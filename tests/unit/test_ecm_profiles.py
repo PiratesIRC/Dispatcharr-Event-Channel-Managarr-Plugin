@@ -156,3 +156,142 @@ def test_us_et_title_extracts_where_the_name_has_event_text():
     rx = ecm_profiles.compile_pattern(us.title_pattern)
     m = rx.search("PPV EVENT 07: MARS Late Models at Farmer City (7.17 7:30 PM ET)")
     assert m and m.group("title") == "MARS Late Models at Farmer City"
+
+
+# --- routing over the real corpus ----------------------------------------------
+
+def test_route_returns_a_bucket_per_profile_plus_unclaimed():
+    result = ecm_profiles.route(["PPV EVENT 01: Something"])
+    assert set(result) == {"dazn_gmt", "us_et", ecm_profiles.UNCLAIMED}
+
+
+def test_dazn_bucket_is_exactly_the_gmt_bearing_names():
+    """Ground truth is the NAME ITSELF, not a count. This subsumes any count
+    assertion and survives lineup churn."""
+    names = _fixture_names()
+    result = ecm_profiles.route(names)
+    assert set(result["dazn_gmt"]) == {n for n in names if "(GMT)" in n}
+
+
+def test_us_et_bucket_is_exactly_the_legacy_family():
+    """SET IDENTITY, not just the total. A count-only assertion would pass on a
+    different set of 104 names - precisely the blind spot this plan exists to close."""
+    names = _fixture_names()
+    result = ecm_profiles.route(names)
+    legacy = {n for n in names if n.startswith(("PPV EVENT", "LIVE EVENT"))}
+    assert set(result["us_et"]) == legacy
+
+
+def test_route_partitions_the_corpus_exactly_once():
+    names = _fixture_names()
+    result = ecm_profiles.route(names)
+    assert sum(len(v) for v in result.values()) == len(names)
+
+
+def test_no_dazn_name_leaks_into_us_et():
+    """The failure mode of both rejected design revisions."""
+    result = ecm_profiles.route(_fixture_names())
+    assert not [n for n in result["us_et"] if "(GMT)" in n]
+
+
+def test_idle_dazn_slots_are_unclaimed_not_us_et():
+    """'NO EVENT STREAMING NOW - | ... | US: DAZN PPV 50' contains 'PPV 50'. An
+    unanchored us_et selector claims it; the anchored one must not."""
+    result = ecm_profiles.route(_fixture_names())
+    assert not [n for n in result["us_et"] if n.startswith("NO EVENT STREAMING NOW")]
+
+
+def test_no_profile_selector_claims_another_familys_names():
+    """Generalizes the rejected 'se' profile: ANY selector broad enough to claim
+    the GMT family ahead of dazn_gmt re-creates the no-op. Name-agnostic, so it
+    still bites if someone adds the same greedy pattern under a different key."""
+    names = _fixture_names()
+    gmt = [n for n in names if "(GMT)" in n]
+    assert gmt, "fixture has no GMT names - this test would be vacuous"
+    for profile in ecm_profiles.PROFILES:
+        if profile.key == "dazn_gmt":
+            continue
+        rx = ecm_profiles.compile_pattern(profile.selector)
+        greedy = [n for n in gmt if rx and rx.search(n)]
+        assert not greedy, (
+            f"{profile.key}'s selector claims {len(greedy)} GMT names, e.g. {greedy[:2]}. "
+            f"Ordered ahead of dazn_gmt, dazn_gmt would route ZERO channels.")
+
+
+def test_fixture_era_counts_for_the_record():
+    """Counts against the COMMITTED FIXTURE (not live data), so lineup churn
+    cannot make this flap. If it fails, a selector changed - investigate, do not
+    edit the numbers."""
+    result = ecm_profiles.route(_fixture_names())
+    assert len(result["dazn_gmt"]) == 48
+    assert len(result["us_et"]) == 104
+    assert len(result[ecm_profiles.UNCLAIMED]) == 126
+
+
+# --- route() contract ----------------------------------------------------------
+
+def _mk(key, selector, is_default=False):
+    return ecm_profiles.Profile(
+        key=key, source_name=key, selector=selector, title_pattern=r"(?<title>.*)",
+        date_pattern="", time_pattern="", timezone="UTC", output_timezone="UTC",
+        program_duration_minutes=60, include_date=False, title_template="{title}",
+        upcoming_title_template="", ended_title_template="",
+        fallback_title_template="", fallback_description_template="",
+        is_default=is_default)
+
+
+def test_default_profile_is_evaluated_last_regardless_of_declaration_order():
+    greedy = _mk("greedy", r".*", is_default=True)
+    specific = _mk("specific", r"^SPECIAL")
+    result = ecm_profiles.route(["SPECIAL thing"], profiles=(greedy, specific))
+    assert result["specific"] == ["SPECIAL thing"]
+    assert result["greedy"] == []
+
+
+def test_non_default_profiles_are_evaluated_in_declaration_order():
+    first, second = _mk("first", r"FOO"), _mk("second", r"FOO")
+    assert ecm_profiles.route(["FOO"], profiles=(first, second))["first"] == ["FOO"]
+    assert ecm_profiles.route(["FOO"], profiles=(second, first))["second"] == ["FOO"]
+
+
+def test_route_rejects_duplicate_keys():
+    with pytest.raises(ValueError, match="duplicate profile keys"):
+        ecm_profiles.route(["x"], profiles=(_mk("dup", r"a"), _mk("dup", r"b")))
+
+
+def test_route_rejects_multiple_defaults():
+    with pytest.raises(ValueError, match="more than one default"):
+        ecm_profiles.route(["x"], profiles=(_mk("a", r"a", True), _mk("b", r"b", True)))
+
+
+def test_route_rejects_a_key_colliding_with_the_sentinel():
+    with pytest.raises(ValueError, match="sentinel"):
+        ecm_profiles.route(["x"], profiles=(_mk(ecm_profiles.UNCLAIMED, r"a"),))
+
+
+def test_route_with_uncompilable_selector_claims_nothing():
+    broken = _mk("broken", r"(?<unclosed")
+    default = next(p for p in ecm_profiles.PROFILES if p.is_default)
+    result = ecm_profiles.route(["PPV EVENT 01: X"], profiles=(broken, default))
+    assert result["broken"] == []
+    assert result["us_et"] == ["PPV EVENT 01: X"]
+
+
+def test_route_without_a_default_leaves_unmatched_names_unclaimed():
+    only = next(p for p in ecm_profiles.PROFILES if not p.is_default)
+    result = ecm_profiles.route(["nothing matches"], profiles=(only,))
+    assert result[ecm_profiles.UNCLAIMED] == ["nothing matches"]
+
+
+def test_route_on_empty_input_returns_empty_buckets():
+    result = ecm_profiles.route([])
+    assert all(v == [] for v in result.values())
+
+
+def test_bucket_order_follows_input_order():
+    """Observable by callers - the in-container gate slices [:5]."""
+    names = _fixture_names()
+    result = ecm_profiles.route(names)
+    for bucket in result.values():
+        members = set(bucket)
+        assert bucket == [n for n in names if n in members]
