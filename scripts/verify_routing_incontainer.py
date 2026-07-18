@@ -4,8 +4,15 @@
 Run INSIDE the container, as the dispatch user:
 
     docker cp Event-Channel-Managarr/ecm_profiles.py dispatcharr:/tmp/ecm_profiles.py
-    docker exec -i -u dispatch dispatcharr sh -c "cd /app && python3 manage.py shell" \
-        < scripts/verify_routing_incontainer.py
+    docker cp scripts/verify_routing_incontainer.py  dispatcharr:/tmp/verify_routing.py
+    docker exec -u dispatch dispatcharr sh -c "cd /app && python3 manage.py shell < /tmp/verify_routing.py"
+
+The redirection is performed by the CONTAINER's shell, inside the quoted sh -c
+string -- NOT by a host-side `<`. Windows PowerShell 5.1 cannot parse a `<` of
+its own ("The '<' operator is reserved for future use"), and because PowerShell
+parses a whole block before executing any of it, a stray `<` silently prevents
+the preceding docker cp calls from running too -- the failure then presents as
+a missing file, not a syntax error.
 
 WHAT IT PROVES
   1. route() over LIVE names satisfies churn-proof invariants (NOT frozen counts:

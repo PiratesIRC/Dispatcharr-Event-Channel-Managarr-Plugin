@@ -52,8 +52,9 @@ PLUGIN_KEY = "event-channel-managarr"
 SETTINGS_FILE = Path("/data/event_channel_managarr_settings.json")
 APPLY = os.environ.get("ECM_BOOTSTRAP_APPLY") == "1"
 
-# MUST match ecm_profiles.DAZN_GMT.source_name. (A cross-artifact drift test
-# for this is planned for a later task -- not present at this commit.)
+# MUST match ecm_profiles.DAZN_GMT.source_name. Cross-artifact drift is covered
+# by tests/unit/test_bootstrap_merge.py::test_bootstrap_and_profile_agree_on_the_dazn_source_name
+# and ::test_bootstrap_and_profile_agree_on_the_dazn_props.
 DAZN_SOURCE_NAME = "DAZN PPV Dummy (GMT)"
 DAZN_GROUP_ID = 1915
 DAZN_SLOT_REGEX = r"US: DAZN PPV \d+$"   # anchored: no partial-name capture
@@ -92,6 +93,29 @@ def load_template():
     return json.loads(raw)
 
 
+_MISSING = object()
+
+
+def _report_deltas(merged, existing):
+    """Print the keys a dry run would ADD vs. the keys it would OVERWRITE.
+
+    A key that already exists with a DIFFERENT value is a silent overwrite if
+    only "added" is reported -- exactly how a wrong committed value (e.g. a
+    hide_rules_priority that doesn't match live) could slip past review. Report
+    both lists so a changed value is never invisible in the dry-run output.
+    """
+    added = sorted(k for k in merged if k not in existing)
+    changed = sorted(
+        k for k, v in merged.items()
+        if existing.get(k, _MISSING) not in (_MISSING, v)
+    )
+    print(f"[bootstrap]   would add keys: {added}")
+    print(f"[bootstrap]   would CHANGE existing keys: {changed}")
+    if changed:
+        for k in changed:
+            print(f"[bootstrap]     {k}: {existing.get(k)!r} -> {merged.get(k)!r}")
+
+
 def restore_plugin_settings(template):
     if template is None:
         return "skipped"
@@ -100,12 +124,12 @@ def restore_plugin_settings(template):
         print(f"[bootstrap] ERROR: no PluginConfig row for {PLUGIN_KEY!r}. Run discovery first.")
         return "no-plugin-row"
 
-    merged, changed = merge_settings(cfg.settings or {}, template, os.environ)
+    existing = cfg.settings or {}
+    merged, changed = merge_settings(existing, template, os.environ)
     if not changed:
         return "unchanged"
     if not APPLY:
-        added = set(merged) - set(cfg.settings or {})
-        print(f"[bootstrap]   would add/update keys: {sorted(added)}")
+        _report_deltas(merged, existing)
         return "DRY-RUN would update"
     cfg.settings = merged
     cfg.save(update_fields=["settings"])
@@ -126,6 +150,7 @@ def mirror_settings_file(template):
     if not changed:
         return "unchanged"
     if not APPLY:
+        _report_deltas(merged, existing)
         return "DRY-RUN would update"
     SETTINGS_FILE.parent.mkdir(parents=True, exist_ok=True)
     SETTINGS_FILE.write_text(json.dumps(merged, indent=2), encoding="utf-8")
@@ -144,6 +169,9 @@ def restore_dazn_source():
     if source.custom_properties != DAZN_PROPS:
         if not APPLY:
             return source, "DRY-RUN would update props"
+        # Full replacement is INTENTIONAL: this script fully owns this source's
+        # custom_properties. Do not "improve" this into a dict merge -- a merge
+        # would let a stale field survive a DAZN_PROPS change and reintroduce drift.
         source.custom_properties = DAZN_PROPS
         source.save(update_fields=["custom_properties"])
         return source, "updated props"
