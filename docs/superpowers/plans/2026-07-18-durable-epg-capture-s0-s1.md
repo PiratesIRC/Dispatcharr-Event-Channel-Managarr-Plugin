@@ -579,9 +579,13 @@ file. Piping only this script via stdin leaves that import unresolvable and the
 run dies before doing anything.
 
     docker cp scripts/bootstrap_merge.py dispatcharr:/tmp/bootstrap_merge.py
+    docker cp scripts/bootstrap_ecm.py dispatcharr:/tmp/bootstrap_ecm.py
     $env:ECM_SETTINGS_JSON = (Get-Content config\\ecm_settings.template.json -Raw)
-    docker exec -i -u dispatch -e ECM_SETTINGS_JSON -e ECM_BOOTSTRAP_APPLY dispatcharr \\
-        sh -c "cd /app && python3 manage.py shell" < scripts/bootstrap_ecm.py
+    docker exec -u dispatch -e ECM_SETTINGS_JSON -e ECM_BOOTSTRAP_APPLY dispatcharr \\
+        sh -c "cd /app && python3 manage.py shell < /tmp/bootstrap_ecm.py"
+
+    (PowerShell 5.1 cannot parse a `<` redirection of its own -- "the '<' operator is
+    reserved for future use" -- so the CONTAINER's shell performs it instead.)
 
 DEFAULTS TO DRY RUN. Set $env:ECM_BOOTSTRAP_APPLY = "1" to actually write.
 
@@ -1874,14 +1878,22 @@ python -m py_compile scripts/verify_routing_incontainer.py && echo "SYNTAX OK"
 
 - [ ] **Step 4: Run the gate (POWERSHELL)**
 
+**PowerShell 5.1 CANNOT parse `<` redirection** — it errors with "The '<' operator is reserved
+for future use", and because PowerShell parses the whole block before executing any of it, a
+`<` anywhere silently prevents the *preceding* `docker cp` from running too. Copy the script
+in and let the CONTAINER's shell do the redirection:
+
 ```powershell
 docker cp Event-Channel-Managarr\ecm_profiles.py dispatcharr:/tmp/ecm_profiles.py
-$out = docker exec -i -u dispatch dispatcharr sh -c "cd /app && python3 manage.py shell" `
-    < scripts\verify_routing_incontainer.py
+docker cp scripts\verify_routing_incontainer.py dispatcharr:/tmp/verify_routing.py
+$out = docker exec -u dispatch dispatcharr sh -c "cd /app && python3 manage.py shell < /tmp/verify_routing.py"
 $out
 if ($out -notmatch 'ECM_GATE_RESULT=PASS') { throw "ECM GATE FAILED" }
 Write-Host "GATE PASSED"
 ```
+
+Confirm both `docker cp` calls actually succeeded before running the gate — see the parse-order
+note above.
 
 Expected: `GATE PASSED`, with five DAZN samples rendering extracted titles in local time (e.g. `Upcoming at 7/18 7:10 AM CDT: RWS: Chiabkard vs. Narak`).
 

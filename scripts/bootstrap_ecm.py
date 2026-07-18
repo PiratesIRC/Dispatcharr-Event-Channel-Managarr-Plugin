@@ -2,14 +2,21 @@
 
 Run INSIDE the container, AS THE DISPATCH USER.
 
-STEP 1 IS MANDATORY: this script imports bootstrap_merge, which is a SEPARATE
-file. Piping only this script via stdin leaves that import unresolvable and the
-run dies before doing anything.
+BOTH docker cp CALLS ARE MANDATORY: this script imports bootstrap_merge, which is
+a SEPARATE file. Without it the import is unresolvable and the run dies before
+doing anything.
 
     docker cp scripts/bootstrap_merge.py dispatcharr:/tmp/bootstrap_merge.py
+    docker cp scripts/bootstrap_ecm.py    dispatcharr:/tmp/bootstrap_ecm.py
     $env:ECM_SETTINGS_JSON = (Get-Content config\\ecm_settings.template.json -Raw)
-    docker exec -i -u dispatch -e ECM_SETTINGS_JSON -e ECM_BOOTSTRAP_APPLY dispatcharr \\
-        sh -c "cd /app && python3 manage.py shell" < scripts/bootstrap_ecm.py
+    docker exec -u dispatch -e ECM_SETTINGS_JSON -e ECM_BOOTSTRAP_APPLY dispatcharr \\
+        sh -c "cd /app && python3 manage.py shell < /tmp/bootstrap_ecm.py"
+
+The redirection is performed by the CONTAINER's shell, inside the quoted sh -c
+string. Windows PowerShell 5.1 cannot parse a `<` of its own ("The '<' operator
+is reserved for future use") -- and because PowerShell parses a whole block
+before executing any of it, a stray `<` silently prevents the preceding
+docker cp calls from running too. Verified during this slice's execution.
 
 DEFAULTS TO DRY RUN. Set $env:ECM_BOOTSTRAP_APPLY = "1" to actually write.
 
