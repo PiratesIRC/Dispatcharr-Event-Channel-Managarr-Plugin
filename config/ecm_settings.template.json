@@ -1,0 +1,19 @@
+{
+  "manage_dummy_epg": true,
+  "override_existing_epg": true,
+  "auto_set_dummy_epg_on_hide": true,
+  "dummy_epg_event_timezone": "America/New_York",
+  "dummy_epg_event_duration_hours": 4,
+  "dummy_epg_channel_format": "US",
+  "channel_profile_name": "REPLACE_ME_profile_name",
+  "channel_groups": "REPLACE_ME_comma_separated_group_names",
+  "hide_rules_priority": "[InactiveRegex],[BlankName],[WrongDayOfWeek],[NoEventPattern],[EmptyPlaceholder],[PastDate:0],[FutureDate:2],[UndatedAge:2],[ShortDescription],[ShortChannelName]",
+  "scheduled_times": "0400,1000,1100,1200",
+  "auto_rescan_on_m3u_refresh": true,
+  "past_date_grace_hours": 4,
+  "duplicate_strategy": "lowest_number",
+  "keep_duplicates": false,
+  "rate_limiting": "none",
+  "name_source": "Channel_Name",
+  "date_format": "Auto"
+}

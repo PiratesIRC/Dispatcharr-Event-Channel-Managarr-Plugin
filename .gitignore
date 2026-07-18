@@ -72,5 +72,8 @@ SCHEDULED_TASKS_GUIDE.md
 zip.cmd
 bump_version.py
 
-# Internal planning / design docs (not shipped to end users)
-docs/
+# Internal planning / design docs are TRACKED (un-ignored 2026-07-18).
+# They cannot reach end users regardless: release zips are built from the
+# INNER folder (git archive HEAD:Event-Channel-Managarr), so nothing at the
+# repo root is ever packaged. Versioning them is the point -- a design that
+# only exists in a scratch directory is knowledge waiting to be lost.
