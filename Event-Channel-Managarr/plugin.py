@@ -41,6 +41,7 @@ _PLUGIN_DIR = os.path.dirname(os.path.abspath(__file__))
 if _PLUGIN_DIR not in _sys.path:
     _sys.path.insert(0, _PLUGIN_DIR)
 import ecm_parsing
+import ecm_profiles
 
 # Backwards-compatible aliases: existing references to these names elsewhere in
 # plugin.py (e.g. the [PastDate] stop-time check) keep working, now backed by the
@@ -2245,6 +2246,121 @@ class Plugin:
             "upcoming_title_template": f"Upcoming at {date_ph} {{starttime}}{suffix}: {{title}}",
             "ended_title_template": f"Ended at {date_ph} {{endtime}}{suffix}: {{title}}",
         }
+
+    def _epg_binding_is_reroutable(self, channel):
+        """May this channel's EPG binding be moved to another source?
+
+        Only when it holds NOTHING, a dummy source, or a real source with no
+        programme in the next 24h.
+
+        A name claim alone is NOT sufficient. `Next:` and `(GMT)` are standard EPG
+        conventions, not DAZN-specific, so a claim can match a channel carrying a
+        legitimately populated real EPG on some other install. Moving that would
+        silently destroy a working guide. This mirrors the guard
+        _managed_override_ids already applies (bug-043).
+        """
+        from datetime import timedelta
+        from django.utils import timezone as djtz
+        from apps.epg.models import ProgramData
+
+        epg_data = channel.epg_data
+        if epg_data is None or epg_data.epg_source is None:
+            return True
+        if getattr(epg_data.epg_source, "source_type", None) == "dummy":
+            return True
+        now = djtz.now()
+        return not ProgramData.objects.filter(
+            epg_id=epg_data.id, start_time__lt=now + timedelta(hours=24),
+            end_time__gte=now).exists()
+
+    def _reap_orphaned_epg_data(self, source, logger):
+        """Delete attach-created EPGData rows on `source` that no channel references.
+
+        The existing reaper lives inside _detach_managed_epg, has exactly one call
+        site, and is always scoped to the default source -- so rows this slice
+        creates on a profile source would otherwise be unreapable by construction.
+        Live evidence that the gap is real: the DEFAULT source already carries 14
+        orphaned DAZN-named rows today.
+
+        The UUID-shaped tvg_id filter spares each source's own representative row.
+        """
+        from apps.epg.models import EPGData
+        try:
+            referenced = set(Channel.objects.filter(epg_data__epg_source=source)
+                             .values_list("epg_data_id", flat=True))
+            orphans = (EPGData.objects.filter(epg_source=source)
+                       .exclude(id__in=referenced)
+                       .filter(tvg_id__regex=r'^[0-9a-fA-F-]{36}$'))
+            count = orphans.count()
+            if count:
+                orphans.delete()
+                logger.info(f"{LOG_PREFIX} Reaped {count} orphaned EPGData row(s) "
+                            f"from {source.name!r}")
+            return count
+        except Exception as exc:
+            logger.warning(f"{LOG_PREFIX} Orphan reap failed for {source.name!r}: {exc}")
+            return 0
+
+    def _managed_props_for_profile(self, profile, settings):
+        """EPGSource.custom_properties payload for one non-default profile.
+
+        profile.timezone is the FIRST argument to resolve_output_timezone (the
+        SOURCE zone). Both parameters are plain strings, so transposing them raises
+        nothing and renders every time wrong.
+
+        This overwrites the profile's frozen title templates with a clock-computed
+        equivalent, so a stored template self-corrects at the CDT/CST boundary. An
+        adopted source's templates and its `managed_by` WILL be rewritten -- a
+        deliberate correction, not drift.
+        """
+        props = dict(ecm_profiles.profile_props(profile))
+        props["managed_by"] = "event-channel-managarr"
+        props.update(ecm_profiles.resolve_output_timezone(
+            profile.timezone,
+            self._get_system_timezone(settings),
+            settings.get("date_format", "Auto")))
+        return props
+
+    def _ensure_profile_source(self, profile, settings, logger):
+        """Get or create the dummy EPGSource for ONE non-default profile.
+
+        Called only when a channel actually claims this profile, so a source is
+        never created speculatively. Returns None on failure -- the caller then
+        leaves those channels alone, which is the pre-S2 behavior.
+        """
+        from apps.epg.models import EPGSource
+
+        desired = self._managed_props_for_profile(profile, settings)
+        try:
+            source, created = EPGSource.objects.get_or_create(
+                name=profile.source_name, source_type="dummy",
+                defaults={"custom_properties": desired, "is_active": True,
+                          "refresh_interval": 0})
+        except Exception as exc:
+            logger.warning(f"{LOG_PREFIX} Could not get/create EPG source "
+                           f"{profile.source_name!r}: {exc}")
+            return None
+
+        if created:
+            logger.info(f"{LOG_PREFIX} Created EPG source {profile.source_name!r}")
+            return source
+
+        # Refresh non-pattern keys only. Pattern keys are left alone: this slice
+        # does not own the user-customization question for an adopted source, and
+        # overwriting a UI-edited pattern is the issue-21 regression.
+        current = dict(source.custom_properties or {})
+        changed = False
+        for key, value in desired.items():
+            if key in ("title_pattern", "time_pattern", "date_pattern"):
+                continue
+            if current.get(key) != value:
+                current[key] = value
+                changed = True
+        if changed:
+            source.custom_properties = current
+            source.save(update_fields=["custom_properties"])
+            logger.info(f"{LOG_PREFIX} Refreshed EPG source {profile.source_name!r}")
+        return source
 
     def _get_or_create_managed_epg_source(self, settings, logger):
         """Create (if missing) or refresh the shared plugin-managed dummy EPGSource.
