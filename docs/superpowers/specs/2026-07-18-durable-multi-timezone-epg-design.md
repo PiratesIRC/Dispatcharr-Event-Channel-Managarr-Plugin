@@ -13,12 +13,21 @@ patterns plus a timezone stored on `EPGSource.custom_properties`. The renderer r
 Channel group `US: PPV` (id 1915, 278 channels) contains **four** distinct provider name
 families, not the two originally assumed:
 
+Measured breakdown of all 278 names (verified live 2026-07-18):
+
 | Family | Count | Date | Clock | Source TZ |
 |---|---|---|---|---|
-| Legacy `PPV EVENT NN:` / `LIVE EVENT NN -` | 104 | `7.17` (`M.D`) | `7:30 PM` 12h | **ET** |
-| DAZN `Next \| …` / `End \| …` | 48 | `2026-07-18` ISO | `14:15` 24h | **GMT/UTC** |
-| UFC/Boxing `start:`/`stop:` timestamps | 71 | ISO in-name | ISO / `19:00` / `6PM` | unknown |
-| Idle slots + headers (`NO EVENT STREAMING NOW`, `#### … ####`) | 55 | — | — | n/a |
+| Legacy `PPV EVENT NN:` (70) + `LIVE EVENT NN -` (34) | **104** | `7.17` (`M.D`) | `7:30 PM` 12h | **ET** |
+| DAZN `Next \| …` / `End \| …` | **48** | `2026-07-18` ISO | `14:15` 24h | **GMT/UTC** |
+| `UFC …` | **55** | ISO `start:`/`stop:` in-name | ISO | unknown |
+| `Boxing …` | **8** | — | `19:00` / `6PM` | unknown |
+| `US: BOX OFFICE` / `US: TNT SPORTS BOX OFFICE` (HD/SD/HEVC/4K) | **8** | — | — | n/a — permanent static channels |
+| Idle slots `NO EVENT STREAMING NOW …` | **51** | — | — | n/a |
+| Headers `#### … ####` | **4** | — | — | n/a |
+
+Only **36** of the 278 actually contain `start:`. An earlier revision of this table folded the 8
+permanent BOX OFFICE channels into a "UFC/Boxing" family of 71; they are unrelated static
+channels and are counted separately above.
 
 Because the renderer's timezone is source-scoped, **one dummy EPGSource cannot serve
 families with different source timezones.** No amount of pattern work changes this; the
@@ -89,8 +98,14 @@ provider's actual naming reality diffable over time.
 Idempotent, one command, restores a rebuilt box:
 
 ```
-docker exec -i dispatcharr sh -c "cd /app && python3 manage.py shell" < scripts/bootstrap_ecm.py
+docker exec -i -u dispatch dispatcharr sh -c "cd /app && python3 manage.py shell" < scripts/bootstrap_ecm.py
 ```
+
+The `-u dispatch` is mandatory, not optional. On a rebuilt box the settings file does not yet
+exist, so `write_text` CREATES it — as `root:root` if run as root, which silently blocks the
+uWSGI workers from ever updating settings again (the E3 trap). `/data` already carries 20+
+root-owned JSON files from past sessions as evidence. The script must also refuse to run as
+root rather than relying on the caller remembering the flag.
 
 It must:
 1. Recreate `EPGSource` `DAZN PPV Dummy (GMT)` with its `custom_properties` verbatim
@@ -201,10 +216,27 @@ zero legitimate loss.
 ### 3.5 Expected routing outcome (the S1 gate)
 
 ```
-dazn_gmt   48
-us_et     104
-unclaimed 126   (51 idle DAZN + 71 UFC/Boxing + 4 headers)
+dazn_gmt   48    exactly the (GMT)-bearing names
+us_et     104    exactly the PPV EVENT (70) + LIVE EVENT (34) family -- set identity verified,
+                 not merely the same total
+unclaimed 126    51 idle + 55 UFC + 8 Boxing + 8 BOX OFFICE + 4 headers
 ```
+
+**Counts are the gate only against the COMMITTED FIXTURE, never against live data.** Event
+lineups are renamed in place daily, so a live count assertion goes red for reasons unrelated to
+the routing model, and an engineer who edits the number twice has destroyed the gate. Against
+live data the assertions are invariants that survive churn: `dazn_gmt` is non-empty and equals
+exactly the `(GMT)`-bearing names, no `(GMT)` name appears in `us_et`, and the buckets partition
+the input.
+
+### 3.6 Consequence for the deferred slices — read before starting S2/S3
+
+The 51 idle slots (`NO EVENT STREAMING NOW …`) are bound to source 42 today but route
+**unclaimed**. If S3 ever sets `keep_ids = routed[profile.key]`, those 51 are detached and the
+orphan reaper deletes their `EPGData` rows. They are the persistent rows the provider renames
+in place, so they cycle back into active service — meaning the deletion is not a one-off. Any
+per-profile detach must treat "bound to a managed source but unclaimed by every profile" as a
+distinct case, not as "detach it."
 
 ## 4. Testing
 
