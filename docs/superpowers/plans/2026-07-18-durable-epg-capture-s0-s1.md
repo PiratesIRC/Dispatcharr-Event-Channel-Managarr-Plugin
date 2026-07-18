@@ -415,7 +415,7 @@ Expected: FAIL — `test_template_exists`: missing file.
 - [ ] **Step 4: Run to verify pass (BASH)**
 
 Run: `python -m pytest tests/contract/test_config_template.py -v`
-Expected: 9 passed.
+Expected: 8 passed.
 
 - [ ] **Step 5: Commit (BASH)**
 
