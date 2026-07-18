@@ -229,6 +229,40 @@ live data the assertions are invariants that survive churn: `dazn_gmt` is non-em
 exactly the `(GMT)`-bearing names, no `(GMT)` name appears in `us_et`, and the buckets partition
 the input.
 
+### 3.5.1 CONFIRMED IN PRODUCTION: ECM reclaims the hand-made source's channels
+
+**This is no longer a prediction. It happened on 2026-07-18, hours after the config was built.**
+
+| UTC | Event |
+|---|---|
+| 16:22 | Source 42 created; 99 DAZN slots bound; local times rendering correctly |
+| 20:48 | S1's in-container gate verified **99 still bound**, source 42 untouched |
+| 21:12 | M3U account 6 refreshed → ECM's `auto_rescan_on_m3u_refresh` fired |
+| 21:16 | **0** bound to source 42; 77 on source 18; raw `(GMT)` names back in the guide |
+
+**The mechanism, which an earlier analysis got wrong.** That analysis claimed source 42 "coexists
+safely with ECM" for three verified reasons — attach is NULL-only (`plugin.py:2669`), detach is
+scoped to its own source (`plugin.py:2534`), and `override_existing_epg` excludes
+`source_type == 'dummy'` (`plugin.py:2592-2593`). **All three are individually TRUE, and the
+conclusion was still wrong**, because none of them is the path that fires:
+
+1. ECM hides an event-less DAZN slot (they cycle to `NO EVENT STREAMING NOW` constantly).
+2. `auto_set_dummy_epg_on_hide` — default **True**, and misnamed: it REMOVES `epg_data`
+   (`plugin.py:3094-3102`, bug-052) — nulls the channel's link.
+3. The channel is now `epg_data IS NULL`, so on the next pass ECM's NULL-only attach claims it
+   for **source 18**, the ET source.
+
+The channel never needed to be "stolen" from source 42. ECM nulls the link first, then legitimately
+adopts an orphan. **Any future analysis of whether something coexists with ECM must consider the
+hide → auto-remove-EPG → re-attach cycle, not only the attach/detach/override predicates.**
+
+Trigger frequency: `auto_rescan_on_m3u_refresh` is ON and fires once per M3U account per refresh,
+plus the `scheduled_times` passes (`0400,1000,1100,1200`). Observed survival of a manual repoint:
+**about five hours.**
+
+**Consequence for S2:** the hand-made source is not merely un-versioned, it is actively transient.
+Manual repointing is a stopgap measured in hours, not a fallback. S2 is the only durable fix.
+
 ### 3.6 Consequence for the deferred slices — read before starting S2/S3
 
 The 51 idle slots (`NO EVENT STREAMING NOW …`) are bound to source 42 today but route
@@ -279,7 +313,16 @@ stop — do not proceed to any later slice.
 | 1. Rebuild / DB loss | **Yes** | `bootstrap_ecm.py` + committed template |
 | 4. Losing the knowledge | **Yes** | This doc + the 278-name fixture + the `(GMT)`=UTC evidence |
 | 3. Format change | **Partly** | The fixture and simulation detect drift when run; no automatic alarm (deferred to S4) |
-| 2. Ongoing drift | **No** | Needs multi-source routing in the plugin (S2/S3). New DAZN slots require a bootstrap re-run |
+| 2. Ongoing drift | **No** | Needs multi-source routing in the plugin (S2/S3). **Confirmed in production the same day — see §3.5.1. Not a theoretical gap.** |
+
+**Status after execution (2026-07-18):** S0+S1 landed on branch `feat/durable-epg-capture`,
+17 commits, 158 tests, `plugin.py` and `plugin.json` untouched. The in-container gate passed
+against live data (`dazn_gmt 48 / us_et 104 / unclaimed 126`, `us_et` set-identical to the real
+legacy family). Backups taken before each container-touching step.
+
+**Caveat on mode 1:** `bootstrap_ecm.py` has been syntax-checked and its merge logic unit-tested,
+but the script itself has NEVER BEEN EXECUTED end-to-end. It is the disaster-recovery path, so a
+real dry run against the live box is worth doing before it is ever needed in anger.
 
 This is an honest three-of-four. The bootstrap script is not merely a deliverable — it is the
 rollback net that makes every later slice safe to attempt.

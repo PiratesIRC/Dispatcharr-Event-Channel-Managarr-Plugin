@@ -8,6 +8,16 @@
 
 **Tech Stack:** Python 3 (stdlib only for the shipped module), pytest, Django ORM via `manage.py shell` for in-container verification only, Docker, Windows PowerShell 5.1.
 
+> **STATUS: EXECUTED 2026-07-18.** All 9 tasks complete on branch `feat/durable-epg-capture`
+> (17 commits, 158 tests green, `plugin.py`/`plugin.json` untouched). The S1 gate PASSED against
+> live data. Execution surfaced five defects in this plan, all corrected here: the PowerShell 5.1
+> `<`-redirection failure (Task 8 Step 4, and it silently skips the preceding `docker cp` too), a
+> `test_fixture_has_no_duplicates` that asserted a false invariant (the corpus genuinely holds 11
+> duplicated names — 278 rows, 243 distinct), an off-by-one expected test count in Task 3, a
+> `hide_rules_priority` in the Task 3 template that was invented rather than captured from live,
+> and a dry-run report blind to overwrites. Reviews also caught a credential-plaintext-logging
+> regression introduced while fixing the last of those. See `.superpowers/sdd/progress.md`.
+
 > **rev 2 — revised after four adversarial reviews of rev 1.** Rev 1 had five Critical defects: an extraction command that cannot run on this box and whose natural fix silently corrupts the fixture; two committed artifacts disagreeing about which channels `dazn_gmt` owns; a bootstrap script that destroys working config; and a gate that could print `GATE PASSED` while `dazn_gmt` claimed zero channels. Sections marked **[REV1 WAS WRONG]** correct a specific error.
 
 ## Global Constraints
