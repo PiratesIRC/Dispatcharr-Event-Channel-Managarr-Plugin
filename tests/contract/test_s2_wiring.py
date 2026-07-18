@@ -75,3 +75,46 @@ def test_props_builder_passes_the_profiles_own_timezone_FIRST():
     call = re.search(r"resolve_output_timezone\(\s*([^,]+),", src)
     assert call and "profile.timezone" in call.group(1), \
         "profile.timezone must be the FIRST argument (the source zone)"
+
+
+def _calls(fn_name, method):
+    fn = _fn(fn_name)
+    return [n.lineno for n in ast.walk(fn)
+            if isinstance(n, ast.Call) and isinstance(n.func, ast.Attribute)
+            and n.func.attr == method]
+
+
+def test_reroute_is_called_from_BOTH_exits():
+    """_run_managed_epg_pass returns twice -- the dry-run branch exits early. A
+    single call site before the final return is unreachable during a Dry Run, so
+    the preview would never report a reroute the applied run performs."""
+    fn = _fn("_run_managed_epg_pass")
+    returns = sorted(n.lineno for n in ast.walk(fn) if isinstance(n, ast.Return))
+    calls = sorted(_calls("_run_managed_epg_pass", "_reroute_claimed_channels"))
+    assert len(returns) >= 2, "expected an early dry-run return plus a final return"
+    assert len(calls) >= 2, "reroute must be called on BOTH exit paths"
+    assert any(c < returns[0] for c in calls), "no reroute call before the early return"
+    assert any(c > returns[0] for c in calls), "no reroute call on the applied path"
+
+
+def test_reroute_result_is_not_folded_into_attached_ids():
+    """attached_ids feeds the CSV header, the per-row managed_epg_assigned flag and
+    the scan notification. Merging reroutes into it makes a channel that merely
+    MOVED indistinguishable from one that had no EPG at all."""
+    fn = _fn("_run_managed_epg_pass")
+    for node in ast.walk(fn):
+        if isinstance(node, ast.Assign) and any(
+                isinstance(t, ast.Name) and t.id == "attached_ids" for t in node.targets):
+            seg = ast.dump(node.value)
+            assert "rerouted" not in seg, "rerouted ids must not be merged into attached_ids"
+
+
+def test_reroute_consults_the_reroutability_guard():
+    src = ast.get_source_segment(_source(), _fn("_reroute_claimed_channels"))
+    assert "_epg_binding_is_reroutable" in src, \
+        "reroute must never move a channel off a populated real EPG"
+
+
+def test_reroute_reaps_orphans_on_sources_it_touched():
+    src = ast.get_source_segment(_source(), _fn("_reroute_claimed_channels"))
+    assert "_reap_orphaned_epg_data" in src

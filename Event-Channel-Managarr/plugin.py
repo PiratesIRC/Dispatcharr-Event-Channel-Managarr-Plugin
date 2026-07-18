@@ -2376,6 +2376,94 @@ class Plugin:
                 return None
         return source
 
+    def _reroute_claimed_channels(self, settings, logger, dry_run, enabled_channel_ids):
+        """Move claimed, safe-to-move channels onto their profile's own EPGSource.
+
+        Runs at the end of BOTH of _run_managed_epg_pass's exits, so a Dry Run
+        previews exactly what an applied run will do.
+
+        Why this ends the reclaim: when ECM hides an event-less slot,
+        auto_set_dummy_epg_on_hide nulls its epg_data; the next pass's NULL-only
+        attach binds it to the DEFAULT source; this step then moves it to the
+        profile its name claims -- in the same synchronous pass.
+
+        Safety:
+          - only names in claimed_targets() are considered; unclaimed and
+            default-family names are absent from that mapping entirely
+          - _epg_binding_is_reroutable vetoes any channel holding a populated real
+            EPG, so a name collision cannot destroy a working guide
+          - it never detaches; a channel is only ever re-pointed
+          - an uncreatable profile source leaves those channels where they are
+
+        Returns the ids moved, or under dry_run the ids that WOULD move.
+        """
+        from apps.epg.models import EPGData, EPGSource
+
+        profiles = ecm_profiles.build_profiles(settings)
+        if not any(not p.is_default for p in profiles) or not enabled_channel_ids:
+            return []
+
+        candidates = list(Channel.objects.filter(id__in=enabled_channel_ids)
+                          .select_related("epg_data", "epg_data__epg_source"))
+        claims = ecm_profiles.claimed_targets([c.name for c in candidates], profiles)
+        if not claims:
+            return []
+
+        by_key = {p.key: p for p in profiles}
+        moved = []
+        for key in sorted(set(claims.values())):
+            profile = by_key.get(key)
+            if profile is None:
+                continue
+            group = [c for c in candidates
+                     if claims.get(c.name) == key and self._epg_binding_is_reroutable(c, logger=logger)]
+            if not group:
+                continue
+
+            if dry_run:
+                existing = EPGSource.objects.filter(
+                    name=profile.source_name, source_type="dummy").first()
+                # Sentinel, not None: a never-bound channel has epg_source_id None,
+                # and None == None would silently under-report it as "no move".
+                target_id = existing.id if existing else object()
+                moved.extend(c.id for c in group
+                             if getattr(c.epg_data, "epg_source_id", None) != target_id)
+                continue
+
+            source = self._ensure_profile_source(profile, settings, logger)
+            if source is None:
+                logger.warning(f"{LOG_PREFIX} No source for profile {key!r}; "
+                               f"leaving {len(group)} channel(s) in place")
+                continue
+
+            to_move = [c for c in group
+                       if getattr(c.epg_data, "epg_source_id", None) != source.id]
+            if not to_move:
+                continue
+
+            vacated = {c.epg_data.epg_source for c in to_move
+                       if c.epg_data and c.epg_data.epg_source}
+            with transaction.atomic():
+                for channel in to_move:
+                    epg_data, _ = EPGData.objects.get_or_create(
+                        tvg_id=str(channel.uuid), epg_source=source,
+                        defaults={"name": channel.name})
+                    if epg_data.name != channel.name:
+                        epg_data.name = channel.name
+                        epg_data.save(update_fields=["name"])
+                    channel.epg_data = epg_data
+                Channel.objects.bulk_update(to_move, ["epg_data"])
+            moved.extend(c.id for c in to_move)
+            logger.info(f"{LOG_PREFIX} Rerouted {len(to_move)} channel(s) to "
+                        f"{profile.source_name!r}")
+
+            # Rows left behind on the source(s) we moved off are orphaned NOW; the
+            # existing reaper is scoped to the default source and already ran this
+            # pass, so reap them here.
+            for vacated_source in vacated | {source}:
+                self._reap_orphaned_epg_data(vacated_source, logger)
+        return moved
+
     def _get_or_create_managed_epg_source(self, settings, logger):
         """Create (if missing) or refresh the shared plugin-managed dummy EPGSource.
 
@@ -2757,6 +2845,16 @@ class Plugin:
         toggle_on = self._get_bool_setting(settings, "manage_dummy_epg", False)
 
         if dry_run:
+            # Runs before the managed_source lookup below: the reroute step never
+            # depends on the DEFAULT "ECM Managed Dummy" source, so it must still
+            # preview even when that source doesn't exist yet (i.e. even on the
+            # early "managed_source is None" exit a few lines down).
+            rerouted_ids = self._reroute_claimed_channels(
+                settings, logger, True, enabled_channel_ids if toggle_on else [])
+            if rerouted_ids:
+                logger.info(f"{LOG_PREFIX} [dry-run] Reroute would move "
+                            f"{len(rerouted_ids)} channel(s)")
+
             # Pure preview — locate existing source only; do not create.
             managed_source = EPGSource.objects.filter(
                 name="ECM Managed Dummy", source_type="dummy"
@@ -2784,6 +2882,14 @@ class Plugin:
             return attached_ids, detached_ids
 
         # Applied run — may create/refresh the source row.
+        # Same reasoning as the dry-run call above: runs before the managed_source
+        # lookup so it still fires even on the applied branch's own early
+        # "managed_source is None" exit a few lines down.
+        rerouted_ids = self._reroute_claimed_channels(
+            settings, logger, False, enabled_channel_ids if toggle_on else [])
+        if rerouted_ids:
+            logger.info(f"{LOG_PREFIX} Reroute moved {len(rerouted_ids)} channel(s)")
+
         if toggle_on:
             managed_source = self._get_or_create_managed_epg_source(settings, logger)
         else:
