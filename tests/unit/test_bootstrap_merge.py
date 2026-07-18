@@ -57,3 +57,55 @@ def test_existing_credentials_are_never_dropped():
     merged, _ = merge_settings({"dispatcharr_password": "keep-me"},
                                {"manage_dummy_epg": True}, {})
     assert merged["dispatcharr_password"] == "keep-me"
+
+
+def _bootstrap_source():
+    """Extract DAZN_SOURCE_NAME and DAZN_PROPS from bootstrap_ecm.py via ast.
+
+    Parsed, never imported: bootstrap_ecm.py imports Django models at module
+    scope and cannot be imported outside the container.
+    """
+    import ast
+    src = (Path(__file__).resolve().parents[2] / "scripts" / "bootstrap_ecm.py").read_text(
+        encoding="utf-8")
+    tree = ast.parse(src)
+    found = {}
+    for node in tree.body:
+        if isinstance(node, ast.Assign) and len(node.targets) == 1 \
+                and isinstance(node.targets[0], ast.Name) \
+                and node.targets[0].id in ("DAZN_SOURCE_NAME", "DAZN_PROPS"):
+            found[node.targets[0].id] = ast.literal_eval(node.value)
+    assert "DAZN_SOURCE_NAME" in found, "DAZN_SOURCE_NAME not found in bootstrap_ecm.py"
+    assert "DAZN_PROPS" in found, "DAZN_PROPS not found in bootstrap_ecm.py"
+    return found
+
+
+def test_bootstrap_and_profile_agree_on_the_dazn_source_name():
+    """Two committed artifacts describing ONE source. If they disagree, a restore
+    and the profile model create two different EPGSource rows for the same
+    profile - and rev 1 shipped exactly that divergence."""
+    import ecm_profiles
+    dazn = next(p for p in ecm_profiles.PROFILES if p.key == "dazn_gmt")
+    name = _bootstrap_source()["DAZN_SOURCE_NAME"]
+    assert name == dazn.source_name, (
+        f"bootstrap says {name!r}, profile says {dazn.source_name!r}")
+
+
+def test_bootstrap_and_profile_agree_on_the_dazn_props():
+    """The name is not the only thing that can drift. If the restore script writes
+    different custom_properties than the profile models, the restored source
+    renders differently from what the tests verified -- silently.
+
+    bootstrap additionally carries `managed_by` (source identity, which the
+    profile model does not own); every OTHER key must match exactly.
+    """
+    import ecm_profiles
+    dazn = next(p for p in ecm_profiles.PROFILES if p.key == "dazn_gmt")
+    boot = dict(_bootstrap_source()["DAZN_PROPS"])
+    boot.pop("managed_by", None)
+    assert boot == ecm_profiles.profile_props(dazn), (
+        "bootstrap DAZN_PROPS and profile_props(dazn_gmt) have diverged:\n"
+        f"  only in bootstrap: {sorted(set(boot) - set(ecm_profiles.profile_props(dazn)))}\n"
+        f"  only in profile:   {sorted(set(ecm_profiles.profile_props(dazn)) - set(boot))}\n"
+        f"  differing values:  "
+        f"{sorted(k for k in set(boot) & set(ecm_profiles.profile_props(dazn)) if boot[k] != ecm_profiles.profile_props(dazn)[k])}")
