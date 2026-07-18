@@ -23,7 +23,7 @@ CONSTRAINTS
 """
 
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 try:  # Dispatcharr ships `regex`; dev machines generally do not.
     import regex as _re  # accepts (?<name>) natively
@@ -220,3 +220,82 @@ US_ET = Profile(
 )
 
 PROFILES = (DAZN_GMT, US_ET)
+
+
+# --- settings and timezone resolution (pure) ------------------------------------
+
+DEFAULT_EVENT_TIMEZONE = "US/Eastern"
+DEFAULT_DURATION_HOURS = 3
+
+def resolve_output_timezone(source_tz_name, system_tz_name, date_format="Auto"):
+    """Decide output_timezone and title templates for ONE source.
+
+    Pure: the caller supplies both zone NAMES. Extracted so it can be asserted --
+    in the single-source code this logic had no test, and a wrong result is a
+    silent multi-hour error in every rendered title. NOTE the parameter order is
+    (source, system): transposing them raises nothing.
+    """
+    from datetime import datetime
+    # Local, not module-level: a module-level dict literal is mutable state per
+    # tests/contract/test_module_purity.py's check_no_module_level_mutable_state.
+    _PLAIN_TEMPLATES = {
+        "title_template": "{title}",
+        "upcoming_title_template": "Upcoming at {starttime}: {title}",
+        "ended_title_template": "Ended at {endtime}: {title}",
+    }
+    try:
+        from zoneinfo import ZoneInfo
+    except ImportError:                       # pragma: no cover
+        return dict(_PLAIN_TEMPLATES, output_timezone="")
+
+    source_tz_name = str(source_tz_name or "").strip()
+    system_tz_name = str(system_tz_name or "").strip()
+    if not source_tz_name:
+        return dict(_PLAIN_TEMPLATES, output_timezone="")
+    try:
+        ZoneInfo(source_tz_name)
+    except Exception:
+        return dict(_PLAIN_TEMPLATES, output_timezone="")
+    if not system_tz_name or source_tz_name == system_tz_name:
+        return dict(_PLAIN_TEMPLATES, output_timezone=source_tz_name)
+    try:
+        display = ZoneInfo(system_tz_name)
+    except Exception:
+        return dict(_PLAIN_TEMPLATES, output_timezone=source_tz_name)
+
+    abbrev = datetime.now(display).strftime("%Z")
+    suffix = f" {abbrev}" if abbrev.isalpha() else ""
+    date_ph = "{day}/{month}" if str(date_format).strip().upper() == "EU" else "{month}/{day}"
+    return {
+        "output_timezone": system_tz_name,
+        "title_template": "{title}",
+        "upcoming_title_template": f"Upcoming at {date_ph} {{starttime}}{suffix}: {{title}}",
+        "ended_title_template": f"Ended at {date_ph} {{endtime}}{suffix}: {{title}}",
+    }
+
+
+def _resolve_duration_minutes(raw):
+    try:
+        hours = int(str(raw).strip())
+    except (ValueError, TypeError, AttributeError):
+        hours = DEFAULT_DURATION_HOURS
+    return (hours if hours > 0 else DEFAULT_DURATION_HOURS) * 60
+
+
+def build_profiles(settings):
+    """Resolve the frozen PROFILES template against live plugin settings.
+
+    PROFILES carries provider FACTS. This resolves only what a USER controls, so
+    existing settings keep working. dazn_gmt's timezone is never resolved from
+    settings -- it is UTC because the provider stamps (GMT) in the name.
+
+    dummy_epg_channel_format is deliberately NOT handled: this plan does not touch
+    the default source, so the existing code keeps owning the US/SE choice.
+    """
+    settings = settings or {}
+    duration = _resolve_duration_minutes(settings.get("dummy_epg_event_duration_hours"))
+    tz = str(settings.get("dummy_epg_event_timezone") or "").strip() or DEFAULT_EVENT_TIMEZONE
+    return tuple(
+        replace(p, timezone=tz, program_duration_minutes=duration) if p.is_default
+        else replace(p, program_duration_minutes=duration)
+        for p in PROFILES)
