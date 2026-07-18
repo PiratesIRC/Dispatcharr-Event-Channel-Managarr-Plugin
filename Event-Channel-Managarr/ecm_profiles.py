@@ -299,3 +299,23 @@ def build_profiles(settings):
         replace(p, timezone=tz, program_duration_minutes=duration) if p.is_default
         else replace(p, program_duration_minutes=duration)
         for p in PROFILES)
+
+
+def claimed_targets(names, profiles):
+    """Map name -> NON-DEFAULT profile key, for names positively claimed.
+
+    Names claimed by no selector, or only by the default, are ABSENT. That absence
+    is the safety property: a caller can act only on names present here.
+
+    A claim is NECESSARY BUT NOT SUFFICIENT to move a channel. It says nothing
+    about whether the channel currently holds a real, populated EPG -- the caller
+    must check that separately.
+    """
+    claims = {}
+    compiled = [(p, compile_pattern(p.selector)) for p in profiles if not p.is_default]
+    for name in names:
+        for profile, selector in compiled:
+            if selector is not None and selector.search(name):
+                claims[name] = profile.key
+                break
+    return claims
