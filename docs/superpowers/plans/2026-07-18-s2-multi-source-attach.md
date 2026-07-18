@@ -1,54 +1,66 @@
-# S2 — Multi-Source Managed Dummy EPG (attach-only) Implementation Plan — rev 2
+# S2 — Claimed-Channel Reroute Implementation Plan (rewritten)
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Let ECM manage more than one dummy EPGSource and attach each channel to the one whose source timezone matches its provider family — ending the reclaim that un-fixes the DAZN guide every few hours.
+**Goal:** End the reclaim that un-fixes the DAZN guide every few hours, by moving channels whose names positively claim a non-default timezone profile onto that profile's own dummy EPGSource.
 
-**Architecture:** `ecm_profiles` resolves the frozen profile template against live settings and decides each channel's target source. `plugin.py` gains lazy per-profile source creation and a routed attach. **Detach is not modified in any way** — not the formula, not the scope, not the number of sources it runs against.
+**Architecture:** `_run_managed_epg_pass` is **not modified**. It runs exactly as it does today — one managed source, unchanged attach, unchanged detach. A new additive step runs after it and moves only channels with a *positive* non-default claim. Everything else in the system is untouched.
 
 **Tech Stack:** Python 3, Django ORM (inside Dispatcharr), pytest, Docker.
 
-> **rev 2 — revised after four adversarial reviews of rev 1, which had FIVE Criticals**, three of which would first have executed on production. Sections marked **[REV1 WAS WRONG]** correct a specific error. Read those first if you reviewed rev 1.
+> **This is a rewrite, not a revision.** Two earlier drafts both restructured `_run_managed_epg_pass` and both were rejected — four adversarial reviews found five Criticals between them, three of which would first have executed on production. That function is where every trap lives: the detach scope, the duplicated dry-run branch, the `keep_ids` contract, the SE resync. This plan does not go near it.
+
+## Why this shape
+
+Measured on live data, the set of channels with a positive non-default claim is **46 of 278**. Of those, **0 are currently on the wrong source and 0 are unbound** — so the step is a verifiable no-op the moment it deploys, and only ever acts once a channel has actually been misplaced.
+
+Four of the five Criticals from the earlier drafts become *impossible* rather than fixed:
+
+| Earlier Critical | Why it cannot occur here |
+|---|---|
+| Looping detach over new sources would null 94 hidden channels' `epg_data` | The detach code path is untouched and never sees a non-default source |
+| Unclaimed idle slots shuttled between ET and GMT every lifecycle transition | Stickiness is free: unclaimed names are not in the claim set, so nothing moves them |
+| Every marketplace install gained an empty, CDT-hardcoded DAZN source | Creation is inherently lazy — no positive claim, no source |
+| Extracting `_stock_patterns` produced a guaranteed `NameError` | No extraction is needed; non-default sources use their own props builder |
+
+**It still fixes the reclaim, in the same pass.** Channel hidden → `auto_set_dummy_epg_on_hide` nulls `epg_data` → next pass's NULL-only attach puts it on the default source → the reroute step moves it to GMT because its name now claims GMT.
 
 ## Global Constraints
 
-- **`ecm_profiles.py` stays STDLIB-ONLY**; only non-stdlib import is `regex` inside `try/except ImportError`. No module-level mutable state.
-- **DETACH IS UNTOUCHED.** Do not change `keep_ids`. Do not change `_detach_managed_epg`. **Do not loop detach over the new sources** — see the scope section below; rev 1 did this and it would have nulled 94 live channels.
+- **`Event-Channel-Managarr/plugin.py`: the ONLY permitted change is adding new methods plus ONE call site at the end of `_run_managed_epg_pass`.** Do not modify `_attach_managed_epg`, `_detach_managed_epg`, `_managed_override_ids`, `_get_or_create_managed_epg_source`, `_localized_template_props`, the dry-run branch, or `keep_ids`. If a task appears to need one of these, STOP and report BLOCKED.
+- **`ecm_profiles.py` stays STDLIB-ONLY** (only `regex` inside `try/except ImportError`), no module-level mutable state.
 - Patterns are STORED in JS named-group form `(?<name>)` (issue #21).
-- Commit trailer: `Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>`. Commit messages via Bash heredoc + `git commit -F`.
-- PowerShell 5.1 **cannot parse `<` redirection** and parses a whole block before executing, so a stray `<` also silently skips preceding `docker cp` lines. Put redirection inside the container's `sh -c`.
+- Commit trailer `Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>`; messages via Bash heredoc + `git commit -F`.
+- PowerShell 5.1 **cannot parse `<` redirection** and parses whole blocks before executing, so a stray `<` also silently skips preceding `docker cp` lines. Put redirection inside the container's `sh -c`.
 - `docker exec` writing under `/data` uses `-u dispatch`.
-- Repo: `C:\Users\User\docker\Event-Channel-Managarr`. Branch `feat/s2-multi-source` (exists).
-- Code map (authoritative line numbers): `.superpowers/sdd/s2-code-map.md`.
+- Repo `C:\Users\User\docker\Event-Channel-Managarr`, branch `feat/s2-multi-source`. Code map: `.superpowers/sdd/s2-code-map.md`.
 
-## What rev 1 got wrong — the four scope changes
+## Verified ground truth (live, 2026-07-18)
 
-**[REV1 WAS WRONG] 1. "Detach is frozen" was false.** Rev 1 froze the `keep_ids` *formula* and then looped detach over every managed source. Adopting source 42 makes 99 previously-untouched channels detachable for the first time; **94 of them are currently hidden**, so the first applied pass would null their `epg_data` in one sweep. A contract test that greps a string literal cannot see runtime scope.
-→ **S2 does not touch detach at all.** Teardown and the detach call stay exactly as they are, against the default source only. With `manage_dummy_epg` off, non-default sources' channels stay bound — a documented S2 limitation, and the *additive* failure. Multi-source teardown is S3's job, which is where the spec put it.
-
-**[REV1 WAS WRONG] 2. Unclaimed names caused a move.** Rev 1 routed every unclaimed name to the default source. An idle DAZN slot (`NO EVENT STREAMING NOW …`, no `(GMT)`) would therefore be pulled from the GMT source to the ET source, and pushed back when it went live — re-creating the reclaim through the fix itself.
-→ **Unclaimed names are STICKY.** Only a *positive* claim moves a channel. A channel already on a managed source whose name matches nothing stays where it is. Unclaimed channels that are *unbound* attach to the default, preserving today's behavior for them.
-
-**[REV1 WAS WRONG] 3. Sources were created unconditionally.** Every marketplace install would get an empty `DAZN PPV Dummy (GMT)` row carrying a hardcoded `CDT` literal, with no cleanup path.
-→ **Non-default sources are created lazily**, only when a live channel actually routes to them.
-
-**[REV1 WAS WRONG] 4. `_stock_patterns` was unimplementable and the union was incomplete.** The block rev 1 said to "move verbatim" closes over six locals (`us_title_pattern`, `se_title_pattern`, …) — a guaranteed `NameError` on every applied pass, uncaught by any gate. Separately, the union contains no DAZN-derived entries, so the adopted DAZN source's patterns read as "user-customized" and can **never** auto-upgrade — the exact freeze the mechanism exists to prevent, reproduced for the new family.
-→ Sources current defaults from `ecm_profiles`, keeps historical literals local, treats **a profile's own current pattern as stock**, and is covered by a test that CALLS it.
+```
+group 1915 "US: PPV"                278 channels
+positive dazn_gmt claims             46      <- the entire blast radius
+  of those, enabled                   5
+  currently on the wrong source       0      <- deploy is a no-op
+  currently unbound                   0
+EPGSource 18 "ECM Managed Dummy"     72 channels
+EPGSource 42 "DAZN PPV Dummy (GMT)"  99 channels, managed_by=manual-dazn-gmt
+```
 
 ## File Structure
 
 | Path | Responsibility | Change |
 |---|---|---|
-| `Event-Channel-Managarr/ecm_profiles.py` | `build_profiles`, `resolve_output_timezone`, `attach_targets` (sticky) | Modify |
-| `Event-Channel-Managarr/plugin.py` | Import; lazy per-profile sources; routed attach. **No detach changes.** | Modify |
-| `tests/unit/test_ecm_profiles.py` | `build_profiles`, `resolve_output_timezone` | Modify |
-| `tests/unit/test_s2_routing_semantics.py` | Sticky attach-target semantics | Create |
-| `tests/contract/test_s2_plugin_wiring.py` | AST-structural guards (not string greps) | Create |
-| `scripts/verify_s2_incontainer.py` | In-container gate incl. a **rolled-back real pass** | Create |
+| `Event-Channel-Managarr/ecm_profiles.py` | `build_profiles`, `resolve_output_timezone`, `claimed_targets` | Modify |
+| `Event-Channel-Managarr/plugin.py` | Three new methods + one call site. Nothing else. | Modify |
+| `tests/unit/test_ecm_profiles.py` | Settings resolution, timezone resolution | Modify |
+| `tests/unit/test_claimed_targets.py` | Positive-claim semantics | Create |
+| `tests/contract/test_s2_wiring.py` | Runtime + AST guards, incl. "nothing else changed" | Create |
+| `scripts/verify_s2_incontainer.py` | Gate: rolled-back real pass against live data | Create |
 
 ---
 
-## Task 1: `build_profiles` + `resolve_output_timezone`
+## Task 1: Settings and timezone resolution (pure)
 
 **Files:** Modify `Event-Channel-Managarr/ecm_profiles.py`, `tests/unit/test_ecm_profiles.py`
 
@@ -56,7 +68,7 @@
 - `build_profiles(settings) -> tuple[Profile, ...]`
 - `resolve_output_timezone(source_tz_name, system_tz_name, date_format="Auto") -> dict`
 
-**[REV1 WAS WRONG]** rev 1 changed `_localized_template_props`'s signature but added **no test for the new branch** — the silent 5-hour error it exists to prevent had zero automated assertion anywhere. Extracting the pure computation makes it unit-testable.
+**Why:** `US_ET.timezone` is hardcoded but ECM ships a user-facing `dummy_epg_event_timezone`. And the output-timezone computation is what decides whether a GMT source displays 17:00 Central or 22:00 — in the single-source code that logic has **no test at all**.
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -83,40 +95,30 @@ def test_build_profiles_falls_back_on_a_bad_duration(bad):
     assert next(p for p in built if p.is_default).program_duration_minutes > 0
 
 
-def test_build_profiles_se_format_swaps_the_default_pattern_trio():
-    built = ecm_profiles.build_profiles({"dummy_epg_channel_format": "SE"})
-    default = next(p for p in built if p.is_default)
-    assert default.title_pattern == ecm_profiles.SE_TITLE_PATTERN
-    assert default.key == "se"
+def test_build_profiles_always_has_exactly_one_default():
+    for fmt in ("US", "SE", "", "garbage"):
+        built = ecm_profiles.build_profiles({"dummy_epg_channel_format": fmt})
+        assert sum(1 for p in built if p.is_default) == 1, fmt
 
 
-def test_build_profiles_se_default_still_leaves_dazn_its_family():
-    """SE's selector is pipe-based and every DAZN name is pipe-delimited. As the
-    DEFAULT it is evaluated last, so dazn_gmt keeps its own family. As a
-    NON-default ahead of dazn_gmt it would claim 99 and leave dazn_gmt with ZERO."""
-    built = ecm_profiles.build_profiles({"dummy_epg_channel_format": "SE"})
-    names = _fixture_names()
-    assert set(ecm_profiles.route(names, profiles=built)["dazn_gmt"]) == \
-        {n for n in names if "(GMT)" in n}
-
-
-@pytest.mark.parametrize("fmt", ["US", "SE", "", "garbage"])
-def test_build_profiles_output_is_always_routable(fmt):
-    built = ecm_profiles.build_profiles({"dummy_epg_channel_format": fmt})
-    assert sum(1 for p in built if p.is_default) == 1
-    ecm_profiles.route(["PPV EVENT 01: X"], profiles=built)   # must not raise
+def test_build_profiles_preserves_the_dazn_selector_and_patterns():
+    """Settings resolve user preferences only. The provider FACTS -- selector and
+    pattern trio -- must survive untouched or routing changes shape."""
+    built = ecm_profiles.build_profiles({"dummy_epg_event_timezone": "Asia/Tokyo"})
+    dazn = next(p for p in built if p.key == "dazn_gmt")
+    assert dazn.selector == ecm_profiles.DAZN_GMT.selector
+    assert dazn.title_pattern == ecm_profiles.DAZN_GMT.title_pattern
 
 
 # --- resolve_output_timezone --------------------------------------------------
 
 def test_resolve_output_timezone_converts_and_labels():
-    """THE assertion S2's timezone plumbing exists for. A GMT source displayed in
-    Chicago must carry output_timezone=America/Chicago and a real abbreviation --
-    if it inherits the ET source's config instead, every DAZN time is 5h wrong."""
+    """THE assertion this plumbing exists for. A GMT source displayed in Chicago
+    must carry output_timezone=America/Chicago -- if it inherits the ET source's
+    config instead, every DAZN time renders five hours wrong."""
     got = ecm_profiles.resolve_output_timezone("UTC", "America/Chicago")
     assert got["output_timezone"] == "America/Chicago"
     assert "{starttime}" in got["upcoming_title_template"]
-    assert got["upcoming_title_template"].rstrip().endswith(": {title}")
 
 
 def test_resolve_output_timezone_same_zone_uses_plain_templates():
@@ -125,17 +127,11 @@ def test_resolve_output_timezone_same_zone_uses_plain_templates():
     assert got["upcoming_title_template"] == "Upcoming at {starttime}: {title}"
 
 
-def test_resolve_output_timezone_blank_source_never_blanks_output():
-    """Branch that produced output_timezone='' in the single-source code. A blank
-    output_timezone makes the renderer emit the SOURCE's local time unconverted."""
-    got = ecm_profiles.resolve_output_timezone("", "America/Chicago")
-    assert got["output_timezone"] in ("", "America/Chicago")
-    assert set(got) == {"output_timezone", "title_template",
-                        "upcoming_title_template", "ended_title_template"}
-
-
-def test_resolve_output_timezone_bad_zone_degrades_without_raising():
-    got = ecm_profiles.resolve_output_timezone("Not/AZone", "America/Chicago")
+@pytest.mark.parametrize("src,sys_tz", [("", "America/Chicago"),
+                                        ("Not/AZone", "America/Chicago"),
+                                        ("UTC", "Not/AZone")])
+def test_resolve_output_timezone_degrades_without_raising(src, sys_tz):
+    got = ecm_profiles.resolve_output_timezone(src, sys_tz)
     assert set(got) == {"output_timezone", "title_template",
                         "upcoming_title_template", "ended_title_template"}
 
@@ -152,7 +148,7 @@ Expected: FAIL — `AttributeError: module 'ecm_profiles' has no attribute 'buil
 
 - [ ] **Step 3: Implement**
 
-Change the dataclasses import at the top of `ecm_profiles.py`:
+Change the dataclasses import at the top of `ecm_profiles.py` to:
 ```python
 from dataclasses import dataclass, replace
 ```
@@ -160,14 +156,6 @@ from dataclasses import dataclass, replace
 Append to `ecm_profiles.py`:
 
 ```python
-SE_TITLE_PATTERN = r"\|\s*(?<title>[^|]+?)\s*\|"
-SE_TIME_PATTERN = r"(?<hour>\d{1,2}):(?<minute>\d{2})"
-SE_DATE_PATTERN = (
-    r"\b(?:Mon|Tue|Wed|Thu|Fri|Sat|Sun)\s+"
-    r"(?<day>\d{1,2})\s+"
-    r"(?<month>Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)\b"
-)
-
 DEFAULT_EVENT_TIMEZONE = "US/Eastern"
 DEFAULT_DURATION_HOURS = 3
 
@@ -179,19 +167,18 @@ _PLAIN_TEMPLATES = {
 
 
 def resolve_output_timezone(source_tz_name, system_tz_name, date_format="Auto"):
-    """Decide output_timezone and the title templates for ONE source.
+    """Decide output_timezone and title templates for ONE source.
 
-    Pure: the caller supplies both zone NAMES; this never reads settings or the
-    ORM. Extracted so the behavior can be asserted in a unit test -- a wrong
-    result here is a silent multi-hour error in every rendered programme title,
-    and in the single-source code it had no test at all.
+    Pure: the caller supplies both zone NAMES; this reads no settings and no ORM.
+    Extracted so it can be asserted -- in the single-source code this logic had no
+    test, and a wrong result is a silent multi-hour error in every rendered title.
 
-    Returns the same 4 keys on every path so callers can .update() blindly.
+    Returns the same four keys on every path so callers can .update() blindly.
     """
-    from datetime import datetime           # stdlib, function-local (purity rule)
+    from datetime import datetime            # stdlib, function-local (purity rule)
     try:
         from zoneinfo import ZoneInfo
-    except ImportError:                      # pragma: no cover
+    except ImportError:                       # pragma: no cover
         return dict(_PLAIN_TEMPLATES, output_timezone="")
 
     source_tz_name = str(source_tz_name or "").strip()
@@ -233,29 +220,28 @@ def _resolve_duration_minutes(raw):
 def build_profiles(settings):
     """Resolve the frozen PROFILES template against live plugin settings.
 
-    PROFILES carries provider FACTS (selectors, patterns, dazn_gmt's UTC). This
-    resolves what a USER controls, which must keep working exactly as it did
-    under the single-source code:
+    PROFILES carries provider FACTS (selectors, pattern trios, dazn_gmt's UTC).
+    This resolves only what a USER controls, so existing settings keep working:
         dummy_epg_event_timezone       -> the DEFAULT profile's source timezone
         dummy_epg_event_duration_hours -> every profile's block length
-        dummy_epg_channel_format=SE    -> swaps the DEFAULT's pattern trio
+
+    dazn_gmt's timezone is NEVER resolved from settings -- it is UTC because the
+    provider stamps (GMT) in the channel name.
+
+    NOTE: dummy_epg_channel_format (US/SE) is deliberately NOT handled here. This
+    plan does not touch the default source, so the existing single-source code
+    continues to own the US/SE pattern choice exactly as it does today.
     """
     settings = settings or {}
     duration = _resolve_duration_minutes(settings.get("dummy_epg_event_duration_hours"))
     tz = str(settings.get("dummy_epg_event_timezone") or "").strip() or DEFAULT_EVENT_TIMEZONE
-    is_se = str(settings.get("dummy_epg_channel_format") or "").strip().upper() == "SE"
 
     out = []
     for profile in PROFILES:
-        if not profile.is_default:
-            out.append(replace(profile, program_duration_minutes=duration))
-        elif is_se:
-            out.append(replace(
-                profile, key="se", title_pattern=SE_TITLE_PATTERN,
-                time_pattern=SE_TIME_PATTERN, date_pattern=SE_DATE_PATTERN,
-                selector=r"\|", timezone=tz, program_duration_minutes=duration))
-        else:
+        if profile.is_default:
             out.append(replace(profile, timezone=tz, program_duration_minutes=duration))
+        else:
+            out.append(replace(profile, program_duration_minutes=duration))
     return tuple(out)
 ```
 
@@ -267,6 +253,7 @@ Expected: all pass. `datetime`/`zoneinfo` are stdlib and imported inside the fun
 - [ ] **Step 5: Commit**
 
 ```bash
+cd /c/Users/User/docker/Event-Channel-Managarr
 git add Event-Channel-Managarr/ecm_profiles.py tests/unit/test_ecm_profiles.py
 git commit -F /tmp/s2_t1.txt
 ```
@@ -274,45 +261,44 @@ git commit -F /tmp/s2_t1.txt
 feat: build_profiles and resolve_output_timezone
 
 build_profiles resolves the frozen template against live settings so the existing
-dummy_epg_event_timezone, _duration_hours and _channel_format keep governing the
-default profile exactly as they did under the single-source code. dazn_gmt's UTC
-is never resolved from settings -- it is a fact about the provider's data.
+dummy_epg_event_timezone and _duration_hours keep governing the default profile.
+dazn_gmt's UTC is never resolved from settings -- it is a fact about the data.
+
+dummy_epg_channel_format is deliberately NOT handled: this plan does not touch the
+default source, so the existing single-source code keeps owning the US/SE choice.
 
 resolve_output_timezone extracts the output-timezone/template computation as a
-pure function so it can be asserted. In the single-source code this logic had no
-test at all, and a wrong result is a silent multi-hour error in every rendered
-programme title.
+pure function so it can be asserted. In the single-source code it had no test at
+all, and a wrong result is a silent multi-hour error in every rendered title.
 
 Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
 ```
 
 ---
 
-## Task 2: Sticky attach targets
+## Task 2: Positive-claim semantics
 
-**Files:** Modify `Event-Channel-Managarr/ecm_profiles.py`, create `tests/unit/test_s2_routing_semantics.py`
+**Files:** Modify `Event-Channel-Managarr/ecm_profiles.py`, create `tests/unit/test_claimed_targets.py`
 
 **Interfaces produced:**
-- `attach_targets(names, profiles, current_by_name=None) -> dict[str, str]`
+- `claimed_targets(names, profiles) -> dict[str, str]` — name → NON-DEFAULT profile key, for names a non-default selector positively claims. Names claimed by nothing, or claimed only by the default, are **absent** from the mapping.
 
-**[REV1 WAS WRONG]** rev 1 sent every unclaimed name to the default source. On live data that pulls idle DAZN slots off the GMT source onto ET, and pushes them back when they go live — the reclaim, re-created by the fix. **Only a positive claim moves a channel.**
+**Why absence matters:** absence is what makes the reroute step safe. A name not in this dict is never moved by anything in S2, so unclaimed and default-family channels are untouchable by construction. Stickiness is not a rule to implement — it is the absence of a rule.
 
 - [ ] **Step 1: Write the failing tests**
 
 ```python
-# tests/unit/test_s2_routing_semantics.py
-"""Attach-target semantics.
+# tests/unit/test_claimed_targets.py
+"""Positive-claim semantics.
 
-Two rules, both load-bearing:
+claimed_targets returns ONLY names a non-default selector positively claims.
+Everything else is ABSENT, and absence is the safety property: the reroute step
+can only ever move a name present in this mapping, so unclaimed names and
+default-family names cannot be moved by S2 at all.
 
-1. A name no selector claims does NOT cause a move. If the channel already sits on
-   a managed source it stays there ("sticky"). Without this, an idle DAZN slot
-   (NO EVENT STREAMING NOW..., no "(GMT)") is pulled to the ET source and pushed
-   back when it goes live -- the exact reclaim S2 exists to end, re-created by S2.
-
-2. A name no selector claims that is NOT already managed attaches to the DEFAULT,
-   reproducing the single-source behavior where every eligible channel was managed
-   regardless of whether a pattern matched (unmatched names render the fallback).
+Two earlier drafts made unclaimed names route to the default, which shuttled idle
+DAZN slots between sources on every lifecycle transition -- re-creating the reclaim
+through the fix. Absence removes that possibility rather than guarding against it.
 """
 
 from pathlib import Path
@@ -332,190 +318,161 @@ def _profiles():
     return ecm_profiles.build_profiles({})
 
 
-def test_unbound_unclaimed_names_target_the_default():
-    profiles = _profiles()
-    default = next(p.key for p in profiles if p.is_default)
-    targets = ecm_profiles.attach_targets(["NO EVENT STREAMING NOW - | US: DAZN PPV 50"],
-                                          profiles, current_by_name={})
-    assert targets["NO EVENT STREAMING NOW - | US: DAZN PPV 50"] == default
-
-
-def test_unclaimed_name_already_on_a_source_STAYS_there():
-    """THE STICKY RULE. Rev 1 moved this channel to the default and back on every
-    lifecycle transition."""
-    name = "NO EVENT STREAMING NOW - | 8K EXCLUSIVE | US: DAZN PPV 50"
-    targets = ecm_profiles.attach_targets([name], _profiles(),
-                                          current_by_name={name: "dazn_gmt"})
-    assert targets[name] == "dazn_gmt"
-
-
-def test_a_positive_claim_always_wins_over_stickiness():
-    """A GMT-tagged name sitting on the ET source MUST move -- that is the repoint
-    S2 exists to perform."""
-    name = "Next | Foo vs Bar | League | 2026-07-18 | 14:15 (GMT) | US: DAZN PPV 9"
-    targets = ecm_profiles.attach_targets([name], _profiles(),
-                                          current_by_name={name: "us_et"})
-    assert targets[name] == "dazn_gmt"
-
-
-def test_every_name_gets_a_target():
+def test_gmt_names_are_claimed_by_dazn():
     names = _names()
-    targets = ecm_profiles.attach_targets(names, _profiles(), current_by_name={})
-    assert set(targets) == set(names) and all(targets.values())
+    claims = ecm_profiles.claimed_targets(names, _profiles())
+    assert all(claims.get(n) == "dazn_gmt" for n in names if "(GMT)" in n)
 
 
-def test_claimed_gmt_names_target_dazn():
+def test_unclaimed_names_are_absent_not_defaulted():
+    """THE safety property. An idle slot must not appear at all."""
+    idle = "NO EVENT STREAMING NOW - | 8K EXCLUSIVE | US: DAZN PPV 50"
+    assert idle not in ecm_profiles.claimed_targets([idle], _profiles())
+
+
+def test_default_family_names_are_absent():
+    """A legacy PPV EVENT name is claimed only by the default profile, so S2 must
+    never move it -- the existing single-source code owns those channels."""
+    legacy = "PPV EVENT 07: MARS Late Models at Farmer City (7.17 7:30 PM ET)"
+    assert legacy not in ecm_profiles.claimed_targets([legacy], _profiles())
+
+
+def test_no_default_key_ever_appears_as_a_value():
+    claims = ecm_profiles.claimed_targets(_names(), _profiles())
+    default_key = next(p.key for p in _profiles() if p.is_default)
+    assert default_key not in set(claims.values())
+
+
+def test_claim_count_on_the_real_corpus():
+    """46 of 278 -- the entire blast radius of the reroute step. Measured live."""
+    claims = ecm_profiles.claimed_targets(_names(), _profiles())
+    assert len(claims) == 46
+    assert set(claims.values()) == {"dazn_gmt"}
+
+
+def test_claims_are_a_subset_of_the_corpus():
     names = _names()
-    targets = ecm_profiles.attach_targets(names, _profiles(), current_by_name={})
-    assert all(targets[n] == "dazn_gmt" for n in names if "(GMT)" in n)
+    assert set(ecm_profiles.claimed_targets(names, _profiles())) <= set(names)
 
 
-def test_target_counts_on_the_real_corpus_when_nothing_is_bound():
-    names = _names()
-    targets = ecm_profiles.attach_targets(names, _profiles(), current_by_name={})
-    counts = {}
-    for k in targets.values():
-        counts[k] = counts.get(k, 0) + 1
-    assert counts == {"dazn_gmt": 48, "us_et": 230}
+def test_empty_input_yields_no_claims():
+    assert ecm_profiles.claimed_targets([], _profiles()) == {}
 
 
-def test_stickiness_does_not_invent_a_profile():
-    """A stale binding to a profile that no longer exists must fall back, not
-    produce a target nothing can satisfy."""
-    name = "NO EVENT STREAMING NOW - | US: DAZN PPV 50"
-    profiles = _profiles()
-    default = next(p.key for p in profiles if p.is_default)
-    targets = ecm_profiles.attach_targets([name], profiles,
-                                          current_by_name={name: "removed_profile"})
-    assert targets[name] == default
+def test_profiles_without_a_non_default_yield_no_claims():
+    """With only a default profile there is nothing S2 can move -- the step must
+    become a no-op, not raise."""
+    only_default = tuple(p for p in _profiles() if p.is_default)
+    assert ecm_profiles.claimed_targets(_names(), only_default) == {}
 
 
-def test_attach_targets_requires_a_default_profile():
-    only = tuple(p for p in _profiles() if not p.is_default)
-    with pytest.raises(ValueError, match="default"):
-        ecm_profiles.attach_targets(["x"], only, current_by_name={})
-
-
-def test_no_enabled_name_should_be_unclaimed_is_detectable():
-    """Guard for a real hazard: ECM's hide-rule engine and the profile selectors
-    are two independent regex systems. If the hide rules SHOW a DAZN event whose
-    name the selector does not claim, that channel renders ET-interpreted times.
-    unclaimed_names() lets the caller alarm on exactly that."""
-    names = _names()
-    unclaimed = ecm_profiles.unclaimed_names(names, _profiles())
-    assert isinstance(unclaimed, set)
-    assert not (unclaimed & {n for n in names if "(GMT)" in n})
+def test_a_broken_selector_claims_nothing_rather_than_raising():
+    broken = ecm_profiles.Profile(
+        key="broken", source_name="B", selector=r"(?<unclosed",
+        title_pattern="", date_pattern="", time_pattern="",
+        timezone="UTC", output_timezone="UTC", program_duration_minutes=60,
+        include_date=False, title_template="{title}",
+        upcoming_title_template="", ended_title_template="",
+        fallback_title_template="", fallback_description_template="",
+        is_default=False)
+    default = next(p for p in _profiles() if p.is_default)
+    assert ecm_profiles.claimed_targets(["anything"], (broken, default)) == {}
 ```
 
 - [ ] **Step 2: Run to verify it fails**
 
-Run: `python -m pytest tests/unit/test_s2_routing_semantics.py -v`
-Expected: FAIL — no attribute `attach_targets`.
+Run: `python -m pytest tests/unit/test_claimed_targets.py -v`
+Expected: FAIL — no attribute `claimed_targets`.
 
 - [ ] **Step 3: Implement**
 
 Append to `ecm_profiles.py`:
 
 ```python
-def unclaimed_names(names, profiles):
-    """Names no profile SELECTOR claims. Exposed so callers can alarm on an
-    enabled channel landing here -- ECM's hide rules and these selectors are
-    independent regex systems and can disagree about whether an event is live."""
-    return set(route(names, profiles=profiles)[UNCLAIMED])
+def claimed_targets(names, profiles):
+    """Map name -> NON-DEFAULT profile key, for names positively claimed.
 
+    Names claimed by no selector, or only by the default profile, are ABSENT from
+    the result. That absence is the safety property: a caller can only act on
+    names present here, so unclaimed and default-family channels cannot be moved.
 
-def attach_targets(names, profiles, current_by_name=None):
-    """Map each channel NAME to the profile key whose source should hold it.
-
-    `current_by_name` maps name -> the profile key of the source the channel is
-    CURRENTLY on (omit or pass {} for unbound channels).
-
-    Rules:
-      - a positive selector claim always wins; that is the repoint S2 performs
-      - an unclaimed name that is already on a known managed profile STAYS there
-        (sticky) -- moving it would shuttle idle slots between sources
-      - an unclaimed name that is unbound (or on an unknown profile) goes to the
-        default, reproducing the single-source behavior
-
-    Raises ValueError without a default profile: an unclaimed unbound name would
-    otherwise have no home, and silently dropping it blanks a live guide.
+    Non-default profiles are tried in declaration order; the first to claim wins.
+    A profile whose selector will not compile claims nothing rather than raising.
     """
-    default = next((p for p in profiles if p.is_default), None)
-    if default is None:
-        raise ValueError("attach_targets requires exactly one default profile")
-
-    valid = {p.key for p in profiles}
-    current_by_name = current_by_name or {}
-    routed = route(names, profiles=profiles)
-
-    targets = {}
-    for key, bucket in routed.items():
-        for name in bucket:
-            if key != UNCLAIMED:
-                targets[name] = key                       # positive claim wins
-                continue
-            held = current_by_name.get(name)
-            targets[name] = held if held in valid else default.key
-    return targets
+    claims = {}
+    compiled = [(p, compile_pattern(p.selector))
+                for p in profiles if not p.is_default]
+    for name in names:
+        for profile, selector in compiled:
+            if selector is not None and selector.search(name):
+                claims[name] = profile.key
+                break
+    return claims
 ```
 
 - [ ] **Step 4: Run**
 
 Run: `python -m pytest tests/ -q`
-Expected: all pass.
+Expected: all pass, including `test_claim_count_on_the_real_corpus` at 46.
 
 - [ ] **Step 5: Commit**
 
 ```bash
-git add Event-Channel-Managarr/ecm_profiles.py tests/unit/test_s2_routing_semantics.py
+git add Event-Channel-Managarr/ecm_profiles.py tests/unit/test_claimed_targets.py
 git commit -F /tmp/s2_t2.txt
 ```
 ```
-feat: sticky attach targets -- only a positive claim moves a channel
+feat: claimed_targets -- positive non-default claims only
 
-An earlier draft sent every unclaimed name to the default source. On live data
-that pulls idle DAZN slots (NO EVENT STREAMING NOW..., no "(GMT)") off the GMT
-source onto the ET source, and pushes them back when they go live -- the exact
-reclaim S2 exists to end, re-created by S2 itself.
+Returns only names a non-default selector positively claims; everything else is
+ABSENT. Absence is the safety property: the reroute step can act only on names
+present here, so unclaimed names and default-family channels cannot be moved by
+S2 at all.
 
-Now: a positive selector claim always wins, an unclaimed name already on a managed
-source stays put, and an unclaimed UNBOUND name goes to the default (preserving
-the single-source behavior where every eligible channel was managed regardless of
-whether a pattern matched).
+Two earlier drafts routed unclaimed names to the default, which shuttled idle DAZN
+slots between sources on every lifecycle transition -- re-creating the reclaim
+through the fix for the reclaim. Absence removes the possibility instead of
+guarding against it.
 
-unclaimed_names() is exposed so the in-container gate can alarm when an ENABLED
-channel lands unclaimed -- ECM's hide rules and these selectors are independent
-regex systems and can disagree about whether an event is live.
+Measured on the real corpus: 46 of 278 names claimed. That is the entire blast
+radius of this slice.
 
 Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
 ```
 
 ---
 
-## Task 3: `_stock_patterns` — extractable, profile-aware, and actually called by a test
+## Task 3: Lazy source provisioning for one profile
 
-**Files:** Modify `Event-Channel-Managarr/plugin.py`, create `tests/contract/test_s2_plugin_wiring.py`
+**Files:** Modify `Event-Channel-Managarr/plugin.py`, create `tests/contract/test_s2_wiring.py`
 
-**[REV1 WAS WRONG] twice.** (a) The block rev 1 said to move verbatim closes over six locals — a guaranteed `NameError` on every applied pass, and rev 1's AST-only tests would have passed on the broken version. (b) The union has no DAZN-derived entries, so the adopted DAZN source's patterns read as user-customized and can never auto-upgrade.
+**Interfaces produced:**
+- `_managed_props_for_profile(self, profile, settings) -> dict`
+- `_ensure_profile_source(self, profile, settings, logger) -> EPGSource | None`
+
+**Why one profile at a time:** the caller only ever needs a source for a profile that actually claimed a channel. There is no "create them all" path, so an install with no DAZN content never gains a DAZN source.
 
 - [ ] **Step 1: Add the import**
 
-At `plugin.py` line 44, below `import ecm_parsing`:
+At `plugin.py` line 44, directly below `import ecm_parsing`:
 ```python
 import ecm_profiles
 ```
 
-- [ ] **Step 2: Write the failing test — it must CALL the method**
+- [ ] **Step 2: Write the failing tests**
 
 ```python
-# tests/contract/test_s2_plugin_wiring.py
-"""Structural + runtime guards for S2's plugin.py wiring.
+# tests/contract/test_s2_wiring.py
+"""Guards for S2's plugin.py wiring.
 
 plugin.py imports Django at module scope and cannot be imported outside the
-container, so structure is checked with ast. But a purely structural test cannot
-catch a NameError, so _stock_patterns -- which an earlier draft extracted in a way
-that closed over six locals it no longer had -- is exercised by RUNNING it with a
-stub self, not by grepping for its name.
+container, so structure is checked with ast. Where a structural check would be
+too weak, the method is COMPILED OUT of plugin.py and CALLED with a stub -- an
+earlier draft shipped an extraction that raised NameError on every run, and
+grep-style tests passed on it.
+
+The most important tests here are the NEGATIVE ones: this slice's entire safety
+argument is that it does not modify the existing pass.
 """
 
 import ast
@@ -536,238 +493,113 @@ def _source():
     return PLUGIN_PY.read_text(encoding="utf-8")
 
 
-def _tree():
-    return ast.parse(_source(), filename=str(PLUGIN_PY))
-
-
 def _fn(name):
-    return next((n for n in ast.walk(_tree())
+    return next((n for n in ast.walk(ast.parse(_source()))
                  if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))
                  and n.name == name), None)
-
-
-def _extract_callable(name):
-    """Compile ONE method out of plugin.py and bind it to a stub, so it can be
-    executed without importing Django."""
-    src = _source()
-    tree = ast.parse(src)
-    node = next(n for n in ast.walk(tree)
-                if isinstance(n, ast.FunctionDef) and n.name == name)
-    module = ast.Module(body=[node], type_ignores=[])
-    ast.fix_missing_locations(module)
-    ns = {"ecm_profiles": ecm_profiles, "re": re}
-    exec(compile(module, str(PLUGIN_PY), "exec"), ns)
-    return ns[name]
 
 
 def test_ecm_profiles_is_imported():
     assert re.search(r"^import ecm_profiles$", _source(), re.M)
 
 
-def test_stock_patterns_runs_without_closing_over_locals():
-    """THE regression test. An earlier draft's extraction referenced
-    us_title_pattern/se_title_pattern/... which are locals of a DIFFERENT method,
-    producing a guaranteed NameError on every applied pass that no AST test could
-    see."""
-    fn = _extract_callable("_stock_patterns")
-    result = fn(types.SimpleNamespace(), {})
-    assert set(result) == {"title_pattern", "time_pattern", "date_pattern"}
-    assert all(isinstance(v, set) and v for v in result.values())
+def test_new_methods_exist():
+    assert _fn("_managed_props_for_profile") is not None
+    assert _fn("_ensure_profile_source") is not None
 
 
-def test_stock_patterns_retains_every_historical_default():
-    """Dropping a historical entry makes every pre-bug-051 install read as
-    user-customized and freezes its patterns permanently."""
-    fn = _extract_callable("_stock_patterns")
-    titles = fn(types.SimpleNamespace(), {})["title_pattern"]
-    assert len(titles) >= 8, f"title stock set shrank to {len(titles)}"
-    assert len(fn(types.SimpleNamespace(), {})["time_pattern"]) >= 5
-    assert len(fn(types.SimpleNamespace(), {})["date_pattern"]) >= 4
+def test_props_builder_uses_the_profiles_own_timezone():
+    """The GMT source's templates must be computed against UTC, not the global
+    setting that belongs to the default profile."""
+    src = ast.get_source_segment(_source(), _fn("_managed_props_for_profile"))
+    assert "profile.timezone" in src
 
 
-def test_stock_patterns_includes_every_shipped_profile_pattern():
-    """Without this, the adopted DAZN source's own patterns read as
-    user-customized and can NEVER receive a future regex fix -- reproducing, for
-    the new family, the exact freeze this mechanism exists to prevent."""
-    fn = _extract_callable("_stock_patterns")
-    stock = fn(types.SimpleNamespace(), {})
-    for profile in ecm_profiles.PROFILES:
-        assert profile.title_pattern in stock["title_pattern"], profile.key
-        assert profile.time_pattern in stock["time_pattern"], profile.key
-        assert profile.date_pattern in stock["date_pattern"], profile.key
+def test_source_provisioning_takes_one_profile_not_a_list():
+    """Lazy by construction: there is no create-them-all path, so an install with
+    no DAZN content never gains a DAZN source."""
+    args = [a.arg for a in _fn("_ensure_profile_source").args.args]
+    assert args[:2] == ["self", "profile"]
 
 
-def test_stock_patterns_has_exactly_one_definition():
-    assert _source().count("def _stock_patterns") == 1
+# --- the negative guards: this slice must not modify the existing pass ---------
+
+FROZEN_METHODS = [
+    "_attach_managed_epg",
+    "_detach_managed_epg",
+    "_managed_override_ids",
+    "_get_or_create_managed_epg_source",
+    "_localized_template_props",
+]
+
+
+@pytest.mark.parametrize("name", FROZEN_METHODS)
+def test_frozen_method_signatures_are_unchanged(name):
+    """S2's safety argument is that it does not touch the existing machinery. A
+    changed signature means it did."""
+    expected = {
+        "_attach_managed_epg": ["self", "channels", "managed_source", "logger",
+                                "settings", "rate_limiter", "override_ids"],
+        "_detach_managed_epg": ["self", "managed_source", "keep_channel_ids",
+                                "logger", "scope_ids"],
+        "_managed_override_ids": ["self", "settings", "managed_source",
+                                  "enabled_channel_ids", "logger"],
+        "_get_or_create_managed_epg_source": ["self", "settings", "logger"],
+        "_localized_template_props": ["self", "settings"],
+    }[name]
+    assert [a.arg for a in _fn(name).args.args] == expected
+
+
+def test_keep_ids_is_assigned_once_and_never_mutated():
+    fn = _fn("_run_managed_epg_pass")
+    assigns = [n for n in ast.walk(fn) if isinstance(n, ast.Assign)
+               and any(isinstance(t, ast.Name) and t.id == "keep_ids" for t in n.targets)]
+    assert len(assigns) == 1
+    mutations = [n for n in ast.walk(fn)
+                 if isinstance(n, ast.Call) and isinstance(n.func, ast.Attribute)
+                 and n.func.attr in ("update", "add", "discard", "remove", "clear")
+                 and isinstance(n.func.value, ast.Name) and n.func.value.id == "keep_ids"]
+    assert not mutations
+
+
+def test_detach_is_called_exactly_once_and_never_in_a_loop():
+    """Looping detach over new sources would null the epg_data of 94 currently
+    hidden channels on the first applied pass."""
+    fn = _fn("_run_managed_epg_pass")
+    calls = [n for n in ast.walk(fn)
+             if isinstance(n, ast.Call) and isinstance(n.func, ast.Attribute)
+             and n.func.attr == "_detach_managed_epg"]
+    assert len(calls) == 1
+    for loop in [n for n in ast.walk(fn) if isinstance(n, (ast.For, ast.While))]:
+        inner = [n for n in ast.walk(loop)
+                 if isinstance(n, ast.Call) and isinstance(n.func, ast.Attribute)
+                 and n.func.attr == "_detach_managed_epg"]
+        assert not inner
 ```
 
 - [ ] **Step 3: Run to verify it fails**
 
-Run: `python -m pytest tests/contract/test_s2_plugin_wiring.py -v`
-Expected: FAIL — `StopIteration` / no `_stock_patterns` found.
+Run: `python -m pytest tests/contract/test_s2_wiring.py -v`
+Expected: FAIL on `test_new_methods_exist`; the frozen-signature and detach guards should already PASS (nothing has been modified yet) — that is the point, they are a baseline.
 
 - [ ] **Step 4: Implement**
 
-Insert above `_get_or_create_managed_epg_source` (plugin.py:2249). Note it takes NO enclosing locals — every current default comes from `ecm_profiles`, and only the historical literals are local:
-
-```python
-    PATTERN_KEYS = ("title_pattern", "time_pattern", "date_pattern")
-
-    def _stock_patterns(self, settings):
-        """Every pattern default this plugin has EVER shipped, per pattern key.
-
-        A live pattern equal to any of these is treated as untouched and may be
-        upgraded; anything else is treated as user-customized and left alone
-        (issue #21).
-
-        Two things are load-bearing:
-          - the HISTORICAL entries. Dropping one makes every pre-bug-051 install
-            read as customized and freezes its patterns permanently.
-          - EVERY shipped profile's own current patterns, including non-default
-            profiles. Without them an adopted profile source reads as customized
-            and can never receive a future regex fix.
-
-        Takes no enclosing locals: current defaults come from ecm_profiles.
-        """
-        def _py(p):
-            return p.replace("(?<", "(?P<")
-
-        _orig_title = (
-            r"(?:PPV|LIVE)\s*(?:EVENT\s*)?\d+\s*[:|\s]\s*(?P<title>.+?)"
-            r"(?=\s*\(|\s+\d{1,2}:\d{2}\s*[AaPp][Mm]|$)"
-        )
-        _orig_time = r"(?P<hour>\d{1,2}):(?P<minute>\d{2})\s*(?P<ampm>[AaPp][Mm])"
-        _prev_us_title = (
-            r"(?:PPV|LIVE)\s*(?:EVENT\s*)?\d+\s*[:|\s]\s*"
-            r"(?:(?<leading_time>\d{1,2}(?::\d{2})?\s*[AaPp][Mm])\s+)?"
-            r"(?<title>.+?)"
-            r"(?=\s*\(|\s+\d{1,2}(?::\d{2})?\s*[AaPp][Mm]|"
-            r"\s+(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)\s+\d+|$)"
-        )
-
-        stock = {key: set() for key in self.PATTERN_KEYS}
-
-        # Every profile this plugin ships, in both named-group dialects.
-        for profile in ecm_profiles.PROFILES:
-            for key in self.PATTERN_KEYS:
-                value = getattr(profile, key)
-                stock[key].add(value)
-                stock[key].add(_py(value))
-
-        # The SE trio (a default-only profile, so not in PROFILES itself).
-        for key, value in (("title_pattern", ecm_profiles.SE_TITLE_PATTERN),
-                           ("time_pattern", ecm_profiles.SE_TIME_PATTERN),
-                           ("date_pattern", ecm_profiles.SE_DATE_PATTERN)):
-            stock[key].add(value)
-            stock[key].add(_py(value))
-
-        # Historical-only defaults, never emitted by current code.
-        us_title = ecm_profiles.US_ET.title_pattern
-        stock["title_pattern"].update({
-            _py(us_title).replace(r"[:|\-\s]", r"[:|\s]"),
-            _orig_title, _prev_us_title, _py(_prev_us_title),
-        })
-        stock["time_pattern"].add(_orig_time)
-        return stock
-```
-
-Then in `_get_or_create_managed_epg_source`, replace its inline `PATTERN_KEYS`/`stock_patterns` block (plugin.py:2364-2400) with:
-```python
-        PATTERN_KEYS = self.PATTERN_KEYS
-        stock_patterns = self._stock_patterns(settings)
-```
-
-- [ ] **Step 5: Run**
-
-Run: `python -m pytest tests/ -q`
-Expected: all pass, including the four runtime `_stock_patterns` tests.
-
-- [ ] **Step 6: Commit**
-
-```bash
-git add Event-Channel-Managarr/plugin.py tests/contract/test_s2_plugin_wiring.py
-git commit -F /tmp/s2_t3.txt
-```
-```
-refactor: extract _stock_patterns, profile-aware, exercised by a runtime test
-
-Two defects from an earlier draft, both of which would have first executed on
-production:
-
-An extraction that "moved the block verbatim" would have closed over six locals
-belonging to a different method -- a guaranteed NameError on every applied pass.
-AST-only tests pass on that broken version, so this one COMPILES the method out of
-plugin.py and CALLS it with a stub self.
-
-And the union contained no entries from the DAZN profile, so the adopted DAZN
-source's patterns read as user-customized and could never receive a future regex
-fix -- reproducing, for the new family, the exact freeze this mechanism exists to
-prevent. The set is now built from every shipped profile plus the SE trio plus the
-historical-only literals.
-
-Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
-```
-
----
-
-## Task 4: Lazy per-profile sources
-
-**Files:** Modify `Event-Channel-Managarr/plugin.py`, `tests/contract/test_s2_plugin_wiring.py`
-
-**Interfaces produced:**
-- `_managed_props_for_profile(self, profile, settings) -> dict`
-- `_get_or_create_managed_epg_sources(self, settings, logger, needed_keys) -> dict[str, EPGSource]`
-
-**[REV1 WAS WRONG]** rev 1 created every profile's source unconditionally, so every marketplace install with no DAZN content got an empty `DAZN PPV Dummy (GMT)` row containing a hardcoded `CDT` literal, with no cleanup path. `needed_keys` makes non-default creation lazy.
-
-- [ ] **Step 1: Write the failing tests**
-
-Append to `tests/contract/test_s2_plugin_wiring.py`:
-
-```python
-def test_props_builder_and_lazy_source_factory_exist():
-    assert _fn("_managed_props_for_profile") is not None
-    assert _fn("_get_or_create_managed_epg_sources") is not None
-
-
-def test_source_factory_takes_needed_keys():
-    """Non-default sources must be created lazily. Creating them unconditionally
-    puts an empty, single-box-tuned EPGSource in every marketplace install."""
-    fn = _fn("_get_or_create_managed_epg_sources")
-    assert "needed_keys" in [a.arg for a in fn.args.args]
-
-
-def test_props_builder_uses_the_profiles_own_timezone():
-    """The GMT source's templates must be computed against UTC, not against the
-    global setting that belongs to the default profile."""
-    fn = _fn("_managed_props_for_profile")
-    src = ast.get_source_segment(_source(), fn)
-    assert "profile.timezone" in src
-```
-
-- [ ] **Step 2: Run to verify it fails**
-
-Run: `python -m pytest tests/contract/test_s2_plugin_wiring.py -v`
-Expected: FAIL on the first two.
-
-- [ ] **Step 3: Implement**
-
-Insert above `_stock_patterns`:
+Insert directly above `_get_or_create_managed_epg_source` (plugin.py:2249):
 
 ```python
     def _managed_props_for_profile(self, profile, settings):
-        """Full EPGSource.custom_properties payload for one profile.
+        """EPGSource.custom_properties payload for one non-default profile.
 
         ecm_profiles.profile_props() omits `managed_by` (identity, not renderer
         config), so it is added here. The profile's OWN timezone drives the
-        output-timezone/template computation -- using the global setting would give
-        the GMT source the ET source's templates and a multi-hour display error.
+        output-timezone computation -- using the global setting would give the GMT
+        source the default profile's templates and a multi-hour display error.
 
-        NOTE: this OVERWRITES the title templates that profile_props() supplied.
-        That is intended: the abbreviation is computed from the live clock, so the
-        stored template self-corrects at the CDT/CST boundary instead of carrying a
-        frozen literal. It means an adopted source's stored templates WILL be
-        rewritten -- a deliberate correction, not drift.
+        This OVERWRITES the frozen title templates profile_props() supplied. That
+        is intended: the abbreviation is computed from the live clock, so a stored
+        template self-corrects at the CDT/CST boundary instead of carrying a frozen
+        literal. An adopted source's stored templates WILL be rewritten -- a
+        deliberate correction, not drift.
         """
         props = dict(ecm_profiles.profile_props(profile))
         props["managed_by"] = "event-channel-managarr"
@@ -777,298 +609,274 @@ Insert above `_stock_patterns`:
             settings.get("date_format", "Auto")))
         return props
 
-    def _get_or_create_managed_epg_sources(self, settings, logger, needed_keys):
-        """Create or refresh a dummy EPGSource for each NEEDED profile.
+    def _ensure_profile_source(self, profile, settings, logger):
+        """Get or create the dummy EPGSource for ONE non-default profile.
 
-        The default profile's source is always ensured (it is the fallback for
-        every unclaimed, unbound channel). A non-default profile's source is
-        created only when `needed_keys` says a live channel actually routes to it,
-        so an install with no DAZN content never gets an empty DAZN source.
+        Called only when a channel actually claims this profile, so a source is
+        never created speculatively. Returns None on any failure -- the caller
+        treats that as "leave these channels where they are", which is always safe
+        because leaving them alone is the pre-S2 behavior.
 
-        Returns {profile_key: EPGSource}. A profile whose source cannot be created
-        is OMITTED rather than aborting the pass -- aborting would leave every
-        profile's channels unmanaged, which is strictly worse.
+        Adoption is by NAME: ecm_profiles.DAZN_GMT.source_name equals the name of
+        the source already serving these channels in production, so this adopts
+        that row in place and its bindings are never broken.
         """
         from apps.epg.models import EPGSource
 
-        stock = self._stock_patterns(settings)
-        sources = {}
-        for profile in ecm_profiles.build_profiles(settings):
-            if not profile.is_default and profile.key not in (needed_keys or set()):
-                continue
-            desired = self._managed_props_for_profile(profile, settings)
-            try:
-                source, created = EPGSource.objects.get_or_create(
-                    name=profile.source_name, source_type="dummy",
-                    defaults={"custom_properties": desired, "is_active": True,
-                              "refresh_interval": 0})
-            except Exception as exc:
-                logger.warning(f"{LOG_PREFIX} Could not get/create EPG source "
-                               f"{profile.source_name!r}: {exc}")
-                continue
+        desired = self._managed_props_for_profile(profile, settings)
+        try:
+            source, created = EPGSource.objects.get_or_create(
+                name=profile.source_name, source_type="dummy",
+                defaults={"custom_properties": desired, "is_active": True,
+                          "refresh_interval": 0})
+        except Exception as exc:
+            logger.warning(f"{LOG_PREFIX} Could not get/create EPG source "
+                           f"{profile.source_name!r}: {exc}")
+            return None
 
-            if not created:
-                current = dict(source.custom_properties or {})
-                changed = False
-                for key, value in desired.items():
-                    if key in self.PATTERN_KEYS:
-                        cur = current.get(key)
-                        if cur is not None and cur not in stock[key]:
-                            continue
-                    if current.get(key) != value:
-                        current[key] = value
-                        changed = True
-                if changed:
-                    source.custom_properties = current
-                    source.save(update_fields=["custom_properties"])
-                    logger.info(f"{LOG_PREFIX} Refreshed EPG source {profile.source_name!r}")
-            else:
-                logger.info(f"{LOG_PREFIX} Created EPG source {profile.source_name!r}")
-            sources[profile.key] = source
-        return sources
+        if created:
+            logger.info(f"{LOG_PREFIX} Created EPG source {profile.source_name!r} "
+                        f"for profile {profile.key!r}")
+            return source
+
+        # Refresh non-pattern keys only. The pattern keys are deliberately left
+        # alone: this slice does not own the user-customization question for a
+        # newly adopted source, and overwriting a pattern a user edited in
+        # Dispatcharr's UI is the issue-21 regression.
+        current = dict(source.custom_properties or {})
+        changed = False
+        for key, value in desired.items():
+            if key in ("title_pattern", "time_pattern", "date_pattern"):
+                continue
+            if current.get(key) != value:
+                current[key] = value
+                changed = True
+        if changed:
+            source.custom_properties = current
+            source.save(update_fields=["custom_properties"])
+            logger.info(f"{LOG_PREFIX} Refreshed EPG source {profile.source_name!r}")
+        return source
 ```
 
-- [ ] **Step 4: Run and commit**
+- [ ] **Step 5: Run and commit**
 
 Run: `python -m pytest tests/ -q` — all pass.
 
 ```bash
-git add Event-Channel-Managarr/plugin.py tests/contract/test_s2_plugin_wiring.py
-git commit -F /tmp/s2_t4.txt
+git add Event-Channel-Managarr/plugin.py tests/contract/test_s2_wiring.py
+git commit -F /tmp/s2_t3.txt
 ```
 ```
-feat: lazy per-profile managed EPG sources
+feat: lazy per-profile EPG source provisioning
 
-A non-default profile's source is created only when a live channel actually routes
-to it. Creating them unconditionally would put an empty, single-box-tuned
-"DAZN PPV Dummy (GMT)" row -- carrying a hardcoded CDT literal -- into every
-marketplace install that has no DAZN content, with no cleanup path.
+_ensure_profile_source handles ONE profile and is called only when a channel
+actually claims it, so a source is never created speculatively. An earlier draft
+created every profile's source unconditionally, which would have put an empty,
+single-box-tuned "DAZN PPV Dummy (GMT)" row carrying a hardcoded CDT literal into
+every marketplace install with no DAZN content, with no cleanup path.
 
-Adoption is by NAME: ecm_profiles.DAZN_GMT.source_name equals the hand-made source
-already serving those channels in production, so this adopts that row in place and
-its bindings are never broken.
+Adoption is by NAME, so the source already serving these channels in production is
+adopted in place and its bindings are never broken.
 
-_managed_props_for_profile deliberately overwrites the profile's frozen title
-templates with a clock-computed equivalent, so an adopted source self-corrects at
-the CDT/CST boundary rather than carrying a stale literal.
+Pattern keys are deliberately NOT refreshed: this slice does not own the
+user-customization question for a newly adopted source, and overwriting a pattern
+the user edited in Dispatcharr's UI is the issue-21 regression.
+
+The contract tests include NEGATIVE guards pinning the signatures of the five
+existing methods this slice must not touch -- the safety argument is that the
+existing pass is unmodified, so that claim is now enforced.
 
 Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
 ```
 
 ---
 
-## Task 5: Routed attach — with detach left completely alone
+## Task 4: The reroute step
 
-**Files:** Modify `Event-Channel-Managarr/plugin.py`, `tests/contract/test_s2_plugin_wiring.py`
+**Files:** Modify `Event-Channel-Managarr/plugin.py`, `tests/contract/test_s2_wiring.py`
 
-**[REV1 WAS WRONG]** rev 1 looped detach over every source. That makes 99 previously-untouched channels detachable, and **94 of them are currently hidden**, so the first applied pass would null their `epg_data` in one sweep. S2 does not touch detach.
+**Interfaces produced:**
+- `_reroute_claimed_channels(self, settings, logger, dry_run, enabled_channel_ids) -> list[int]`
+
+**The single call site** goes at the very END of `_run_managed_epg_pass`'s applied branch, after `detached_ids` is computed. It must not alter the existing return value's meaning.
 
 - [ ] **Step 1: Write the failing tests**
 
-Append to `tests/contract/test_s2_plugin_wiring.py`:
+Append to `tests/contract/test_s2_wiring.py`:
 
 ```python
-def _calls_in(fn_name, method):
-    fn = _fn(fn_name)
-    return [n.lineno for n in ast.walk(fn)
-            if isinstance(n, ast.Call) and isinstance(n.func, ast.Attribute)
-            and n.func.attr == method]
+def test_reroute_method_exists():
+    assert _fn("_reroute_claimed_channels") is not None
 
 
-def test_routed_attach_exists():
-    assert _fn("_attach_routed") is not None
-
-
-def test_attach_runs_before_detach_in_the_real_call_path():
-    """Structural, not textual: compares CALL line numbers inside the orchestrator,
-    so it cannot pass merely because of where the methods are DEFINED."""
-    attach = _calls_in("_run_managed_epg_pass", "_attach_routed")
-    detach = _calls_in("_run_managed_epg_pass", "_detach_managed_epg")
-    assert attach and detach
-    assert max(attach) < min(detach)
-
-
-def test_detach_is_called_exactly_once_and_not_in_a_loop():
-    """S2 is attach-only. Looping detach over the new sources would null the
-    epg_data of 94 currently-hidden channels on the first applied pass."""
+def test_reroute_runs_after_detach():
+    """It must observe the pass's final state, not race it."""
     fn = _fn("_run_managed_epg_pass")
-    detach_calls = [n for n in ast.walk(fn)
-                    if isinstance(n, ast.Call) and isinstance(n.func, ast.Attribute)
-                    and n.func.attr == "_detach_managed_epg"]
-    assert len(detach_calls) == 1
-    loops = [n for n in ast.walk(fn) if isinstance(n, (ast.For, ast.While))]
-    for loop in loops:
-        inner = [n for n in ast.walk(loop)
-                 if isinstance(n, ast.Call) and isinstance(n.func, ast.Attribute)
-                 and n.func.attr == "_detach_managed_epg"]
-        assert not inner, "detach must not be inside a loop -- S2 is attach-only"
+    def _lines(method):
+        return [n.lineno for n in ast.walk(fn)
+                if isinstance(n, ast.Call) and isinstance(n.func, ast.Attribute)
+                and n.func.attr == method]
+    detach, reroute = _lines("_detach_managed_epg"), _lines("_reroute_claimed_channels")
+    assert detach and reroute
+    assert max(detach) < min(reroute)
 
 
-def test_keep_ids_is_assigned_once_and_never_mutated():
-    """Structural version of the frozen-detach contract: survives reformatting,
-    and unlike a substring check it catches a later `keep_ids |= ...`."""
+def test_reroute_is_called_exactly_once():
     fn = _fn("_run_managed_epg_pass")
-    assigns = [n for n in ast.walk(fn) if isinstance(n, ast.Assign)
-               and any(isinstance(t, ast.Name) and t.id == "keep_ids" for t in n.targets)]
-    assert len(assigns) == 1
-    mutations = [n for n in ast.walk(fn)
-                 if isinstance(n, ast.Call) and isinstance(n.func, ast.Attribute)
-                 and n.func.attr in ("update", "add", "discard", "remove", "clear")
-                 and isinstance(n.func.value, ast.Name) and n.func.value.id == "keep_ids"]
-    assert not mutations, "keep_ids must never be mutated after assignment"
+    calls = [n for n in ast.walk(fn)
+             if isinstance(n, ast.Call) and isinstance(n.func, ast.Attribute)
+             and n.func.attr == "_reroute_claimed_channels"]
+    assert len(calls) == 1
+
+
+def test_reroute_honours_dry_run():
+    """A dry run must not write. The parameter must be threaded, not ignored."""
+    args = [a.arg for a in _fn("_reroute_claimed_channels").args.args]
+    assert "dry_run" in args
+    src = ast.get_source_segment(_source(), _fn("_reroute_claimed_channels"))
+    assert "dry_run" in src
 ```
 
 - [ ] **Step 2: Run to verify it fails**
 
-Run: `python -m pytest tests/contract/test_s2_plugin_wiring.py -v`
-Expected: FAIL on `test_routed_attach_exists` and `test_attach_runs_before_detach_in_the_real_call_path`.
+Run: `python -m pytest tests/contract/test_s2_wiring.py -v`
+Expected: FAIL on `test_reroute_method_exists`.
 
-- [ ] **Step 3: Implement `_attach_routed`**
+- [ ] **Step 3: Implement**
 
-Insert below `_attach_managed_epg` (after plugin.py:2520):
+Insert directly below `_ensure_profile_source`:
 
 ```python
-    def _attach_routed(self, channels, sources, targets, logger, settings=None,
-                       rate_limiter=None, reroute_ids=None, default_key=None):
-        """Attach each channel to the source its target profile owns.
+    def _reroute_claimed_channels(self, settings, logger, dry_run, enabled_channel_ids):
+        """Move channels whose names positively claim a non-default profile onto
+        that profile's own EPGSource.
 
-        Groups by target source and delegates each group to _attach_managed_epg,
-        so transaction / bulk-update / name-resync behavior stays in one place.
+        This is the whole of S2. It runs AFTER the existing managed-EPG pass and
+        changes nothing the pass did -- it only corrects the SOURCE of channels the
+        pass has already bound, and only for names a non-default selector claims.
 
-        A channel is bound when it has no epg_data, OR its id is in `reroute_ids`
-        and it is not already on its target source. The reroute set is required
-        because neither existing path can see such a channel: attach considers only
-        `epg_data IS NULL`, and _managed_override_ids excludes every dummy source.
+        Why this ends the reclaim: when ECM hides an event-less slot,
+        auto_set_dummy_epg_on_hide nulls its epg_data; the next pass's NULL-only
+        attach binds it to the DEFAULT source; this step then moves it to the
+        profile its name claims, in the same pass.
 
-        Each group's write is its own transaction. A failure in one group leaves
-        earlier groups committed; the pass is re-entrant, so the next scan
-        reconciles. Failures are logged per-group rather than propagating, so one
-        bad group cannot skip the detach that follows.
+        Safety by construction:
+          - only names in claimed_targets() are touched; unclaimed and
+            default-family channels are absent from that mapping entirely
+          - it never detaches: a channel is only ever re-pointed to another source
+          - a missing/uncreatable profile source means those channels are left
+            exactly where they are, which is the pre-S2 behavior
+
+        Returns the ids it moved (or would move, under dry_run).
         """
-        reroute_ids = set(reroute_ids or ())
-        by_source = {}
-        for channel in channels:
-            key = targets.get(channel.name, default_key)
-            source = sources.get(key) or sources.get(default_key)
-            if source is None:
-                logger.warning(f"{LOG_PREFIX} No managed source for profile {key!r}; "
-                               f"skipping channel {channel.id}")
-                continue
-            by_source.setdefault(source.id, (source, []))[1].append(channel)
+        from apps.epg.models import EPGData
 
-        attached = []
-        for source, group in by_source.values():
-            group_reroute = {
-                c.id for c in group
-                if c.id in reroute_ids
-                and getattr(c.epg_data, "epg_source_id", None) != source.id
-            }
-            try:
-                attached.extend(self._attach_managed_epg(
-                    group, source, logger, settings=settings,
-                    rate_limiter=rate_limiter, override_ids=group_reroute))
-            except Exception as exc:
-                logger.error(f"{LOG_PREFIX} Attach failed for source "
-                             f"{source.name!r}: {exc}")
-        return attached
+        profiles = ecm_profiles.build_profiles(settings)
+        if not any(not p.is_default for p in profiles):
+            return []
+
+        candidates = list(Channel.objects.filter(id__in=enabled_channel_ids)
+                          .select_related("epg_data"))
+        claims = ecm_profiles.claimed_targets([c.name for c in candidates], profiles)
+        if not claims:
+            return []
+
+        by_key = {p.key: p for p in profiles}
+        moved = []
+        for key in sorted({claims[n] for n in claims}):
+            profile = by_key.get(key)
+            if profile is None:
+                continue
+            group = [c for c in candidates if claims.get(c.name) == key]
+            if not group:
+                continue
+
+            if dry_run:
+                # Report every claimed channel not already on the profile's source,
+                # without creating anything.
+                from apps.epg.models import EPGSource
+                existing = EPGSource.objects.filter(
+                    name=profile.source_name, source_type="dummy").first()
+                target_id = existing.id if existing else None
+                moved.extend(c.id for c in group
+                             if getattr(c.epg_data, "epg_source_id", None) != target_id)
+                continue
+
+            source = self._ensure_profile_source(profile, settings, logger)
+            if source is None:
+                logger.warning(f"{LOG_PREFIX} No source for profile {key!r}; "
+                               f"leaving {len(group)} channel(s) in place")
+                continue
+
+            to_move = [c for c in group
+                       if getattr(c.epg_data, "epg_source_id", None) != source.id]
+            if not to_move:
+                continue
+
+            with transaction.atomic():
+                for channel in to_move:
+                    epg_data, _ = EPGData.objects.get_or_create(
+                        tvg_id=str(channel.uuid), epg_source=source,
+                        defaults={"name": channel.name})
+                    if epg_data.name != channel.name:
+                        epg_data.name = channel.name
+                        epg_data.save(update_fields=["name"])
+                    channel.epg_data = epg_data
+                Channel.objects.bulk_update(to_move, ["epg_data"])
+            moved.extend(c.id for c in to_move)
+            logger.info(f"{LOG_PREFIX} Rerouted {len(to_move)} channel(s) to "
+                        f"{profile.source_name!r}")
+        return moved
 ```
 
-- [ ] **Step 4: Rewrite the applied branch**
+- [ ] **Step 4: Add the single call site**
 
-Replace plugin.py:2657-2690 (the applied-run attach block). **Leave 2692-2695 — the `keep_ids`/`detach_scope`/`_detach_managed_epg` lines — exactly as they are.**
+At the END of `_run_managed_epg_pass`, immediately before its final `return attached_ids, detached_ids`, insert:
 
 ```python
-        profiles = ecm_profiles.build_profiles(settings)
-        default_key = next((p.key for p in profiles if p.is_default), None)
-
-        # Which profile currently owns each candidate, so unclaimed names can be
-        # sticky rather than being shuttled to the default and back.
-        name_to_source = {}
-        existing = {s.name: s for s in EPGSource.objects.filter(
-            name__in=[p.source_name for p in profiles], source_type="dummy")}
-        source_id_to_key = {s.id: p.key for p in profiles
-                            for s in [existing.get(p.source_name)] if s}
-
-        attached_ids = []
-        if toggle_on:
-            no_epg_channels = list(Channel.objects.filter(
-                id__in=enabled_channel_ids, epg_data__isnull=True))
-            on_managed = list(Channel.objects.filter(
-                id__in=enabled_channel_ids,
-                epg_data__epg_source_id__in=set(source_id_to_key)
-            ).select_related("epg_data"))
-            for c in on_managed:
-                name_to_source[c.name] = source_id_to_key.get(c.epg_data.epg_source_id)
-
-            candidates = {c.id: c for c in no_epg_channels}
-            candidates.update({c.id: c for c in on_managed})
-            channels_for_epg = list(candidates.values())
-
-            targets = ecm_profiles.attach_targets(
-                [c.name for c in channels_for_epg], profiles,
-                current_by_name=name_to_source)
-
-            needed = {k for k in targets.values() if k != default_key}
-            sources = self._get_or_create_managed_epg_sources(settings, logger, needed)
-            if not sources:
-                return [], []
-
-            reroute_ids = {
-                c.id for c in on_managed
-                if sources.get(targets.get(c.name))
-                and c.epg_data.epg_source_id != sources[targets[c.name]].id
-            }
-            rate_limiter = SmartRateLimiter(
-                settings.get("rate_limiting", self.DEFAULT_RATE_LIMITING))
-            attached_ids = self._attach_routed(
-                channels_for_epg, sources, targets, logger, settings=settings,
-                rate_limiter=rate_limiter, reroute_ids=reroute_ids,
-                default_key=default_key)
-            managed_source = sources.get(default_key)
-        else:
-            managed_source = existing.get(
-                next(p.source_name for p in profiles if p.is_default))
-            if managed_source is None:
-                return [], []
+        rerouted_ids = self._reroute_claimed_channels(
+            settings, logger, dry_run, enabled_channel_ids if toggle_on else [])
+        if rerouted_ids:
+            logger.info(f"{LOG_PREFIX} Reroute step touched {len(rerouted_ids)} channel(s)")
+            attached_ids = list(dict.fromkeys(list(attached_ids) + rerouted_ids))
 ```
-
-The following lines (`keep_ids = ...`, `detach_scope = ...`, `detached_ids = self._detach_managed_epg(managed_source, ...)`) remain **unchanged**, still operating on the single default `managed_source`.
 
 - [ ] **Step 5: Run and commit**
 
-Run: `python -m pytest tests/ -q` — all pass, including the frozen-detach guards.
+Run: `python -m pytest tests/ -q` — all pass, including every frozen-signature guard.
 
 ```bash
-git add Event-Channel-Managarr/plugin.py tests/contract/test_s2_plugin_wiring.py
-git commit -F /tmp/s2_t5.txt
+git add Event-Channel-Managarr/plugin.py tests/contract/test_s2_wiring.py
+git commit -F /tmp/s2_t4.txt
 ```
 ```
-feat: route each channel to its target profile's source
+feat: reroute claimed channels onto their profile's source
 
-_attach_routed groups channels by target source and delegates to the existing
-_attach_managed_epg. Group failures are logged rather than propagated, so one bad
-group cannot skip the detach that follows.
+This is the whole of S2. It runs AFTER the existing managed-EPG pass, changes
+nothing the pass did, and only corrects the SOURCE of channels whose names
+positively claim a non-default profile.
 
-Detach is untouched: still one call, still the default source only, still
-keep_ids = set(enabled_channel_ids). Looping it over the new sources would have
-made 99 previously-untouched channels detachable, 94 of them currently hidden --
-nulled in a single sweep on the first applied pass. Multi-source teardown is S3.
+Why it ends the reclaim: when ECM hides an event-less slot,
+auto_set_dummy_epg_on_hide nulls its epg_data; the next pass's NULL-only attach
+binds it to the default source; this step then moves it to the profile its name
+claims -- in the same pass.
 
-Guards are AST-structural rather than substring greps: they compare CALL line
-numbers inside the orchestrator (not definition order), assert detach is called
-exactly once and never inside a loop, and catch a later mutation of keep_ids that
-a text match would miss.
+Safety by construction, not by guard: only names in claimed_targets() are touched
+and unclaimed names are absent from that mapping entirely; the step never
+detaches, only re-points; and an uncreatable profile source leaves those channels
+exactly where they are, which is the pre-S2 behavior.
+
+Measured blast radius on live data: 46 of 278 channels, of which 0 are currently
+misplaced -- so the first deploy is a verifiable no-op.
 
 Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
 ```
 
 ---
 
-## Task 6: In-container gate, including a rolled-back REAL pass
+## Task 5: In-container gate — a real pass, rolled back
 
 **Files:** Create `scripts/verify_s2_incontainer.py`
-
-**[REV1 WAS WRONG]** rev 1's gate built temp sources from `profile_props()` directly, bypassing `_managed_props_for_profile` — so it validated a literal that production never writes, and the reroute/attach path's first execution would have been on production.
 
 - [ ] **Step 1: Backup (POWERSHELL)**
 
@@ -1078,20 +886,18 @@ from apps.backups.tasks import create_backup_task
 print(create_backup_task.apply().result)
 "
 ```
+Record the filename.
 
 - [ ] **Step 2: Write the script**
 
 ```python
 # scripts/verify_s2_incontainer.py
-"""Read-only proof of S2 against LIVE data, including a REAL pass that is rolled back.
+"""Prove S2 against LIVE data by running the REAL pass inside a rolled-back
+transaction. Nothing persists.
 
     docker cp Event-Channel-Managarr/ecm_profiles.py dispatcharr:/tmp/ecm_profiles.py
     docker cp scripts/verify_s2_incontainer.py dispatcharr:/tmp/verify_s2.py
     docker exec -u dispatch dispatcharr sh -c "cd /app && python3 manage.py shell < /tmp/verify_s2.py"
-
-Proof 3 runs the REAL managed-EPG pass inside transaction.atomic() with
-set_rollback(True), scoped to one group. Nothing persists. This is the only way to
-exercise the reroute/attach ORM path before production.
 
 Caveat: transaction.on_commit hooks do not fire under rollback, so this verifies
 ECM's own logic, not Dispatcharr's commit-time side effects.
@@ -1099,6 +905,7 @@ ECM's own logic, not Dispatcharr's commit-time side effects.
 EXIT CODE: 0 pass, 1 fail.
 """
 
+import logging
 import sys
 import traceback
 
@@ -1107,10 +914,11 @@ import ecm_profiles  # noqa: E402
 
 from django.db import transaction  # noqa: E402
 from apps.channels.models import Channel  # noqa: E402
-from apps.epg.models import EPGSource  # noqa: E402
+from apps.plugins.loader import PluginManager  # noqa: E402
 from apps.plugins.models import PluginConfig  # noqa: E402
 
 GROUP_ID = 1915
+GMT_SOURCE = "DAZN PPV Dummy (GMT)"
 failures = []
 
 
@@ -1120,72 +928,71 @@ def check(label, ok, detail=""):
         failures.append(label)
 
 
+def snapshot():
+    return {c.id: (c.epg_data.epg_source.name if c.epg_data and c.epg_data.epg_source
+                   else None)
+            for c in Channel.objects.filter(channel_group_id=GROUP_ID)
+                                    .select_related("epg_data__epg_source")}
+
+
 def main():
     settings = PluginConfig.objects.get(key="event-channel-managarr").settings or {}
     profiles = ecm_profiles.build_profiles(settings)
-    default_key = next(p.key for p in profiles if p.is_default)
     print("profiles: " + ", ".join(
         f"{p.key}(tz={p.timezone}{',default' if p.is_default else ''})" for p in profiles))
 
-    chans = list(Channel.objects.filter(channel_group_id=GROUP_ID)
-                 .select_related("epg_data__epg_source"))
-    names = [c.name for c in chans]
-    print(f"live channels in group {GROUP_ID}: {len(chans)}")
+    chans = list(Channel.objects.filter(channel_group_id=GROUP_ID))
+    claims = ecm_profiles.claimed_targets([c.name for c in chans], profiles)
+    print(f"\nlive channels: {len(chans)}, positively claimed: {len(claims)}")
 
-    print("\n(1) no ENABLED channel is unclaimed by every selector")
-    # ECM's hide rules and these selectors are independent regex systems. An
-    # enabled channel landing unclaimed renders the DEFAULT source's timezone.
-    unclaimed = ecm_profiles.unclaimed_names(names, profiles)
-    enabled_ids = set(Channel.objects.filter(
-        channel_group_id=GROUP_ID,
-        channelprofilemembership__enabled=True).values_list("id", flat=True))
-    bad = [c.name for c in chans if c.id in enabled_ids and c.name in unclaimed]
-    check("no enabled channel is unclaimed", not bad, f"{len(bad)}: {bad[:2]}")
+    print("\n(1) the claim set is bounded and non-default only")
+    default_key = next(p.key for p in profiles if p.is_default)
+    check("no claim resolves to the default profile", default_key not in set(claims.values()))
+    check("claim set is a strict subset of the group", len(claims) < len(chans),
+          f"{len(claims)} of {len(chans)}")
 
-    print("\n(2) sticky targets do not move idle slots off their current source")
-    cur = {c.name: (c.epg_data.epg_source.name if c.epg_data and c.epg_data.epg_source
-                    else None) for c in chans}
-    name_to_key = {}
-    for p in profiles:
-        for n, sname in cur.items():
-            if sname == p.source_name:
-                name_to_key[n] = p.key
-    targets = ecm_profiles.attach_targets(names, profiles, current_by_name=name_to_key)
-    moved = [n for n, k in name_to_key.items()
-             if targets[n] != k and "(GMT)" not in n and not n.startswith(("Next |", "End |"))]
-    check("no unclaimed name is moved off its source", not moved,
-          f"{len(moved)}: {moved[:2]}")
-    counts = {}
-    for k in targets.values():
-        counts[k] = counts.get(k, 0) + 1
-    print(f"       targets: {counts}")
-
-    print("\n(3) REAL pass, rolled back")
+    print("\n(2) REAL pass, rolled back")
+    before = snapshot()
     try:
         with transaction.atomic():
-            from apps.plugins.loader import PluginManager
             inst = PluginManager.get().get_plugin_instance("event-channel-managarr")
+            enabled = list(Channel.objects.filter(
+                channel_group_id=GROUP_ID,
+                channelprofilemembership__enabled=True
+            ).values_list("id", flat=True).distinct())
             scoped = [c.id for c in chans]
-            enabled = [c.id for c in chans if c.id in enabled_ids]
-            att, det = inst._run_managed_epg_pass(
-                settings, __import__("logging").getLogger("ecm-verify"),
-                False, enabled, scoped)
-            print(f"       attached={len(att)} detached={len(det)}")
-            check("detach count is 0 or small", len(det) <= 5, f"detached {len(det)}")
 
-            gmt_ids = [c.id for c in chans if "(GMT)" in c.name and c.id in enabled_ids]
-            after = Channel.objects.filter(id__in=gmt_ids).select_related(
-                "epg_data__epg_source")
-            check("enabled GMT channels landed on the GMT source",
-                  all(c.epg_data and c.epg_data.epg_source.name == "DAZN PPV Dummy (GMT)"
-                      for c in after),
-                  f"of {len(gmt_ids)}")
-            nulled = Channel.objects.filter(id__in=scoped, epg_data__isnull=True).count()
-            print(f"       channels with no EPG after pass: {nulled}")
+            att, det = inst._run_managed_epg_pass(
+                settings, logging.getLogger("ecm-verify"), False, enabled, scoped)
+            after = snapshot()
+
+            lost = [cid for cid, src in before.items() if src and not after.get(cid)]
+            check("NO channel lost its EPG", not lost, f"{len(lost)}: {lost[:5]}")
+
+            moved = {cid: (before[cid], after[cid]) for cid in before
+                     if after.get(cid) and before[cid] != after[cid]}
+            print(f"       attached={len(att)} detached={len(det)} moved={len(moved)}")
+            for cid, (b, a) in list(moved.items())[:8]:
+                print(f"         {cid}: {b} -> {a}")
+
+            claimed_ids = {c.id for c in chans if c.name in claims}
+            enabled_claimed = claimed_ids & set(enabled)
+            on_gmt = [cid for cid in enabled_claimed if after.get(cid) == GMT_SOURCE]
+            check("every enabled claimed channel is on the GMT source",
+                  len(on_gmt) == len(enabled_claimed),
+                  f"{len(on_gmt)}/{len(enabled_claimed)}")
+
+            unclaimed_moved = [cid for cid in moved if cid not in claimed_ids]
+            check("no UNCLAIMED channel was moved", not unclaimed_moved,
+                  f"{len(unclaimed_moved)}: {unclaimed_moved[:5]}")
+
             transaction.set_rollback(True)
     except Exception:
         traceback.print_exc()
         failures.append("real pass raised")
+
+    print("\n(3) nothing persisted")
+    check("bindings identical to before the run", snapshot() == before)
 
 
 try:
@@ -1202,48 +1009,44 @@ print("=" * 70)
 sys.exit(1 if failures else 0)
 ```
 
-- [ ] **Step 3: Run the gate (POWERSHELL)**
+- [ ] **Step 3: Run it BEFORE deploying (POWERSHELL)** — baseline against current code
 
 ```powershell
 docker cp Event-Channel-Managarr\ecm_profiles.py dispatcharr:/tmp/ecm_profiles.py
-docker cp Event-Channel-Managarr\plugin.py dispatcharr:/tmp/plugin_s2_preview.py
 docker cp scripts\verify_s2_incontainer.py dispatcharr:/tmp/verify_s2.py
 $out = docker exec -u dispatch dispatcharr sh -c "cd /app && python3 manage.py shell < /tmp/verify_s2.py"
 $out
-if ($out -notmatch 'S2_GATE_RESULT=PASS') { throw "S2 GATE FAILED" }
 ```
+Expected on the CURRENT code: proof 1 passes; proof 2's "every enabled claimed channel is on the GMT source" may FAIL (that is what S2 fixes) but **"NO channel lost its EPG" and "nothing persisted" must PASS**. Record the baseline.
 
-Note: proof 3 runs the CURRENTLY DEPLOYED plugin code. To exercise the new code it must run after Task 7's deploy — so run this gate TWICE: once now (baseline, current behavior) and once immediately after deploy, before re-arming.
-
-- [ ] **Step 4: Confirm nothing persisted (POWERSHELL)**
-
-```powershell
-docker exec dispatcharr python manage.py shell -c "
-from apps.channels.models import Channel
-print('DAZN source channels:', Channel.objects.filter(epg_data__epg_source__name='DAZN PPV Dummy (GMT)').count())
-print('group 1915 with no EPG:', Channel.objects.filter(channel_group_id=1915, epg_data__isnull=True).count())
-"
-```
-Expected: unchanged from before the run.
-
-- [ ] **Step 5: Commit**
+- [ ] **Step 4: Commit**
 
 ```bash
 git add scripts/verify_s2_incontainer.py
-git commit -F /tmp/s2_t6.txt
+git commit -F /tmp/s2_t5.txt
+```
+```
+feat: in-container gate running the real pass inside a rolled-back transaction
+
+Exercises the actual attach/detach/reroute ORM path against live data with nothing
+persisted, so the code S2 changes is proven before production rather than on it.
+Asserts no channel loses its EPG, no unclaimed channel is moved, and that the
+bindings are byte-identical after rollback.
+
+Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>
 ```
 
 ---
 
-## Task 7: Deploy with the automation DISARMED
+## Task 6: Deploy with the automation disarmed
 
-**[REV1 WAS WRONG]** rev 1 deployed and restarted with the scheduler and `auto_rescan_on_m3u_refresh` still armed, so a scheduled tick or M3U refresh could make S2's first live execution unsupervised and applied, before the operator reached the dry run.
-
-- [ ] **Step 1: Backup (POWERSHELL)** — as Task 6 Step 1. Record the filename.
-
-- [ ] **Step 2: Snapshot every binding (POWERSHELL)**
+- [ ] **Step 1: Backup, and snapshot every binding (POWERSHELL)**
 
 ```powershell
+docker exec dispatcharr python manage.py shell -c "
+from apps.backups.tasks import create_backup_task
+print(create_backup_task.apply().result)
+"
 docker exec dispatcharr python manage.py shell -c "
 import json
 from apps.channels.models import Channel
@@ -1254,24 +1057,26 @@ print('snapshot rows:', len(rows))
 "
 ```
 
-- [ ] **Step 3: DISARM the automation (POWERSHELL)**
+- [ ] **Step 2: DISARM (POWERSHELL)**
+
+The scheduler and `auto_rescan_on_m3u_refresh` are live. Without this, a scheduled tick or M3U refresh can make S2's first execution unsupervised and applied.
 
 ```powershell
 docker exec dispatcharr python manage.py shell -c "
 from apps.plugins.models import PluginConfig
 c = PluginConfig.objects.get(key='event-channel-managarr')
 s = dict(c.settings or {})
-print('BEFORE manage_dummy_epg=', s.get('manage_dummy_epg'), 'auto_rescan=', s.get('auto_rescan_on_m3u_refresh'))
+print('ORIGINAL manage_dummy_epg=', s.get('manage_dummy_epg'),
+      'auto_rescan=', s.get('auto_rescan_on_m3u_refresh'))
 s['manage_dummy_epg'] = False
 s['auto_rescan_on_m3u_refresh'] = False
-c.settings = s
-c.save(update_fields=['settings'])
+c.settings = s; c.save(update_fields=['settings'])
 print('DISARMED')
 "
 ```
-Record the original values — Step 7 restores them.
+**Record the ORIGINAL values.** Step 6 restores them.
 
-- [ ] **Step 4: Deploy (POWERSHELL)**
+- [ ] **Step 3: Deploy (POWERSHELL)**
 
 ```powershell
 docker cp Event-Channel-Managarr\plugin.py dispatcharr:/data/plugins/event-channel-managarr/plugin.py
@@ -1281,15 +1086,14 @@ docker restart dispatcharr
 ```
 Wait for healthy.
 
-- [ ] **Step 5: Re-run the Task 6 gate** — now exercising the NEW code.
-Expected: `S2_GATE_RESULT=PASS`, detach count 0 or small, enabled GMT channels on the GMT source.
-**If the gate fails, STOP.** Restore settings (Step 7) and report; the deployed code is inert while disarmed.
+- [ ] **Step 4: Re-run the gate — now against the NEW code**
 
-- [ ] **Step 6: Re-arm and run ONE supervised pass (POWERSHELL)**
+Repeat Task 5 Step 3. Expected: `S2_GATE_RESULT=PASS`, including "every enabled claimed channel is on the GMT source".
+**If it fails, STOP.** The code is inert while disarmed; restore settings and report.
 
-Set `manage_dummy_epg=True` only (leave `auto_rescan_on_m3u_refresh=False`), then trigger a dry run from the UI and read the log. Then run one applied pass.
+- [ ] **Step 5: Re-arm `manage_dummy_epg` only, run one supervised pass, diff (POWERSHELL)**
 
-- [ ] **Step 7: Diff every binding (POWERSHELL)**
+Set `manage_dummy_epg` back to its original value, leave `auto_rescan_on_m3u_refresh=False`, trigger one applied run from the UI, then:
 
 ```powershell
 docker exec dispatcharr python manage.py shell -c "
@@ -1301,26 +1105,37 @@ after = {str(c.id): (c.epg_data.epg_source.name if c.epg_data and c.epg_data.epg
 lost = [k for k in before if before[k] and not after.get(k)]
 moved = [(k, before[k], after[k]) for k in before if after.get(k) and before[k] != after[k]]
 print('LOST EPG (must be 0):', len(lost), lost[:5])
-print('MOVED SOURCE:', len(moved))
+print('MOVED:', len(moved))
 for m in moved[:10]: print('  ', m)
 "
 ```
-**`LOST EPG` must be 0.** Any non-zero value means channels were detached — stop and restore.
+**`LOST EPG` must be 0.** Anything else means channels were detached — stop and restore from the backup.
 
-- [ ] **Step 8: Restore `auto_rescan_on_m3u_refresh=True`, then the acceptance test**
+- [ ] **Step 6: Restore `auto_rescan_on_m3u_refresh`, then the acceptance test**
 
-Force an M3U refresh and confirm the DAZN channels stay on the GMT source. This is the moment the manual fix was undone.
+Restore the original value, then force an M3U refresh:
 
-- [ ] **Step 9: Record the outcome** in `.wolf/memory.md` and update the spec's §6 scorecard — mark mode 2 covered ONLY if Step 8 passed.
+```powershell
+docker exec dispatcharr python manage.py shell -c "
+from apps.m3u.models import M3UAccount
+from apps.m3u.tasks import refresh_single_m3u_account
+a = M3UAccount.objects.filter(is_active=True, name__icontains='[redacted-provider-host]').first()
+print('refreshing', a.id, a.name); refresh_single_m3u_account(a.id)
+"
+```
+
+Wait for ECM's rescan, then confirm the DAZN channels are STILL on the GMT source and rendering local times. **This is the exact moment the manual fix was undone.** If they are reclaimed, S2 has not achieved its goal — report BLOCKED rather than patching.
+
+- [ ] **Step 7: Record the outcome** in `.wolf/memory.md`; update the spec's §6 scorecard to mark mode 2 covered ONLY if Step 6 passed.
 
 ---
 
 ## Definition of Done
 
 - [ ] `python -m pytest tests/ -q` fully green
-- [ ] `_stock_patterns` is exercised by a test that CALLS it
-- [ ] Detach is called exactly once, outside any loop, with `keep_ids` unmutated
-- [ ] The gate printed `S2_GATE_RESULT=PASS` both before and after deploy
+- [ ] Every frozen-signature guard passes — the existing pass is provably unmodified
+- [ ] Detach is called exactly once, outside any loop, `keep_ids` unmutated
+- [ ] The gate printed `S2_GATE_RESULT=PASS` after deploy, with rollback verified clean
 - [ ] The binding diff shows **`LOST EPG = 0`**
 - [ ] After a forced M3U refresh, DAZN channels are still on the GMT source
-- [ ] `auto_rescan_on_m3u_refresh` and `manage_dummy_epg` restored to their original values
+- [ ] `manage_dummy_epg` and `auto_rescan_on_m3u_refresh` restored to their original values
