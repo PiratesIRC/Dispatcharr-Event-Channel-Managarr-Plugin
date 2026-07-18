@@ -80,7 +80,10 @@ cd /c/Users/User/docker/Event-Channel-Managarr
 git add --renormalize .
 git status --short
 ```
-Expected: exactly one modified file, `Event-Channel-Managarr/__init__.py`. If more appear, stop and report — the premise has changed.
+Expected: one staged modification `M  Event-Channel-Managarr/__init__.py`, plus untracked
+`?? .gitattributes` (created in Step 1; `--renormalize` does not stage new files) and
+`?? message.txt` (a pre-existing scratch file, not ours). If any OTHER file shows as modified,
+stop and report — the premise has changed.
 
 - [ ] **Step 3: Commit (BASH)**
 
@@ -322,14 +325,39 @@ def test_no_credential_shaped_keys():
     assert not suspicious, f"credential-shaped keys: {suspicious}"
 
 
+def _looks_like_a_secret(value):
+    """Mixed-case + digit, no separators, >=12 chars.
+
+    Calibrated against the real template AND real credential shapes. An earlier
+    version used fullmatch(r"[A-Za-z0-9+/=_-]{16,}") which flagged
+    "America/New_York" -- exactly 16 chars of that class -- so the test failed on
+    the very template this task tells you to write. Timezone names, prose and
+    CSV values are excluded by the separator check; a 15-char password like
+    "2NhqS8vGw4HwYeg" is still caught.
+    """
+    if not isinstance(value, str) or len(value) < 12:
+        return False
+    if value.startswith(PLACEHOLDER_PREFIX):
+        return False
+    if any(sep in value for sep in ("/", " ", ",")):
+        return False
+    return bool(re.search(r"[a-z]", value)
+                and re.search(r"[A-Z]", value)
+                and re.search(r"\d", value))
+
+
 def test_no_value_looks_like_a_secret():
     """Defence in depth: a high-entropy opaque string under an innocent key."""
-    bad = []
-    for k, v in _template().items():
-        if isinstance(v, str) and re.fullmatch(r"[A-Za-z0-9+/=_-]{16,}", v) \
-                and not v.startswith(PLACEHOLDER_PREFIX):
-            bad.append(k)
+    bad = [k for k, v in _template().items() if _looks_like_a_secret(v)]
     assert not bad, f"values that look like secrets: {bad}"
+
+
+def test_the_secret_heuristic_actually_bites():
+    """A guard that never fires is not a guard."""
+    assert _looks_like_a_secret("2NhqS8vGw4HwYeg")
+    assert _looks_like_a_secret("ghp_A1b2C3d4E5f6")
+    assert not _looks_like_a_secret("America/New_York")
+    assert not _looks_like_a_secret("lowest_number")
 
 
 def test_all_keys_are_real_plugin_fields():
@@ -387,7 +415,7 @@ Expected: FAIL — `test_template_exists`: missing file.
 - [ ] **Step 4: Run to verify pass (BASH)**
 
 Run: `python -m pytest tests/contract/test_config_template.py -v`
-Expected: 7 passed.
+Expected: 9 passed.
 
 - [ ] **Step 5: Commit (BASH)**
 
@@ -544,13 +572,18 @@ Expected: 6 passed.
 # scripts/bootstrap_ecm.py
 """Restore Event-Channel-Managarr configuration on a rebuilt Dispatcharr box.
 
-Run INSIDE the container, AS THE DISPATCH USER, with the template piped in:
+Run INSIDE the container, AS THE DISPATCH USER.
 
+STEP 1 IS MANDATORY: this script imports bootstrap_merge, which is a SEPARATE
+file. Piping only this script via stdin leaves that import unresolvable and the
+run dies before doing anything.
+
+    docker cp scripts/bootstrap_merge.py dispatcharr:/tmp/bootstrap_merge.py
     $env:ECM_SETTINGS_JSON = (Get-Content config\\ecm_settings.template.json -Raw)
-    docker exec -i -u dispatch -e ECM_SETTINGS_JSON dispatcharr \\
+    docker exec -i -u dispatch -e ECM_SETTINGS_JSON -e ECM_BOOTSTRAP_APPLY dispatcharr \\
         sh -c "cd /app && python3 manage.py shell" < scripts/bootstrap_ecm.py
 
-DEFAULTS TO DRY RUN. Set ECM_BOOTSTRAP_APPLY=1 to actually write.
+DEFAULTS TO DRY RUN. Set $env:ECM_BOOTSTRAP_APPLY = "1" to actually write.
 
 WHY THIS EXISTS: plugin CODE returns via docker cp, but everything that makes it
 do anything lives in Postgres and /data. manage_dummy_epg defaults to False and
@@ -568,7 +601,13 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, "/tmp")
-from bootstrap_merge import merge_settings  # noqa: E402  (docker cp'd alongside)
+try:
+    from bootstrap_merge import merge_settings  # docker cp'd to /tmp -- see docstring
+except ImportError:
+    raise SystemExit(
+        "bootstrap_merge not found on /tmp.\n"
+        "Run first:  docker cp scripts/bootstrap_merge.py dispatcharr:/tmp/bootstrap_merge.py"
+    )
 
 from apps.channels.models import Channel  # noqa: E402
 from apps.epg.models import EPGData, EPGSource  # noqa: E402
@@ -1176,19 +1215,56 @@ Expected: all pass (~30 including parametrized cases).
 Append to `tests/unit/test_bootstrap_merge.py`:
 
 ```python
+def _bootstrap_source():
+    """Extract DAZN_SOURCE_NAME and DAZN_PROPS from bootstrap_ecm.py via ast.
+
+    Parsed, never imported: bootstrap_ecm.py imports Django models at module
+    scope and cannot be imported outside the container.
+    """
+    import ast
+    src = (Path(__file__).resolve().parents[2] / "scripts" / "bootstrap_ecm.py").read_text(
+        encoding="utf-8")
+    tree = ast.parse(src)
+    found = {}
+    for node in tree.body:
+        if isinstance(node, ast.Assign) and len(node.targets) == 1 \
+                and isinstance(node.targets[0], ast.Name) \
+                and node.targets[0].id in ("DAZN_SOURCE_NAME", "DAZN_PROPS"):
+            found[node.targets[0].id] = ast.literal_eval(node.value)
+    assert "DAZN_SOURCE_NAME" in found, "DAZN_SOURCE_NAME not found in bootstrap_ecm.py"
+    assert "DAZN_PROPS" in found, "DAZN_PROPS not found in bootstrap_ecm.py"
+    return found
+
+
 def test_bootstrap_and_profile_agree_on_the_dazn_source_name():
     """Two committed artifacts describing ONE source. If they disagree, a restore
     and the profile model create two different EPGSource rows for the same
     profile - and rev 1 shipped exactly that divergence."""
-    import re as _re
     import ecm_profiles
-    src = (Path(__file__).resolve().parents[2] / "scripts" / "bootstrap_ecm.py").read_text(
-        encoding="utf-8")
-    m = _re.search(r'^DAZN_SOURCE_NAME\s*=\s*"([^"]+)"', src, _re.M)
-    assert m, "could not find DAZN_SOURCE_NAME in bootstrap_ecm.py"
     dazn = next(p for p in ecm_profiles.PROFILES if p.key == "dazn_gmt")
-    assert m.group(1) == dazn.source_name, (
-        f"bootstrap says {m.group(1)!r}, profile says {dazn.source_name!r}")
+    name = _bootstrap_source()["DAZN_SOURCE_NAME"]
+    assert name == dazn.source_name, (
+        f"bootstrap says {name!r}, profile says {dazn.source_name!r}")
+
+
+def test_bootstrap_and_profile_agree_on_the_dazn_props():
+    """The name is not the only thing that can drift. If the restore script writes
+    different custom_properties than the profile models, the restored source
+    renders differently from what the tests verified -- silently.
+
+    bootstrap additionally carries `managed_by` (source identity, which the
+    profile model does not own); every OTHER key must match exactly.
+    """
+    import ecm_profiles
+    dazn = next(p for p in ecm_profiles.PROFILES if p.key == "dazn_gmt")
+    boot = dict(_bootstrap_source()["DAZN_PROPS"])
+    boot.pop("managed_by", None)
+    assert boot == ecm_profiles.profile_props(dazn), (
+        "bootstrap DAZN_PROPS and profile_props(dazn_gmt) have diverged:\n"
+        f"  only in bootstrap: {sorted(set(boot) - set(ecm_profiles.profile_props(dazn)))}\n"
+        f"  only in profile:   {sorted(set(ecm_profiles.profile_props(dazn)) - set(boot))}\n"
+        f"  differing values:  "
+        f"{sorted(k for k in set(boot) & set(ecm_profiles.profile_props(dazn)) if boot[k] != ecm_profiles.profile_props(dazn)[k])}")
 ```
 
 - [ ] **Step 6: Run and commit (BASH)**
@@ -1816,9 +1892,10 @@ If the gate fails, stop and report. Do not adjust expectations to match output.
 ```powershell
 docker exec dispatcharr python manage.py shell -c "
 from apps.epg.models import EPGData, EPGSource
+from apps.channels.models import Channel
 print('temp sources:', EPGSource.objects.filter(name__startswith='__ecm_verify_temp__').count())
 print('temp epgdata:', EPGData.objects.filter(tvg_id__contains='ecm_verify_temp').count())
-print('source 42 channels:', __import__('apps.channels.models', fromlist=['Channel']).Channel.objects.filter(epg_data__epg_source__name='DAZN PPV Dummy (GMT)').count())
+print('source 42 channels:', Channel.objects.filter(epg_data__epg_source__name='DAZN PPV Dummy (GMT)').count())
 "
 ```
 Expected: `0`, `0`, and `99` (the live binding untouched).
