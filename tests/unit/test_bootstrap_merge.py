@@ -7,7 +7,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "scripts"))
 
-from bootstrap_merge import merge_settings, PLACEHOLDER_PREFIX  # noqa: E402
+from bootstrap_merge import CREDENTIAL_ENV, merge_settings, PLACEHOLDER_PREFIX  # noqa: E402
 
 
 def test_merge_is_idempotent():
@@ -89,6 +89,101 @@ def test_bootstrap_and_profile_agree_on_the_dazn_source_name():
     name = _bootstrap_source()["DAZN_SOURCE_NAME"]
     assert name == dazn.source_name, (
         f"bootstrap says {name!r}, profile says {dazn.source_name!r}")
+
+
+def _extract_report_deltas_callable():
+    """Extract `_MISSING`, `_SENSITIVE_KEYS`, and `_report_deltas` out of
+    bootstrap_ecm.py via ast and exec them into an isolated namespace, so the
+    dry-run credential-masking behavior can be exercised WITHOUT importing the
+    module (it imports Django models at module scope and cannot be imported
+    outside the container -- see _bootstrap_source() above).
+
+    Returns the live `_report_deltas` function, bound to a real `_SENSITIVE_KEYS`
+    derived from the real `CREDENTIAL_ENV`, so this is a genuine behavioral
+    test of the masking logic, not just a source-text grep.
+    """
+    import ast
+
+    src = (Path(__file__).resolve().parents[2] / "scripts" / "bootstrap_ecm.py").read_text(
+        encoding="utf-8")
+    tree = ast.parse(src)
+
+    wanted = {"_MISSING", "_SENSITIVE_KEYS"}
+    nodes = []
+    for node in tree.body:
+        if isinstance(node, ast.Assign) and len(node.targets) == 1 \
+                and isinstance(node.targets[0], ast.Name) \
+                and node.targets[0].id in wanted:
+            nodes.append(node)
+        elif isinstance(node, ast.FunctionDef) and node.name == "_report_deltas":
+            nodes.append(node)
+
+    found_names = {
+        n.targets[0].id for n in nodes if isinstance(n, ast.Assign)
+    }
+    assert found_names == wanted, (
+        f"expected {wanted} in bootstrap_ecm.py, found {found_names}")
+    assert any(isinstance(n, ast.FunctionDef) for n in nodes), \
+        "_report_deltas function not found in bootstrap_ecm.py"
+
+    module = ast.Module(body=nodes, type_ignores=[])
+    ast.fix_missing_locations(module)
+
+    namespace = {"CREDENTIAL_ENV": CREDENTIAL_ENV}
+    exec(compile(module, filename="<bootstrap_ecm._report_deltas extract>", mode="exec"),
+         namespace)
+
+    assert namespace["_SENSITIVE_KEYS"] == {key for _env, key in CREDENTIAL_ENV}, (
+        "_SENSITIVE_KEYS must be derived from CREDENTIAL_ENV, the single "
+        "source of truth for which settings keys carry credential material")
+    return namespace["_report_deltas"]
+
+
+def test_report_deltas_masks_credential_values(capsys):
+    """THE REGRESSION TEST. A dry run must never print a real credential value.
+
+    Before this fix, _report_deltas printed
+    `f"{k}: {existing.get(k)!r} -> {merged.get(k)!r}"` unconditionally, so
+    rotating ECM_DISPATCHARR_PASSWORD echoed both the OLD and NEW plaintext
+    password to stdout/terminal scrollback on every dry run. If the masking
+    is removed or bypassed, this test fails because the raw secret strings
+    below reappear in captured stdout.
+    """
+    report_deltas = _extract_report_deltas_callable()
+
+    old_password = "old-s3cret-hunter2"
+    new_password = "new-s3cret-hunter2"
+    old_url = "http://192.168.211.53:9191"
+    new_url = "http://192.168.211.99:9191"
+
+    existing = {
+        "dispatcharr_password": old_password,
+        "dispatcharr_url": old_url,
+        "channel_groups": "US: PPV",
+    }
+    merged = {
+        "dispatcharr_password": new_password,
+        "dispatcharr_url": new_url,
+        "channel_groups": "US: PPV Updated",
+    }
+
+    report_deltas(merged, existing)
+    out = capsys.readouterr().out
+
+    for secret in (old_password, new_password, old_url, new_url):
+        assert secret not in out, (
+            f"credential value {secret!r} leaked into dry-run stdout:\n{out}")
+
+    # The key names must still be visible -- masking must not hide that an
+    # overwrite is happening, only the values.
+    assert "dispatcharr_password" in out
+    assert "dispatcharr_url" in out
+    assert "channel_groups" in out
+    # A non-credential value IS still printed in full (masking is scoped).
+    assert "US: PPV" in out
+    assert "US: PPV Updated" in out
+    # The masked lines carry a visible marker instead of the raw value.
+    assert "masked" in out
 
 
 def test_bootstrap_and_profile_agree_on_the_dazn_props():

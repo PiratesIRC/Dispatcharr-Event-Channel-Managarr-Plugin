@@ -37,7 +37,7 @@ from pathlib import Path
 
 sys.path.insert(0, "/tmp")
 try:
-    from bootstrap_merge import merge_settings  # docker cp'd to /tmp -- see docstring
+    from bootstrap_merge import CREDENTIAL_ENV, merge_settings  # docker cp'd to /tmp -- see docstring
 except ImportError:
     raise SystemExit(
         "bootstrap_merge not found on /tmp.\n"
@@ -95,6 +95,14 @@ def load_template():
 
 _MISSING = object()
 
+# Keys that carry credential material (see CREDENTIAL_ENV in bootstrap_merge.py).
+# dispatcharr_url is included too: it's a private LAN address, and it flows
+# through the same CREDENTIAL_ENV mapping as the username/password -- the
+# config template's own denylist (tests/contract/test_config_template.py)
+# already treats it as not-for-committing. Masking all three is the simpler
+# and safer rule.
+_SENSITIVE_KEYS = {key for _env, key in CREDENTIAL_ENV}
+
 
 def _report_deltas(merged, existing):
     """Print the keys a dry run would ADD vs. the keys it would OVERWRITE.
@@ -103,6 +111,13 @@ def _report_deltas(merged, existing):
     only "added" is reported -- exactly how a wrong committed value (e.g. a
     hide_rules_priority that doesn't match live) could slip past review. Report
     both lists so a changed value is never invisible in the dry-run output.
+
+    Values for keys in _SENSITIVE_KEYS are masked, never printed -- credentials
+    flow through this same `merged`/`existing` dict (CREDENTIAL_ENV maps
+    ECM_DISPATCHARR_URL/USERNAME/PASSWORD onto dispatcharr_url/_username/
+    _password), so printing old/new values here would echo real secrets (e.g.
+    a rotated password) to stdout/terminal scrollback on every dry run. The key
+    NAME is still listed in `changed` so the overwrite stays visible.
     """
     added = sorted(k for k in merged if k not in existing)
     changed = sorted(
@@ -113,7 +128,10 @@ def _report_deltas(merged, existing):
     print(f"[bootstrap]   would CHANGE existing keys: {changed}")
     if changed:
         for k in changed:
-            print(f"[bootstrap]     {k}: {existing.get(k)!r} -> {merged.get(k)!r}")
+            if k in _SENSITIVE_KEYS:
+                print(f"[bootstrap]     {k}: *** -> *** (masked)")
+            else:
+                print(f"[bootstrap]     {k}: {existing.get(k)!r} -> {merged.get(k)!r}")
 
 
 def restore_plugin_settings(template):
