@@ -8,6 +8,31 @@
 
 **Tech Stack:** Python 3, Django ORM (inside Dispatcharr), pytest, Docker.
 
+> **STATUS: EXECUTED 2026-07-19.** All six tasks complete on `feat/s2-multi-source`; 193 tests green;
+> deployed and verified live. Gate `S2_GATE_RESULT=PASS`; applied pass `LOST EPG = 0` with 3 channels
+> moved to the GMT source; acceptance test fired a real `m3u_refresh` and all 3 stayed put. See the
+> spec's §6.1 for the full outcome and its caveats (n=3 during an overnight lull).
+>
+> **Four defects in THIS plan were found by executing it**, each caught because an implementer
+> reported BLOCKED rather than adapting silently:
+> 1. Task 2's expected claim count was **46**, a LIVE measurement, against a FIXTURE holding **48**.
+>    Corrected, plus a set-identity assertion so the test pins names rather than arithmetic.
+> 2. Task 4 asserted `_run_managed_epg_pass` has TWO returns. It has **FOUR** (each branch has an
+>    early bailout). The call sites landed at the top of each branch instead — which turned out to be
+>    *better*: reroute now runs before attach, so a reclaimed channel is written once rather than
+>    created-on-default, orphaned, and reaped.
+> 3. Task 5 used `PluginManager.get().get_plugin_instance(...)`, which does not exist. `get_plugin()`
+>    returns `None` under `manage.py shell` (discovery is skipped for shell commands), and `Plugin()`
+>    cannot substitute because its `__init__` arms the scheduler thread. Fixed by loading the deployed
+>    module by path and allocating with `__new__`.
+> 4. Task 6 said to stop the scheduler thread from a shell. **Impossible** — it lives in the uWSGI
+>    workers, a separate process. The window was instead protected by verifying a 5h35m gap to the
+>    next scheduled tick.
+>
+> A fifth was caught by the gate itself: `settings["timezone"]` is injected at runtime only inside
+> `_scan_and_update_channels`, so calling the pass directly computed `output_timezone='UTC'` against a
+> live `America/Chicago`. The gate now reproduces that injection.
+
 > **rev 2 of the reroute design.** The additive-reroute architecture survived its first review round — three reviewers independently confirmed the five existing methods stay untouched, detach cannot reach the new source, and the same-pass correction genuinely works for applied runs. But that round found **four more Criticals**, fixed here. Sections marked **[REV1 WAS WRONG]** correct a specific error. Across three drafts this slice has now had seven reviews and ten Criticals; treat every claim in it as provisional until a gate proves it.
 
 ## Global Constraints
