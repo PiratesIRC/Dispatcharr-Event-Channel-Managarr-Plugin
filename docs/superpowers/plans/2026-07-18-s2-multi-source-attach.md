@@ -297,10 +297,18 @@ def test_no_default_key_ever_appears_as_a_value():
 
 
 def test_claim_count_on_the_real_corpus():
-    """46 of 278 -- the maximum blast radius before the safety guard narrows it."""
+    """48 of 278 in the COMMITTED FIXTURE -- the maximum blast radius before the
+    safety guard narrows it further.
+
+    Note 48 (fixture) vs ~46 (live, measured later the same day): the provider
+    renames these slots in place, so two had cycled to idle names between the
+    fixture capture and the live measurement. This test is fixture-scoped and must
+    stay 48; a LIVE count belongs in the in-container gate, never here."""
     claims = ecm_profiles.claimed_targets(_names(), _profiles())
-    assert len(claims) == 46
+    assert len(claims) == 48
     assert set(claims.values()) == {"dazn_gmt"}
+    # Ground truth is the name itself, not the arithmetic.
+    assert set(claims) == {n for n in _names() if "(GMT)" in n}
 
 
 def test_empty_input_and_default_only_profiles_yield_no_claims():
@@ -856,9 +864,38 @@ import ecm_profiles  # noqa: E402
 from django.db import transaction  # noqa: E402
 from apps.channels.models import Channel  # noqa: E402
 from apps.epg.models import EPGSource  # noqa: E402
-from apps.plugins.loader import PluginManager  # noqa: E402
 from apps.plugins.models import PluginConfig  # noqa: E402
 import apps.epg.signals as epg_signals  # noqa: E402
+
+
+def load_plugin_instance():
+    """Get a Plugin instance WITHOUT importing Django's plugin machinery.
+
+    Two traps, both hit during implementation:
+
+    1. `PluginManager.get().get_plugin(key)` returns None under `manage.py shell`.
+       Dispatcharr's plugin app SKIPS discovery entirely for shell commands, so
+       nothing is ever registered. There is no live instance to fetch.
+
+    2. `Plugin()` must NOT be called. Its __init__ runs _load_settings(), which
+       arms the background scheduler thread -- a real side effect, and precisely
+       the thing the deploy procedure works to keep under control.
+
+    So: load the DEPLOYED module by path and allocate without __init__.
+    `__new__` is safe here because every method the gate calls uses `self` only
+    for method dispatch and class attributes, never for instance state set in
+    __init__.
+
+    Loading by path also means this reads whatever is actually deployed -- old
+    code before the deploy step, new code after -- which is exactly what the gate
+    should measure.
+    """
+    import importlib.util
+    path = "/data/plugins/event-channel-managarr/plugin.py"
+    spec = importlib.util.spec_from_file_location("_ecm_gate_plugin", path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module.Plugin.__new__(module.Plugin)
 
 GROUP_ID = 1915
 GMT_SOURCE = "DAZN PPV Dummy (GMT)"
@@ -880,9 +917,22 @@ def snapshot():
 
 
 def main():
+    inst = load_plugin_instance()
+    has_new_code = hasattr(inst, "_reroute_claimed_channels")
+    print(f"deployed plugin has the S2 methods: {has_new_code}")
+
     settings = PluginConfig.objects.get(key="event-channel-managarr").settings or {}
+    # `timezone` is injected at RUNTIME by _scan_and_update_channels from
+    # Dispatcharr's own CoreSettings, and is NOT part of stored PluginConfig
+    # settings. This gate calls _run_managed_epg_pass directly, so it must
+    # reproduce that injection or every timezone computation below is made
+    # against a UTC fallback instead of the real display zone. Without this the
+    # gate computed output_timezone='UTC' against a live value of
+    # 'America/Chicago' -- a false FAIL that masked what production would do.
+    settings["timezone"] = inst._dispatcharr_timezone()
+    print(f"injected display timezone: {settings['timezone']!r}")
+
     profiles = ecm_profiles.build_profiles(settings)
-    inst = PluginManager.get().get_plugin_instance("event-channel-managarr")
     chans = list(Channel.objects.filter(channel_group_id=GROUP_ID)
                  .select_related("epg_data__epg_source"))
     enabled = list(Channel.objects.filter(
