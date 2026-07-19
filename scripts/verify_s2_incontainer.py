@@ -70,8 +70,15 @@ def snapshot():
 
 def main():
     settings = PluginConfig.objects.get(key="event-channel-managarr").settings or {}
-    profiles = ecm_profiles.build_profiles(settings)
     inst = load_plugin_instance()
+    # `timezone` is injected at RUNTIME by _scan_and_update_channels from
+    # Dispatcharr's own CoreSettings, and is NOT part of stored PluginConfig
+    # settings. This gate calls _run_managed_epg_pass directly, so it must
+    # reproduce that injection or every timezone computation below is made
+    # against a UTC fallback instead of the real display zone.
+    settings["timezone"] = inst._dispatcharr_timezone()
+    print(f"injected display timezone: {settings['timezone']!r}")
+    profiles = ecm_profiles.build_profiles(settings)
     has_new_code = hasattr(inst, "_reroute_claimed_channels")
     print(f"deployed plugin has the S2 methods: {has_new_code}")
     chans = list(Channel.objects.filter(channel_group_id=GROUP_ID)
