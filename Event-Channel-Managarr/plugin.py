@@ -2181,8 +2181,7 @@ class Plugin:
           (the diff-and-save loop never deletes keys).
         - When display TZ is empty or equal to source TZ: returns plain
           templates but with `output_timezone=source_tz_name` so Dispatcharr
-          formats {starttime}/{endtime} in the correct locale (e.g. 24h for
-          European zones instead of defaulting to 12h AM/PM).
+          converts {starttime}/{endtime} into the display timezone.
         - Otherwise: returns localized templates with the date placeholder
           driven by `date_format` (US/Auto -> {month}/{day};
           EU -> {day}/{month}) and a TZ abbreviation suffix computed for
@@ -2190,14 +2189,27 @@ class Plugin:
           (e.g., +0530), the suffix is omitted but time conversion still
           happens via Dispatcharr's output_timezone.
 
+        Time-of-day placeholder: Dispatcharr's dummy EPG renderer only ever
+        formats {starttime}/{endtime} as 12-hour AM/PM — it does NOT infer
+        12h vs 24h from output_timezone or locale. This plugin instead picks
+        the placeholder itself based on `dummy_epg_channel_format`: SE names
+        already carry 24-hour times (e.g. "19:55"), so SE uses
+        {starttime24}/{endtime24}; US names carry native AM/PM times, so US
+        keeps {starttime}/{endtime}.
+
         `fallback_title_template` is set in the base `managed_props` and
         is never overridden here.
         """
+        channel_format = str(settings.get("dummy_epg_channel_format",
+                                          self.DEFAULT_DUMMY_EPG_CHANNEL_FORMAT)).strip().upper()
+        start_ph = "{starttime24}" if channel_format == "SE" else "{starttime}"
+        end_ph = "{endtime24}" if channel_format == "SE" else "{endtime}"
+
         DEFAULTS = {
             "output_timezone": "",
             "title_template": "{title}",
-            "upcoming_title_template": "Upcoming at {starttime}: {title}",
-            "ended_title_template": "Ended at {endtime}: {title}",
+            "upcoming_title_template": f"Upcoming at {start_ph}: {{title}}",
+            "ended_title_template": f"Ended at {end_ph}: {{title}}",
         }
 
         source_tz_name = str(settings.get("dummy_epg_event_timezone", "")).strip()
@@ -2214,8 +2226,8 @@ class Plugin:
             return DEFAULTS
 
         # No display TZ configured, or same as source: no time conversion needed,
-        # but still pass output_timezone so Dispatcharr formats {starttime}/{endtime}
-        # in the correct locale (e.g. 24h for European zones rather than 12h AM/PM).
+        # but still pass output_timezone so Dispatcharr converts {starttime}/{endtime}
+        # into the display timezone (the SE/US placeholder choice above still applies).
         if not display_tz_name or source_tz_name == display_tz_name:
             return {**DEFAULTS, "output_timezone": source_tz_name}
 
@@ -2242,8 +2254,8 @@ class Plugin:
         return {
             "output_timezone": display_tz_name,
             "title_template": "{title}",
-            "upcoming_title_template": f"Upcoming at {date_ph} {{starttime}}{suffix}: {{title}}",
-            "ended_title_template": f"Ended at {date_ph} {{endtime}}{suffix}: {{title}}",
+            "upcoming_title_template": f"Upcoming at {date_ph} {start_ph}{suffix}: {{title}}",
+            "ended_title_template": f"Ended at {date_ph} {end_ph}{suffix}: {{title}}",
         }
 
     def _get_or_create_managed_epg_source(self, settings, logger):
@@ -2320,6 +2332,17 @@ class Plugin:
         else:
             title_pattern, time_pattern, date_pattern = us_title_pattern, us_time_pattern, us_date_pattern
 
+        # Dispatcharr's dummy renderer always formats {starttime}/{endtime} as
+        # 12-hour AM/PM — it never infers 12h vs 24h on its own. SE channel
+        # names already carry 24-hour times, so use the {starttime24}/
+        # {endtime24} placeholders for SE; US names carry native AM/PM, so
+        # keep the 12-hour placeholders there. (_localized_template_props
+        # below re-derives this same choice and overrides these two keys
+        # whenever a valid dummy_epg_event_timezone is set — these values
+        # are just the fallback for when it isn't.)
+        start_ph = "{starttime24}" if channel_format == "SE" else "{starttime}"
+        end_ph = "{endtime24}" if channel_format == "SE" else "{endtime}"
+
         managed_props = {
             "title_pattern": title_pattern,
             "time_pattern": time_pattern,
@@ -2328,10 +2351,10 @@ class Plugin:
             # Informative pre/post-event titles using Dispatcharr's
             # auto-computed {starttime}/{endtime} placeholders plus the
             # extracted {title}. Examples at render time:
-            #   Upcoming at 8:00 PM: Cage Fury FC 153
-            #   Ended at 11:00 PM: Cage Fury FC 153
-            "upcoming_title_template": "Upcoming at {starttime}: {title}",
-            "ended_title_template": "Ended at {endtime}: {title}",
+            #   US:  Upcoming at 8:00 PM: Cage Fury FC 153
+            #   SE:  Upcoming at 19:55: GIRONA - REAL SOCIEDAD
+            "upcoming_title_template": f"Upcoming at {start_ph}: {{title}}",
+            "ended_title_template": f"Ended at {end_ph}: {{title}}",
             # Dispatcharr's dummy renderer uses fallback_title_template VERBATIM —
             # it never substitutes {channel_name} (see apps/output/views.py
             # generate_fallback_programs: `title = fallback_title if fallback_title
