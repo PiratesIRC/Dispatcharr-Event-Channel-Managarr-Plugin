@@ -26,12 +26,28 @@ import ecm_profiles  # noqa: E402
 
 # Recorded from the pre-S2 baseline (Task 3 Step 2). If one of these changes, this
 # slice has modified machinery it promised not to touch.
+#
+# Two of the five were RE-RECORDED on 2026-08-12, deliberately and for a reason
+# unrelated to S2. The Swedish channel-name format now selects the 24-hour
+# {starttime24}/{endtime24} placeholders instead of the 12-hour ones, which
+# requires editing exactly the two methods that build those templates. Measured
+# in the container at /app/apps/output/epg.py: {starttime}/{endtime} are
+# unconditionally converted to 12-hour AM/PM, and output_timezone converts the
+# instant rather than the format, so a channel named "19:55" was being titled
+# "Upcoming at 7:55 PM" against its own name.
+#
+# Re-recording a pin is only honest when the change that moved it was intended
+# and is separately tested. tests/unit/test_se_time_placeholders.py covers the
+# behaviour these two hashes no longer pin. The other three remain at their
+# original S2 baseline values and must not be touched without the same argument.
 FROZEN_BODIES = {
     "_attach_managed_epg": "ad018b684c875cec7c9d3d341c81103bc4bad00fe2389bf74ccbaefc80b072ff",
     "_detach_managed_epg": "086a0ef01f87f7e3770e3ac3a84ebb40c7022244675b625b13769462dddd4942",
     "_managed_override_ids": "c08f0bf1c24837f888608e82d2f54b96bb30c5b5fa36ebd7bdc305edc263b534",
-    "_get_or_create_managed_epg_source": "16480528054402082ee07c025f390b2a2ade7b2bd1e59cfee0c66a076d9e9b20",
-    "_localized_template_props": "c323376d0b18b007b59085709482d5742a6f7a97413d54eba2c23270513e69c1",
+    # re-recorded 2026-08-12, see the note above
+    "_get_or_create_managed_epg_source": "2080ca202f43e4d4f8178ead950f8f4159c40164c6ca47088bf57ef6f16316e1",
+    # re-recorded 2026-08-12, see the note above
+    "_localized_template_props": "894376eb58ed487caf1f963fb7e0758ebe2fbc64072034b168fa11354868c5c3",
 }
 
 
