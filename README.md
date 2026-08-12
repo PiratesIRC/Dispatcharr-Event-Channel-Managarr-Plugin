@@ -365,6 +365,37 @@ To update Event Channel Managarr from a previous version:
 docker restart dispatcharr
 ```
 
+## Disclaimer
+
+**Event Channel Managarr provides no television content of any kind.** It supplies no channels, no
+playlists, no streams, no electronic programme guide data and no provider accounts, and it contains
+no list of where to obtain any of those. It bundles no reference data at all: everything it works on
+already exists in **your** Dispatcharr installation.
+
+What it reads is channel *names* and the programme data already stored against your channels. It
+parses event titles, dates and times out of those names in order to decide which channels currently
+have an event. **It never opens, reads, decodes, records, restreams or redistributes a stream**, and
+it never reads a stream URL. It makes exactly one outbound network request, and only when you click
+**Validate Configuration**: a check to the GitHub releases API for this plugin, to tell you whether a
+newer version exists.
+
+What it writes is confined to your own Dispatcharr database and its data directory: channel
+visibility in the profiles you select, bindings to a dummy EPG source it manages, and CSV exports.
+The main scan has a **Dry Run** that writes nothing and exports what it *would* do to CSV — run that
+first. The other actions that change data (**Run Now**, **Remove EPG from Hidden Channels**, **Clear
+CSV Exports**, **Cleanup Orphaned Tasks**) each ask for confirmation before they act.
+
+**You are responsible for what you connect Dispatcharr to.** Whether a particular provider,
+subscription, playlist or stream is lawful for you to use depends on your agreement with that
+provider and on the law where you live. Use only sources you are authorised to use. Nothing in this
+project is intended to enable, encourage or assist access to content you have no right to access.
+
+All product names, channel names, network names, trademarks and registered trademarks mentioned in
+this project, or appearing in its examples, are the property of their respective owners. This project
+is an independent, community-built plugin. It is not affiliated with, endorsed by, or sponsored by
+any television network, broadcaster, streaming service or IPTV provider, and it is not affiliated
+with the Dispatcharr project beyond being a plugin written for it.
+
 ## Sponsor
 
 This plugin is free and always will be. If it saves you time and you would like
