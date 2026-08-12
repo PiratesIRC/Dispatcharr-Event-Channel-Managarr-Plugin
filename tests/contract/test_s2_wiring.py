@@ -36,18 +36,24 @@ import ecm_profiles  # noqa: E402
 # instant rather than the format, so a channel named "19:55" was being titled
 # "Upcoming at 7:55 PM" against its own name.
 #
+# ALL FIVE were also re-recorded on 2026-08-12 for a second, unrelated reason:
+# the digest scheme changed. It used to hash ast.dump(fn), whose output is not
+# stable across Python versions, so every pin failed on CI (3.11) while passing
+# locally (3.12). It now hashes the function's own source text, which involves
+# no interpreter at all. See _body_digest below.
+#
 # Re-recording a pin is only honest when the change that moved it was intended
 # and is separately tested. tests/unit/test_se_time_placeholders.py covers the
 # behaviour these two hashes no longer pin. The other three remain at their
 # original S2 baseline values and must not be touched without the same argument.
 FROZEN_BODIES = {
-    "_attach_managed_epg": "ad018b684c875cec7c9d3d341c81103bc4bad00fe2389bf74ccbaefc80b072ff",
-    "_detach_managed_epg": "086a0ef01f87f7e3770e3ac3a84ebb40c7022244675b625b13769462dddd4942",
-    "_managed_override_ids": "c08f0bf1c24837f888608e82d2f54b96bb30c5b5fa36ebd7bdc305edc263b534",
+    "_attach_managed_epg": "b0126debd9231deb49625ca0404952679197b862bff6cd86c618eb46fe3b335e",
+    "_detach_managed_epg": "9e8d367e7d0789715e04249dab786a494b7f6919a60d6f9c755029e8261b98ca",
+    "_managed_override_ids": "5d41e55a7146863609792f31f20134469c090b51938c1ab67d0f34399c526d6c",
     # re-recorded 2026-08-12, see the note above
-    "_get_or_create_managed_epg_source": "2080ca202f43e4d4f8178ead950f8f4159c40164c6ca47088bf57ef6f16316e1",
+    "_get_or_create_managed_epg_source": "372b7c1982cedf76b05aa9962159e3d380a06d53f8ecd5c0e6d307df48f4479a",
     # re-recorded 2026-08-12, see the note above
-    "_localized_template_props": "894376eb58ed487caf1f963fb7e0758ebe2fbc64072034b168fa11354868c5c3",
+    "_localized_template_props": "8daf6f68b33352690f255dc6d7185546c0ea70596743e633b0403861c62e75dd",
 }
 
 
@@ -66,9 +72,31 @@ def test_frozen_baseline_was_recorded():
     assert len(FROZEN_BODIES) == 5, "record the baseline hashes (Task 3 Step 2)"
 
 
+def _body_digest(name):
+    """Digest a method body in a way that does not depend on the interpreter.
+
+    This used to hash `ast.dump(fn)`, which is NOT stable across Python
+    versions: measured 2026-08-12 on the same unchanged source,
+    _attach_managed_epg digests to ad018b68... under Python 3.12 and
+    c996e410... under 3.13. The recorded values were therefore only ever
+    reproducible on the exact interpreter that produced them, and since CI runs
+    3.11 while they were recorded on 3.12, every one of these pins failed on CI
+    from the day it was written. Locally they passed, which is why it went
+    unnoticed until the branch was first pushed.
+
+    Hashing the function's own source text has no interpreter involvement at
+    all. Line endings are normalised so a CRLF checkout on Windows and an LF one
+    on Linux agree.
+    """
+    segment = ast.get_source_segment(_source(), _fn(name))
+    assert segment, f"could not read the source of {name}"
+    normalised = segment.replace("\r\n", "\n").rstrip()
+    return hashlib.sha256(normalised.encode("utf-8")).hexdigest()
+
+
 @pytest.mark.parametrize("name", sorted(FROZEN_BODIES))
 def test_frozen_method_body_is_unchanged(name):
-    digest = hashlib.sha256(ast.dump(_fn(name)).encode()).hexdigest()
+    digest = _body_digest(name)
     assert digest == FROZEN_BODIES[name], (
         f"{name}'s BODY changed. This slice's entire safety argument is that the "
         f"existing pass is untouched.")
