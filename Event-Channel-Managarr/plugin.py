@@ -302,49 +302,43 @@ class Plugin:
                 {"label": "Australia/Sydney", "value": "Australia/Sydney"}
             ]
     
+    def _version_status_message(self):
+        """Describe the installed version against the last CACHED update check.
+
+        Reads only. It never contacts GitHub, because its caller is the `fields`
+        property, which Dispatcharr evaluates every time the plugin settings page
+        is rendered. The refresh happens in the Validate Configuration action
+        instead, which runs only when the operator clicks it.
+        """
+        current = self.version
+        try:
+            cached = self._read_cached_version_info()
+        except Exception as e:
+            LOGGER.debug(f"Could not read the cached version check: {e}")
+            return f"Installed: v{current}. Update check unavailable."
+
+        if not cached or not cached.get("latest_version"):
+            return (f"Installed: v{current}. No update check yet - run "
+                    f"Validate Configuration to check.")
+
+        latest = cached["latest_version"]
+        if current == latest.lstrip("v"):
+            return f"You are up to date (v{current})."
+        return f"Update available. Installed: v{current}, latest: {latest}."
+
     @property
     def fields(self):
-        """Dynamically generate fields list with version check"""
-        # Check for updates from GitHub
-        version_message = "Checking for updates..."
-        try:
-            # Check if we should perform a version check (once per day)
-            if self._should_check_for_updates():
-                # Perform the version check
-                latest_version = self._get_latest_version(PluginConfig.GITHUB_OWNER, PluginConfig.GITHUB_REPO)
+        """Build the settings form.
 
-                # Check if it's an error message
-                if latest_version.startswith("Error"):
-                    version_message = f"⚠️ Could not check for updates: {latest_version}"
-                else:
-                    # Save the check result
-                    self._save_version_check(latest_version)
-
-                    # Compare versions
-                    current = self.version
-                    # Remove 'v' prefix if present in latest_version
-                    latest_clean = latest_version.lstrip('v')
-
-                    if current == latest_clean:
-                        version_message = f"✅ You are up to date (v{current})"
-                    else:
-                        version_message = f"🔔 Update available! Current: v{current} → Latest: {latest_version}"
-            else:
-                # Use cached version info
-                if self.cached_version_info:
-                    latest_version = self.cached_version_info['latest_version']
-                    current = self.version
-                    latest_clean = latest_version.lstrip('v')
-
-                    if current == latest_clean:
-                        version_message = f"✅ You are up to date (v{current})"
-                    else:
-                        version_message = f"🔔 Update available! Current: v{current} → Latest: {latest_version}"
-                else:
-                    version_message = "ℹ️ Version check will run on next page load"
-        except Exception as e:
-            LOGGER.debug(f"Error during version check: {e}")
-            version_message = f"⚠️ Error checking for updates: {str(e)}"
+        MUST NOT perform network or blocking I/O. Dispatcharr evaluates this
+        property on every settings-page render, so anything slow here delays the
+        page, and anything requiring the internet makes the settings
+        unreachable when the box is offline. It previously called GitHub from
+        here with a five second timeout; worse, the once-a-day throttle was only
+        written on SUCCESS, so a machine that could not reach GitHub retried on
+        every single render rather than once a day.
+        """
+        version_message = self._version_status_message()
 
         # Build the fields list dynamically
         fields_list = [
@@ -686,6 +680,42 @@ class Plugin:
             # Catch other errors like timeouts
             return f"Error: {str(e)}"
 
+    def _read_cached_version_info(self):
+        """Return the stored update-check result, or None. Reads, never fetches.
+
+        Kept separate from _should_check_for_updates so the settings form has a
+        way to report the last known result without deciding whether a fresh
+        check is due, and without any path that could reach the network.
+        """
+        if not os.path.exists(self.version_check_file):
+            return None
+        with open(self.version_check_file, encoding="utf-8") as f:
+            data = json.load(f)
+        if not data.get("latest_version"):
+            return None
+        self.cached_version_info = {
+            "latest_version": data["latest_version"],
+            "last_check_time": data.get("last_check_time"),
+        }
+        return self.cached_version_info
+
+    def _refresh_version_check(self):
+        """Contact GitHub if a check is due, and record the outcome either way.
+
+        Called from the Validate Configuration action, never from the `fields`
+        property. Recording a FAILED attempt is the point: the previous code
+        only wrote the timestamp on success, so a box that could not reach
+        GitHub never engaged the once-a-day throttle and retried on every
+        settings-page render.
+        """
+        if not self._should_check_for_updates():
+            return None
+        latest = self._get_latest_version(PluginConfig.GITHUB_OWNER,
+                                          PluginConfig.GITHUB_REPO)
+        failed = latest.startswith("Error") or latest.startswith("HTTP error")
+        self._save_version_check(None if failed else latest)
+        return latest
+
     def _should_check_for_updates(self):
         """
         Check if we should perform a version check (once per day).
@@ -694,23 +724,28 @@ class Plugin:
         """
         try:
             if os.path.exists(self.version_check_file):
-                with open(self.version_check_file, 'r') as f:
+                with open(self.version_check_file, encoding="utf-8") as f:
                     data = json.load(f)
                     last_check_time = data.get('last_check_time')
                     cached_latest_version = data.get('latest_version')
 
-                    if last_check_time and cached_latest_version:
+                    # The throttle is driven by the TIMESTAMP alone. It used to
+                    # require a cached version string as well, which meant a
+                    # failed check never throttled anything: nothing was written
+                    # on failure, so an unreachable GitHub was retried on every
+                    # settings-page render instead of once a day.
+                    if last_check_time:
                         # Check if last check was within 24 hours
                         last_check_dt = datetime.fromisoformat(last_check_time)
                         now = datetime.now()
                         time_diff = now - last_check_dt
 
                         if time_diff.total_seconds() < self.VERSION_CHECK_INTERVAL:
-                            # Use cached data
-                            self.cached_version_info = {
-                                'latest_version': cached_latest_version,
-                                'last_check_time': last_check_time
-                            }
+                            if cached_latest_version:
+                                self.cached_version_info = {
+                                    'latest_version': cached_latest_version,
+                                    'last_check_time': last_check_time
+                                }
                             return False  # Don't check again
 
             # Either file doesn't exist, or it's been more than 24 hours
@@ -721,13 +756,17 @@ class Plugin:
             return True  # Check if there's an error
 
     def _save_version_check(self, latest_version):
-        """Save the version check result to disk with timestamp"""
+        """Record the outcome of an update check, with a timestamp.
+
+        `latest_version` is None when the check failed. The timestamp is written
+        either way, so the once-a-day throttle engages on failure too.
+        """
         try:
             data = {
                 'latest_version': latest_version,
                 'last_check_time': datetime.now().isoformat()
             }
-            with open(self.version_check_file, 'w') as f:
+            with open(self.version_check_file, 'w', encoding="utf-8") as f:
                 json.dump(data, f, indent=2)
             LOGGER.debug(f"Saved version check: {latest_version}")
         except Exception as e:
@@ -836,7 +875,16 @@ class Plugin:
         """Validate all plugin configuration settings"""
         # Save settings first to ensure any changes in the UI are persisted
         self._save_settings(settings)
-        
+
+        # Refresh the update check here rather than in the `fields` property.
+        # This action runs only when the operator clicks it, so a slow or
+        # unreachable GitHub delays a deliberate click instead of every render
+        # of the settings page. A failure must never fail validation.
+        try:
+            self._refresh_version_check()
+        except Exception as e:
+            logger.debug(f"Update check skipped: {e}")
+
         validation_results = []
         has_errors = False
 

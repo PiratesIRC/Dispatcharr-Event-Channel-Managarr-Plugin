@@ -72,6 +72,14 @@ SCHEDULED_TASKS_GUIDE.md
 zip.cmd
 bump_version.py
 
+# Plugin run output written into the repository root by accident. An 11 KB
+# dry-run report from 2026-06-20 (message.txt) had sat here untracked for
+# weeks; untracked is not safe, because a `git add -A` sweeps it in. The file
+# itself is left alone -- this only stops it, and the next one, being committed.
+message.txt
+*_dry_run_*.csv
+*_Dry_Run_*.csv
+
 # Internal planning / design docs are TRACKED (un-ignored 2026-07-18).
 # They cannot reach end users regardless: release zips are built from the
 # INNER folder (git archive HEAD:Event-Channel-Managarr), so nothing at the
