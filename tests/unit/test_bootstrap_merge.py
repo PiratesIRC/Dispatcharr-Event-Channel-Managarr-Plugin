@@ -151,10 +151,16 @@ def test_report_deltas_masks_credential_values(capsys):
     """
     report_deltas = _extract_report_deltas_callable()
 
+    # Addresses come from 192.0.2.0/24 (TEST-NET-1), which RFC 5737 reserves for
+    # documentation and which routes nowhere. This test previously used the
+    # development installation's real LAN addresses, which named the operator's
+    # internal addressing in a public repository and told the test nothing extra:
+    # all it needs is two URLs that differ. The passwords are and always were
+    # obvious fakes.
     old_password = "old-s3cret-hunter2"
     new_password = "new-s3cret-hunter2"
-    old_url = "http://192.168.211.53:9191"
-    new_url = "http://192.168.211.99:9191"
+    old_url = "http://192.0.2.53:9191"
+    new_url = "http://192.0.2.99:9191"
 
     existing = {
         "dispatcharr_password": old_password,

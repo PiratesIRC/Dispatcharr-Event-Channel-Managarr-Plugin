@@ -41,6 +41,7 @@ _PLUGIN_DIR = os.path.dirname(os.path.abspath(__file__))
 if _PLUGIN_DIR not in _sys.path:
     _sys.path.insert(0, _PLUGIN_DIR)
 import ecm_parsing
+import ecm_profiles
 
 # Backwards-compatible aliases: existing references to these names elsewhere in
 # plugin.py (e.g. the [PastDate] stop-time check) keep working, now backed by the
@@ -301,49 +302,43 @@ class Plugin:
                 {"label": "Australia/Sydney", "value": "Australia/Sydney"}
             ]
     
+    def _version_status_message(self):
+        """Describe the installed version against the last CACHED update check.
+
+        Reads only. It never contacts GitHub, because its caller is the `fields`
+        property, which Dispatcharr evaluates every time the plugin settings page
+        is rendered. The refresh happens in the Validate Configuration action
+        instead, which runs only when the operator clicks it.
+        """
+        current = self.version
+        try:
+            cached = self._read_cached_version_info()
+        except Exception as e:
+            LOGGER.debug(f"Could not read the cached version check: {e}")
+            return f"Installed: v{current}. Update check unavailable."
+
+        if not cached or not cached.get("latest_version"):
+            return (f"Installed: v{current}. No update check yet - run "
+                    f"Validate Configuration to check.")
+
+        latest = cached["latest_version"]
+        if current == latest.lstrip("v"):
+            return f"You are up to date (v{current})."
+        return f"Update available. Installed: v{current}, latest: {latest}."
+
     @property
     def fields(self):
-        """Dynamically generate fields list with version check"""
-        # Check for updates from GitHub
-        version_message = "Checking for updates..."
-        try:
-            # Check if we should perform a version check (once per day)
-            if self._should_check_for_updates():
-                # Perform the version check
-                latest_version = self._get_latest_version(PluginConfig.GITHUB_OWNER, PluginConfig.GITHUB_REPO)
+        """Build the settings form.
 
-                # Check if it's an error message
-                if latest_version.startswith("Error"):
-                    version_message = f"⚠️ Could not check for updates: {latest_version}"
-                else:
-                    # Save the check result
-                    self._save_version_check(latest_version)
-
-                    # Compare versions
-                    current = self.version
-                    # Remove 'v' prefix if present in latest_version
-                    latest_clean = latest_version.lstrip('v')
-
-                    if current == latest_clean:
-                        version_message = f"✅ You are up to date (v{current})"
-                    else:
-                        version_message = f"🔔 Update available! Current: v{current} → Latest: {latest_version}"
-            else:
-                # Use cached version info
-                if self.cached_version_info:
-                    latest_version = self.cached_version_info['latest_version']
-                    current = self.version
-                    latest_clean = latest_version.lstrip('v')
-
-                    if current == latest_clean:
-                        version_message = f"✅ You are up to date (v{current})"
-                    else:
-                        version_message = f"🔔 Update available! Current: v{current} → Latest: {latest_version}"
-                else:
-                    version_message = "ℹ️ Version check will run on next page load"
-        except Exception as e:
-            LOGGER.debug(f"Error during version check: {e}")
-            version_message = f"⚠️ Error checking for updates: {str(e)}"
+        MUST NOT perform network or blocking I/O. Dispatcharr evaluates this
+        property on every settings-page render, so anything slow here delays the
+        page, and anything requiring the internet makes the settings
+        unreachable when the box is offline. It previously called GitHub from
+        here with a five second timeout; worse, the once-a-day throttle was only
+        written on SUCCESS, so a machine that could not reach GitHub retried on
+        every single render rather than once a day.
+        """
+        version_message = self._version_status_message()
 
         # Build the fields list dynamically
         fields_list = [
@@ -685,6 +680,42 @@ class Plugin:
             # Catch other errors like timeouts
             return f"Error: {str(e)}"
 
+    def _read_cached_version_info(self):
+        """Return the stored update-check result, or None. Reads, never fetches.
+
+        Kept separate from _should_check_for_updates so the settings form has a
+        way to report the last known result without deciding whether a fresh
+        check is due, and without any path that could reach the network.
+        """
+        if not os.path.exists(self.version_check_file):
+            return None
+        with open(self.version_check_file, encoding="utf-8") as f:
+            data = json.load(f)
+        if not data.get("latest_version"):
+            return None
+        self.cached_version_info = {
+            "latest_version": data["latest_version"],
+            "last_check_time": data.get("last_check_time"),
+        }
+        return self.cached_version_info
+
+    def _refresh_version_check(self):
+        """Contact GitHub if a check is due, and record the outcome either way.
+
+        Called from the Validate Configuration action, never from the `fields`
+        property. Recording a FAILED attempt is the point: the previous code
+        only wrote the timestamp on success, so a box that could not reach
+        GitHub never engaged the once-a-day throttle and retried on every
+        settings-page render.
+        """
+        if not self._should_check_for_updates():
+            return None
+        latest = self._get_latest_version(PluginConfig.GITHUB_OWNER,
+                                          PluginConfig.GITHUB_REPO)
+        failed = latest.startswith("Error") or latest.startswith("HTTP error")
+        self._save_version_check(None if failed else latest)
+        return latest
+
     def _should_check_for_updates(self):
         """
         Check if we should perform a version check (once per day).
@@ -693,23 +724,28 @@ class Plugin:
         """
         try:
             if os.path.exists(self.version_check_file):
-                with open(self.version_check_file, 'r') as f:
+                with open(self.version_check_file, encoding="utf-8") as f:
                     data = json.load(f)
                     last_check_time = data.get('last_check_time')
                     cached_latest_version = data.get('latest_version')
 
-                    if last_check_time and cached_latest_version:
+                    # The throttle is driven by the TIMESTAMP alone. It used to
+                    # require a cached version string as well, which meant a
+                    # failed check never throttled anything: nothing was written
+                    # on failure, so an unreachable GitHub was retried on every
+                    # settings-page render instead of once a day.
+                    if last_check_time:
                         # Check if last check was within 24 hours
                         last_check_dt = datetime.fromisoformat(last_check_time)
                         now = datetime.now()
                         time_diff = now - last_check_dt
 
                         if time_diff.total_seconds() < self.VERSION_CHECK_INTERVAL:
-                            # Use cached data
-                            self.cached_version_info = {
-                                'latest_version': cached_latest_version,
-                                'last_check_time': last_check_time
-                            }
+                            if cached_latest_version:
+                                self.cached_version_info = {
+                                    'latest_version': cached_latest_version,
+                                    'last_check_time': last_check_time
+                                }
                             return False  # Don't check again
 
             # Either file doesn't exist, or it's been more than 24 hours
@@ -720,13 +756,17 @@ class Plugin:
             return True  # Check if there's an error
 
     def _save_version_check(self, latest_version):
-        """Save the version check result to disk with timestamp"""
+        """Record the outcome of an update check, with a timestamp.
+
+        `latest_version` is None when the check failed. The timestamp is written
+        either way, so the once-a-day throttle engages on failure too.
+        """
         try:
             data = {
                 'latest_version': latest_version,
                 'last_check_time': datetime.now().isoformat()
             }
-            with open(self.version_check_file, 'w') as f:
+            with open(self.version_check_file, 'w', encoding="utf-8") as f:
                 json.dump(data, f, indent=2)
             LOGGER.debug(f"Saved version check: {latest_version}")
         except Exception as e:
@@ -835,7 +875,16 @@ class Plugin:
         """Validate all plugin configuration settings"""
         # Save settings first to ensure any changes in the UI are persisted
         self._save_settings(settings)
-        
+
+        # Refresh the update check here rather than in the `fields` property.
+        # This action runs only when the operator clicks it, so a slow or
+        # unreachable GitHub delays a deliberate click instead of every render
+        # of the settings page. A failure must never fail validation.
+        try:
+            self._refresh_version_check()
+        except Exception as e:
+            logger.debug(f"Update check skipped: {e}")
+
         validation_results = []
         has_errors = False
 
@@ -2246,6 +2295,235 @@ class Plugin:
             "ended_title_template": f"Ended at {date_ph} {{endtime}}{suffix}: {{title}}",
         }
 
+    def _epg_binding_is_reroutable(self, channel, logger=None):
+        """May this channel's EPG binding be moved to another source?
+
+        Only when it holds NOTHING, a dummy source, or a real source with no
+        programme in the next 24h.
+
+        A name claim alone is NOT sufficient. `Next:` and `(GMT)` are standard EPG
+        conventions, not DAZN-specific, so a claim can match a channel carrying a
+        legitimately populated real EPG on some other install. Moving that would
+        silently destroy a working guide. This mirrors the guard
+        _managed_override_ids already applies (bug-043).
+
+        Fails CLOSED: any error resolves to False (not reroutable), i.e. leave the
+        channel exactly where it is -- the pre-existing behavior -- rather than risk
+        rerouting a channel whose guide status could not actually be confirmed.
+        """
+        from datetime import timedelta
+        from django.utils import timezone as djtz
+
+        epg_data = channel.epg_data
+        if epg_data is None or epg_data.epg_source is None:
+            return True
+        if getattr(epg_data.epg_source, "source_type", None) == "dummy":
+            return True
+        now = djtz.now()
+        try:
+            return not ProgramData.objects.filter(
+                epg_id=epg_data.id, start_time__lt=now + timedelta(hours=24),
+                end_time__gte=now).exists()
+        except Exception as exc:
+            if logger is not None:
+                logger.warning(f"{LOG_PREFIX} Reroutable check failed for channel "
+                               f"{channel.id!r}; leaving binding in place: {exc}")
+            return False
+
+    def _reap_orphaned_epg_data(self, source, logger):
+        """Delete attach-created EPGData rows on `source` that no channel references.
+
+        The existing reaper lives inside _detach_managed_epg, has exactly one call
+        site, and is always scoped to the default source -- so rows this slice
+        creates on a profile source would otherwise be unreapable by construction.
+        Live evidence that the gap is real: the DEFAULT source already carries 14
+        orphaned DAZN-named rows today.
+
+        The UUID-shaped tvg_id filter spares each source's own representative row.
+        """
+        from apps.epg.models import EPGData
+        try:
+            referenced = set(Channel.objects.filter(epg_data__epg_source=source)
+                             .values_list("epg_data_id", flat=True))
+            orphans = (EPGData.objects.filter(epg_source=source)
+                       .exclude(id__in=referenced)
+                       .filter(tvg_id__regex=r'^[0-9a-fA-F-]{36}$'))
+            count = orphans.count()
+            if count:
+                orphans.delete()
+                logger.info(f"{LOG_PREFIX} Reaped {count} orphaned EPGData row(s) "
+                            f"from {source.name!r}")
+            return count
+        except Exception as exc:
+            logger.warning(f"{LOG_PREFIX} Orphan reap failed for {source.name!r}: {exc}")
+            return 0
+
+    def _managed_props_for_profile(self, profile, settings):
+        """EPGSource.custom_properties payload for one non-default profile.
+
+        profile.timezone is the FIRST argument to resolve_output_timezone (the
+        SOURCE zone). Both parameters are plain strings, so transposing them raises
+        nothing and renders every time wrong.
+
+        This overwrites the profile's frozen title templates with a clock-computed
+        equivalent, so a stored template self-corrects at the CDT/CST boundary. An
+        adopted source's templates and its `managed_by` WILL be rewritten -- a
+        deliberate correction, not drift.
+        """
+        props = dict(ecm_profiles.profile_props(profile))
+        props["managed_by"] = "event-channel-managarr"
+        props.update(ecm_profiles.resolve_output_timezone(
+            profile.timezone,
+            self._get_system_timezone(settings),
+            settings.get("date_format", "Auto")))
+        return props
+
+    def _ensure_profile_source(self, profile, settings, logger):
+        """Get or create the dummy EPGSource for ONE non-default profile.
+
+        Called only when a channel actually claims this profile, so a source is
+        never created speculatively. Returns None on failure -- the caller then
+        leaves those channels alone, which is the pre-S2 behavior.
+        """
+        from apps.epg.models import EPGSource
+
+        desired = self._managed_props_for_profile(profile, settings)
+        try:
+            source, created = EPGSource.objects.get_or_create(
+                name=profile.source_name, source_type="dummy",
+                defaults={"custom_properties": desired, "is_active": True,
+                          "refresh_interval": 0})
+        except Exception as exc:
+            logger.warning(f"{LOG_PREFIX} Could not get/create EPG source "
+                           f"{profile.source_name!r}: {exc}")
+            return None
+
+        if created:
+            logger.info(f"{LOG_PREFIX} Created EPG source {profile.source_name!r}")
+            return source
+
+        # Refresh non-pattern keys only. Pattern keys are left alone: this slice
+        # does not own the user-customization question for an adopted source, and
+        # overwriting a UI-edited pattern is the issue-21 regression.
+        current = dict(source.custom_properties or {})
+        changed = False
+        for key, value in desired.items():
+            if key in ("title_pattern", "time_pattern", "date_pattern"):
+                continue
+            if current.get(key) != value:
+                current[key] = value
+                changed = True
+        if changed:
+            source.custom_properties = current
+            try:
+                source.save(update_fields=["custom_properties"])
+                logger.info(f"{LOG_PREFIX} Refreshed EPG source {profile.source_name!r}")
+            except Exception as exc:
+                logger.warning(f"{LOG_PREFIX} Could not refresh EPG source "
+                               f"{profile.source_name!r}: {exc}")
+                return None
+        return source
+
+    def _reroute_claimed_channels(self, settings, logger, dry_run, enabled_channel_ids):
+        """Move claimed, safe-to-move channels onto their profile's own EPGSource.
+
+        Runs at the TOP of BOTH of _run_managed_epg_pass's branches, before that
+        branch's own attach and detach -- not after, despite how this might read
+        at first glance. It reads pre-pass state (the channel's *current*
+        epg_data/epg_source), and moves any claimed channel straight to its
+        destination profile source. The NULL-only attach that follows re-queries
+        Channel.objects fresh, so a channel this step already bound no longer
+        shows epg_data__isnull=True and is silently skipped by that attach --
+        no double-write, no race. The detach that follows is scoped to the
+        DEFAULT source and excludes every enabled channel outright, so a
+        rerouted (still-enabled) channel was never a detach candidate either way.
+
+        Going first also avoids a wasted write: when ECM hides an event-less
+        slot, auto_set_dummy_epg_on_hide nulls its epg_data, so the channel
+        looks NULL to this same pass. Running reroute after the attach would
+        let the NULL-only attach bind it to the DEFAULT source first, then
+        immediately re-point it to the claimed profile source on this step --
+        one throwaway EPGData row (and the orphan-reap that follows it) per
+        reclaimed channel, every cycle. Going first, the channel is written
+        exactly once.
+
+        Safety:
+          - only names in claimed_targets() are considered; unclaimed and
+            default-family names are absent from that mapping entirely
+          - _epg_binding_is_reroutable vetoes any channel holding a populated real
+            EPG, so a name collision cannot destroy a working guide
+          - it never detaches; a channel is only ever re-pointed
+          - an uncreatable profile source leaves those channels where they are
+
+        Returns the ids moved, or under dry_run the ids that WOULD move.
+        """
+        from apps.epg.models import EPGData, EPGSource
+
+        profiles = ecm_profiles.build_profiles(settings)
+        if not any(not p.is_default for p in profiles) or not enabled_channel_ids:
+            return []
+
+        candidates = list(Channel.objects.filter(id__in=enabled_channel_ids)
+                          .select_related("epg_data", "epg_data__epg_source"))
+        claims = ecm_profiles.claimed_targets([c.name for c in candidates], profiles)
+        if not claims:
+            return []
+
+        by_key = {p.key: p for p in profiles}
+        moved = []
+        for key in sorted(set(claims.values())):
+            profile = by_key.get(key)
+            if profile is None:
+                continue
+            group = [c for c in candidates
+                     if claims.get(c.name) == key and self._epg_binding_is_reroutable(c, logger=logger)]
+            if not group:
+                continue
+
+            if dry_run:
+                existing = EPGSource.objects.filter(
+                    name=profile.source_name, source_type="dummy").first()
+                # Sentinel, not None: a never-bound channel has epg_source_id None,
+                # and None == None would silently under-report it as "no move".
+                target_id = existing.id if existing else object()
+                moved.extend(c.id for c in group
+                             if getattr(c.epg_data, "epg_source_id", None) != target_id)
+                continue
+
+            source = self._ensure_profile_source(profile, settings, logger)
+            if source is None:
+                logger.warning(f"{LOG_PREFIX} No source for profile {key!r}; "
+                               f"leaving {len(group)} channel(s) in place")
+                continue
+
+            to_move = [c for c in group
+                       if getattr(c.epg_data, "epg_source_id", None) != source.id]
+            if not to_move:
+                continue
+
+            vacated = {c.epg_data.epg_source for c in to_move
+                       if c.epg_data and c.epg_data.epg_source}
+            with transaction.atomic():
+                for channel in to_move:
+                    epg_data, _ = EPGData.objects.get_or_create(
+                        tvg_id=str(channel.uuid), epg_source=source,
+                        defaults={"name": channel.name})
+                    if epg_data.name != channel.name:
+                        epg_data.name = channel.name
+                        epg_data.save(update_fields=["name"])
+                    channel.epg_data = epg_data
+                Channel.objects.bulk_update(to_move, ["epg_data"])
+            moved.extend(c.id for c in to_move)
+            logger.info(f"{LOG_PREFIX} Rerouted {len(to_move)} channel(s) to "
+                        f"{profile.source_name!r}")
+
+            # Rows left behind on the source(s) we moved off are orphaned NOW; the
+            # existing reaper is scoped to the default source and already ran this
+            # pass, so reap them here.
+            for vacated_source in vacated | {source}:
+                self._reap_orphaned_epg_data(vacated_source, logger)
+        return moved
+
     def _get_or_create_managed_epg_source(self, settings, logger):
         """Create (if missing) or refresh the shared plugin-managed dummy EPGSource.
 
@@ -2627,6 +2905,16 @@ class Plugin:
         toggle_on = self._get_bool_setting(settings, "manage_dummy_epg", False)
 
         if dry_run:
+            # Runs before the managed_source lookup below: the reroute step never
+            # depends on the DEFAULT "ECM Managed Dummy" source, so it must still
+            # preview even when that source doesn't exist yet (i.e. even on the
+            # early "managed_source is None" exit a few lines down).
+            rerouted_ids = self._reroute_claimed_channels(
+                settings, logger, True, enabled_channel_ids if toggle_on else [])
+            if rerouted_ids:
+                logger.info(f"{LOG_PREFIX} [dry-run] Reroute would move "
+                            f"{len(rerouted_ids)} channel(s)")
+
             # Pure preview — locate existing source only; do not create.
             managed_source = EPGSource.objects.filter(
                 name="ECM Managed Dummy", source_type="dummy"
@@ -2654,6 +2942,14 @@ class Plugin:
             return attached_ids, detached_ids
 
         # Applied run — may create/refresh the source row.
+        # Same reasoning as the dry-run call above: runs before the managed_source
+        # lookup so it still fires even on the applied branch's own early
+        # "managed_source is None" exit a few lines down.
+        rerouted_ids = self._reroute_claimed_channels(
+            settings, logger, False, enabled_channel_ids if toggle_on else [])
+        if rerouted_ids:
+            logger.info(f"{LOG_PREFIX} Reroute moved {len(rerouted_ids)} channel(s)")
+
         if toggle_on:
             managed_source = self._get_or_create_managed_epg_source(settings, logger)
         else:

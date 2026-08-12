@@ -295,3 +295,59 @@ def test_bucket_order_follows_input_order():
     for bucket in result.values():
         members = set(bucket)
         assert bucket == [n for n in names if n in members]
+
+
+# --- settings and timezone resolution (pure) ------------------------------------
+
+def test_build_profiles_honours_the_event_timezone_setting():
+    built = ecm_profiles.build_profiles({"dummy_epg_event_timezone": "Europe/Stockholm"})
+    assert next(p for p in built if p.is_default).timezone == "Europe/Stockholm"
+
+
+def test_build_profiles_never_changes_the_dazn_timezone():
+    """UTC is a fact about the provider's data, not a user preference."""
+    built = ecm_profiles.build_profiles({"dummy_epg_event_timezone": "Europe/Stockholm"})
+    assert next(p for p in built if p.key == "dazn_gmt").timezone == "UTC"
+
+
+@pytest.mark.parametrize("bad", ["", "nonsense", 0, -3, None])
+def test_build_profiles_falls_back_on_a_bad_duration(bad):
+    built = ecm_profiles.build_profiles({"dummy_epg_event_duration_hours": bad})
+    assert next(p for p in built if p.is_default).program_duration_minutes > 0
+
+
+def test_build_profiles_preserves_dazn_selector_and_patterns():
+    built = ecm_profiles.build_profiles({"dummy_epg_event_timezone": "Asia/Tokyo"})
+    dazn = next(p for p in built if p.key == "dazn_gmt")
+    assert dazn.selector == ecm_profiles.DAZN_GMT.selector
+    assert dazn.title_pattern == ecm_profiles.DAZN_GMT.title_pattern
+
+
+def test_resolve_output_timezone_converts_and_labels():
+    """THE assertion this plumbing exists for. If the GMT source inherits the ET
+    source's config, every DAZN time renders five hours wrong."""
+    got = ecm_profiles.resolve_output_timezone("UTC", "America/Chicago")
+    assert got["output_timezone"] == "America/Chicago"
+    assert "{starttime}" in got["upcoming_title_template"]
+
+
+def test_resolve_output_timezone_is_not_symmetric():
+    """Guards a swapped-argument bug: both parameters are plain strings, so
+    transposing them raises nothing and silently renders times wrong."""
+    a = ecm_profiles.resolve_output_timezone("UTC", "America/Chicago")
+    b = ecm_profiles.resolve_output_timezone("America/Chicago", "UTC")
+    assert a != b
+
+
+def test_resolve_output_timezone_same_zone_uses_plain_templates():
+    got = ecm_profiles.resolve_output_timezone("America/Chicago", "America/Chicago")
+    assert got["upcoming_title_template"] == "Upcoming at {starttime}: {title}"
+
+
+@pytest.mark.parametrize("src,sys_tz", [("", "America/Chicago"),
+                                        ("Not/AZone", "America/Chicago"),
+                                        ("UTC", "Not/AZone")])
+def test_resolve_output_timezone_degrades_without_raising(src, sys_tz):
+    got = ecm_profiles.resolve_output_timezone(src, sys_tz)
+    assert set(got) == {"output_timezone", "title_template",
+                        "upcoming_title_template", "ended_title_template"}

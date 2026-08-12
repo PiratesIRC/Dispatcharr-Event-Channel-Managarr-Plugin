@@ -313,7 +313,33 @@ stop — do not proceed to any later slice.
 | 1. Rebuild / DB loss | **Yes** | `bootstrap_ecm.py` + committed template |
 | 4. Losing the knowledge | **Yes** | This doc + the 278-name fixture + the `(GMT)`=UTC evidence |
 | 3. Format change | **Partly** | The fixture and simulation detect drift when run; no automatic alarm (deferred to S4) |
-| 2. Ongoing drift | **No** | Needs multi-source routing in the plugin (S2/S3). **Confirmed in production the same day — see §3.5.1. Not a theoretical gap.** |
+| 2. Ongoing drift | **Yes, provisionally** | S2 shipped 2026-07-19 — see §6.1. Acceptance test passed, but on a small sample; re-verify during an event window. |
+
+### 6.1 S2 landed 2026-07-19 — acceptance test passed
+
+The reclaim was observed a **third** time overnight before the deploy: the manual repoint of 99 channels
+survived ~12 hours, and by 09:22 UTC source 42 held **zero** channels while 259 of 278 had no EPG at all
+(events ended → channels hidden → `auto_set_dummy_epg_on_hide` nulled the bindings).
+
+S2 deployed into that quiet window. Results:
+
+- In-container gate: `S2_GATE_RESULT=PASS` — every check, including that the dry run predicted exactly
+  the set the real pass moved, that no channel lost its EPG, that no websocket broadcast escaped the
+  rolled-back transaction, and that `output_timezone` matched an independently computed value.
+- Applied pass: **`LOST EPG = 0`**, 3 channels moved `ECM Managed Dummy → DAZN PPV Dummy (GMT)`,
+  nothing detached, nothing gained. Rendering verified live, e.g.
+  `Upcoming at 7/19 2 PM CDT: DAZN48: FIFA World Cup™ Final Watchalong`.
+- **Acceptance test: an `m3u_refresh` event was fired, ECM's full rescan ran, and all 3 channels
+  remained on the GMT source.** That is the precise trigger that undid the manual fix the day before.
+
+**Caveat on strength.** The deploy landed during an overnight lull with only **3** enabled claimed
+channels, versus 46 in the committed fixture. A pass at n=3 is real evidence but weak evidence;
+re-run the acceptance check during a busy event window before treating mode 2 as settled. That is why
+this row reads "provisionally".
+
+**Known residual:** source 42 carries 103 `EPGData` rows for 3 channels. 100 are `dazn_gmt_<id>`-shaped
+rows created by the original hand-made script; the orphan reaper filters on a UUID-shaped `tvg_id` and
+deliberately spares them. They are inert but will never be collected. A one-off cleanup is warranted.
 
 **Status after execution (2026-07-18):** S0+S1 landed on branch `feat/durable-epg-capture`,
 17 commits, 158 tests, `plugin.py` and `plugin.json` untouched. The in-container gate passed

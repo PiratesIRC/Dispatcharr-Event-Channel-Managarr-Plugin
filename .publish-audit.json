@@ -1,0 +1,96 @@
+{
+  "_comment": [
+    "Rules for the workspace pre-publish audit, run against whatever ref is about to be pushed:",
+    "  python ../.claude/skills/pre-publish-audit/audit_publish.py --ref main --rules .publish-audit.json",
+    "Use --worktree instead of --ref to audit tracked files as they currently stand.",
+    "`deny` holds strings the built-in patterns cannot know about, because they look like ordinary",
+    "words to a generic scanner. It is copied byte-for-byte from the sibling plugins: it describes",
+    "this MACHINE, not this project, so it is the same list everywhere. Each pattern is written with",
+    "a character class around at least one character of every literal, so that this file does not",
+    "itself contain the string it hunts.",
+    "`allow` is project-specific and matches the flagged TEXT, not the file path. This project TRACKS",
+    "its planning documents under docs/ (deliberately un-ignored 2026-07-18), unlike the sibling that",
+    "the deny list came from, so those documents are scanned and several of their ordinary contents",
+    "need forgiving by name. Loosening a deny pattern to silence a finding is how the next real one",
+    "gets through; add an allow entry with a reason instead.",
+    "A backslash inside a JSON string is escaped twice, so a literal backslash needs four in the file.",
+    "The audit reads the CURRENT TREE ONLY. A push publishes every reachable commit, so scan history",
+    "separately with `git rev-list --objects <ref>` plus `git cat-file -p` per blob against these rules."
+  ],
+  "deny": [
+    {
+      "pattern": "strea[m]q",
+      "why": "the real provider brand host. It can reach this repository through a captured stream URL quoted in a test fixture, a docstring or a CSV settings header"
+    },
+    {
+      "pattern": "cf[.]li[v]e",
+      "why": "the provider's real CDN host labels, in URL or in prose"
+    },
+    {
+      "pattern": "\\bb[k](1[5]|2[69])\\b",
+      "why": "the real M3U account name suffixes. Each is three characters and means nothing to a generic scanner, which is the whole reason this list exists"
+    },
+    {
+      "pattern": "19[2]\\.16[8]\\.2[1]1\\.",
+      "why": "this installation's LAN prefix for the container host"
+    },
+    {
+      "pattern": "19[2]\\.16[8]\\.1\\.5[3]",
+      "why": "the other address this installation uses, on the second LAN segment"
+    },
+    {
+      "pattern": "[O]:\\\\\\\\?docker",
+      "why": "this machine's Windows drive mapping of the container volumes. The doubled-backslash alternative is deliberate so the rule also fires on a path written in Python source"
+    },
+    {
+      "pattern": "/data/plugi[n]_backups",
+      "why": "an internal backup location on the container volume, not a path any user of this plugin has"
+    },
+    {
+      "pattern": "workspace-note[s]-backups",
+      "why": "the operator's off-machine notes backup directory, which no published document should name"
+    },
+    {
+      "pattern": "btoll[e]y",
+      "why": "the operator's personal account name. It is not the GitHub account this project publishes under, so an occurrence is a leak rather than an attribution"
+    },
+    {
+      "pattern": "/config/duplicate_channel[s]_",
+      "why": "an inventory file written for this installation only. It names live channel rows and exists on no other machine"
+    }
+  ],
+  "allow": [
+    {
+      "pattern": "CLAUDE[.]md|AGENTS[.]md|GEMINI[.]md|MEMORY[.]md",
+      "reason": "the agent notes filenames, named in .gitignore so that the notes stay unpublished. Naming a file is how .gitignore excludes it, so these references are the mechanism that keeps the notes out rather than an instance of publishing them. Verify with `git ls-files` that no file of any of these names is tracked"
+    },
+    {
+      "pattern": "superpowers",
+      "reason": "the planning and design document directory. Unlike the sibling plugin this rule set came from, this project TRACKS docs/ on purpose (un-ignored 2026-07-18, recorded in .gitignore): a design that exists only in a scratch directory is knowledge waiting to be lost. Release archives are built from the INNER folder, so nothing at the repository root is ever packaged to a user either way"
+    },
+    {
+      "pattern": "s3cret-hunter2",
+      "reason": "an obviously fake password in tests/unit/test_bootstrap_merge.py. That test proves the dry-run delta report MASKS credentials rather than echoing them, so it must contain a credential-shaped string to assert the absence of. Removing it would delete the only test that catches a password being printed to the terminal"
+    },
+    {
+      "pattern": "/home/user/|/Users/User/",
+      "reason": "generic placeholder home directories quoted in the planning documents under docs/. Neither names a real account: the Windows user on the development machine is literally 'User', and /home/user/ is the container's own path. They identify nobody"
+    },
+    {
+      "pattern": "noreply@",
+      "reason": "the co-authorship address recorded in planning documents and commit trailers. It is a no-reply address belonging to a tool, not a person's contact detail"
+    },
+    {
+      "pattern": "class C:",
+      "reason": "a Python source string inside tests/contract/test_module_purity.py's self-check fixtures. The built-in Windows drive-path rule matches the 'C:' in `class C:` followed by a newline escape. It is a class definition in a test fixture, not a path"
+    },
+    {
+      "pattern": "on this box",
+      "reason": "ordinary English in the planning and design documents under docs/, meaning 'on the development machine' while discussing what a command could be verified against. It carries no identifier: it names no host, path, account or address. The built-in rule exists to catch a report that leaks WHICH box; this phrasing does not"
+    },
+    {
+      "pattern": "C:.Users.User.docker.Event-Channel-Managarr",
+      "reason": "this repository's own checkout path, quoted once in docs/superpowers/plans/2026-07-18-durable-epg-capture-s0-s1.md as orientation for whoever executes that plan. The account name is literally 'User' and the final segment is the public repository name, so it identifies no person and reveals no layout the repository name does not. The separator is a '.' wildcard rather than an escaped backslash on purpose: a literal backslash needs FOUR in JSON, and two earlier attempts produced a regex error instead of a rule. Scoped to THIS path, so the generic Windows drive-path rule still fires on every other one"
+    }
+  ]
+}

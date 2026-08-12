@@ -23,8 +23,19 @@ jobs:
       - name: Install dependencies
         run: pip install pytest python-dateutil pytz ruff
 
+      # Every shipped module, found by pattern rather than named one at a time.
+      # The previous hand-written list covered plugin.py and ecm_parsing.py only,
+      # so ecm_profiles.py and __init__.py shipped with no compile gate at all.
+      # A list that must be edited whenever a module is added is a list that will
+      # be forgotten.
       - name: Compile check
-        run: python -m py_compile Event-Channel-Managarr/plugin.py Event-Channel-Managarr/ecm_parsing.py
+        run: |
+          shopt -s nullglob
+          files=(Event-Channel-Managarr/*.py)
+          if [ ${#files[@]} -eq 0 ]; then echo "no plugin sources found"; exit 1; fi
+          printf 'compiling %s\n' "${files[@]}"
+          python -m py_compile "${files[@]}"
+        shell: bash
 
       - name: Validate plugin.json
         run: python -c "import json; json.load(open('Event-Channel-Managarr/plugin.json'))"
