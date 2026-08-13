@@ -9,8 +9,10 @@ and wrote a cache file under /data on the way through. Two consequences:
 - the once-a-day throttle was written only on SUCCESS, so a box that could not
   reach GitHub never engaged it and retried on EVERY render, not once a day.
 
-The update check still exists. It moved to the Validate Configuration action,
-which runs only when the operator clicks it.
+The update check was later removed from the plugin altogether, along with the
+"Plugin Version Status" line it fed in the settings form, so nothing here
+contacts GitHub any more. These guards remain because the shape of the defect
+outlives the feature that caused it: `fields` sits on a per-request path.
 
 These guards parse plugin.py with ast rather than importing it, matching the
 other contract tests here: plugin.py imports Django and cannot be imported
@@ -138,25 +140,16 @@ def test_fields_does_not_write_the_version_cache(tree):
     )
 
 
-def test_the_update_check_still_happens_somewhere(tree):
-    """Guard against 'fixing' this by deleting the feature."""
-    refresh = _find_function(tree, "_refresh_version_check")
-    assert refresh is not None, "_refresh_version_check is gone"
-    assert "_get_latest_version" in _self_methods_called(refresh)
-
-    validate = _find_function(tree, "validate_configuration_action")
-    assert validate is not None
-    assert "_refresh_version_check" in _self_methods_called(validate), (
-        "nothing refreshes the update check any more; it should run from the "
-        "Validate Configuration action")
-
-
-def test_a_failed_check_still_records_a_timestamp(tree):
-    """The throttle must engage on failure too, or an offline box retries forever."""
-    refresh = _find_function(tree, "_refresh_version_check")
-    assert "_save_version_check" in _self_methods_called(refresh), (
-        "_refresh_version_check no longer records the attempt, so a failing "
-        "check will not engage the once-a-day throttle")
+def test_no_update_checker_remains(tree):
+    """The GitHub update check was removed. Nothing should have brought it back
+    without a deliberate decision, because it lived one call away from `fields`."""
+    gone = ["_get_latest_version", "_refresh_version_check", "_should_check_for_updates",
+            "_save_version_check", "_read_cached_version_info", "_version_status_message"]
+    still_here = [name for name in gone if _find_function(tree, name) is not None]
+    assert not still_here, (
+        f"update-check helpers are back in plugin.py: {still_here}. They were "
+        f"removed on purpose; if they are wanted again, keep them off the "
+        f"`fields` render path.")
 
 
 # --- self-checks: each guard must FAIL on violating code -------------------

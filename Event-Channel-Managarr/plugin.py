@@ -17,8 +17,6 @@ import re
 import time
 import threading
 import pytz
-import urllib.request
-import urllib.error
 
 from datetime import datetime, timedelta
 from django.utils import timezone
@@ -58,7 +56,7 @@ _scheduler_lock = threading.Lock()  # Prevent concurrent scheduler starts
 class PluginConfig:
     """Centralized configuration constants for Event Channel Managarr."""
 
-    PLUGIN_VERSION = "1.26.2242049"
+    PLUGIN_VERSION = "1.26.2251616"
 
     # Fallback timezone when Dispatcharr's global time zone is unset/invalid.
     DEFAULT_TIMEZONE = "UTC"
@@ -101,9 +99,6 @@ class PluginConfig:
     # Pacing for per-channel ORM writes ("none", "low", "medium", "high")
     DEFAULT_RATE_LIMITING = "none"
 
-    # Version check interval (in seconds)
-    VERSION_CHECK_INTERVAL = 86400  # 24 hours
-
     # Scheduler check interval (in seconds)
     SCHEDULER_CHECK_INTERVAL = 30
 
@@ -119,13 +114,8 @@ class PluginConfig:
     SCAN_LOCK_STALE_SECONDS = 900  # 15 min
     SETTINGS_FILE = "/data/event_channel_managarr_settings.json"
     RESULTS_FILE = "/data/event_channel_managarr_results.json"
-    VERSION_CHECK_FILE = "/data/event_channel_managarr_version_check.json"
     UNDATED_FIRST_SEEN_FILE = "/data/event_channel_managarr_undated_first_seen.json"
     EXPORTS_DIR = "/data/exports"
-
-    # GitHub repo for version checks
-    GITHUB_OWNER = "PiratesIRC"
-    GITHUB_REPO = "Dispatcharr-Event-Channel-Managarr-Plugin"
 
 
 _LAST_RUN_FILE = PluginConfig.LAST_RUN_FILE
@@ -262,7 +252,6 @@ class Plugin:
     DEFAULT_DUMMY_EPG_TIMEZONE = PluginConfig.DEFAULT_DUMMY_EPG_TIMEZONE
     DEFAULT_DUMMY_EPG_CHANNEL_FORMAT = PluginConfig.DEFAULT_DUMMY_EPG_CHANNEL_FORMAT
     DEFAULT_RATE_LIMITING = PluginConfig.DEFAULT_RATE_LIMITING
-    VERSION_CHECK_INTERVAL = PluginConfig.VERSION_CHECK_INTERVAL
     SCHEDULER_CHECK_INTERVAL = PluginConfig.SCHEDULER_CHECK_INTERVAL
     SCHEDULER_STOP_TIMEOUT = PluginConfig.SCHEDULER_STOP_TIMEOUT
 
@@ -302,80 +291,47 @@ class Plugin:
                 {"label": "Australia/Sydney", "value": "Australia/Sydney"}
             ]
     
-    def _version_status_message(self):
-        """Describe the installed version against the last CACHED update check.
-
-        Reads only. It never contacts GitHub, because its caller is the `fields`
-        property, which Dispatcharr evaluates every time the plugin settings page
-        is rendered. The refresh happens in the Validate Configuration action
-        instead, which runs only when the operator clicks it.
-        """
-        current = self.version
-        try:
-            cached = self._read_cached_version_info()
-        except Exception as e:
-            LOGGER.debug(f"Could not read the cached version check: {e}")
-            return f"Installed: v{current}. Update check unavailable."
-
-        if not cached or not cached.get("latest_version"):
-            return (f"Installed: v{current}. No update check yet - run "
-                    f"Validate Configuration to check.")
-
-        latest = cached["latest_version"]
-        if current == latest.lstrip("v"):
-            return f"You are up to date (v{current})."
-        return f"Update available. Installed: v{current}, latest: {latest}."
-
     @property
     def fields(self):
         """Build the settings form.
 
         MUST NOT perform network or blocking I/O. Dispatcharr evaluates this
         property on every settings-page render, so anything slow here delays the
-        page, and anything requiring the internet makes the settings
-        unreachable when the box is offline. It previously called GitHub from
-        here with a five second timeout; worse, the once-a-day throttle was only
-        written on SUCCESS, so a machine that could not reach GitHub retried on
-        every single render rather than once a day.
+        page, and anything requiring the internet makes the settings unreachable
+        when the box is offline. This property once called GitHub from here with
+        a five second timeout to look for a newer release; that update check has
+        since been removed from the plugin entirely.
         """
-        version_message = self._version_status_message()
-
         # Build the fields list dynamically
         fields_list = [
-            {
-                "id": "version_status",
-                "label": "📦 Plugin Version Status",
-                "type": "info",
-                "help_text": version_message
-            },
             {
                 "id": "_section_scope",
                 "label": "📍 Scope",
                 "type": "info",
-                "description": "Which channels this plugin monitors and how it identifies them."
+                "description": "Which channels this plugin is allowed to touch, and which name it reads on each one."
             },
             {
                 "id": "channel_profile_name",
-                "label": "📺 Channel Profile Names (Required)",
+                "label": "📺 Channel Profile Names (Required, comma-separated)",
                 "type": "string",
                 "default": "",
                 "placeholder": "e.g. All, Favorites",
-                "help_text": "REQUIRED: Channel Profile(s) containing channels to monitor. Use comma-separated names for multiple profiles.",
+                "help_text": "REQUIRED. The Dispatcharr channel profiles whose channels this plugin manages. Separate several profiles with commas, for example: All, Favorites. Each name must name a profile that exists in Dispatcharr, though capitalisation does not have to match. A channel that has no membership row in one of these profiles is invisible to this plugin and is never scanned.",
             },
             {
                 "id": "channel_groups",
-                "label": "📂 Channel Groups",
+                "label": "📂 Channel Groups (comma-separated)",
                 "type": "text",
                 "default": "",
                 "placeholder": "e.g. PPV Live Events, Sports",
-                "help_text": "Specific channel groups to monitor within the profile. Leave blank to monitor all groups in the profile.",
+                "help_text": "Narrows the scan to these channel groups inside the profiles above. Separate several groups with commas, for example: PPV Live Events, Sports. Capitalisation does not have to match, but the spelling does; a group name that matches nothing is reported by Validate Configuration. Leave blank to scan every group in those profiles.",
             },
             {
                 "id": "name_source",
                 "label": "🔤 Name Source",
                 "type": "select",
                 "default": self.DEFAULT_NAME_SOURCE,
-                "help_text": "Select the source of the names to monitor. Only one can be selected.",
+                "help_text": "Which text the rules read when they look for an event title, date or time. Channel Name uses the Dispatcharr channel name. Stream Name uses the name of the stream assigned to that channel. Only one source is used at a time.",
                 "options": [
                     {"label": "Channel Name", "value": "Channel_Name"},
                     {"label": "Stream Name", "value": "Stream_Name"}
@@ -386,7 +342,7 @@ class Plugin:
                 "label": "📅 Date Format in Channel Names",
                 "type": "select",
                 "default": "Auto",
-                "help_text": "How to interpret numeric dates like 04/05 in channel names. Auto = try MM/DD first; if month > 12, treat as DD/MM (handles most regional data). US = always MM/DD. EU = always DD/MM.",
+                "help_text": "How to read a numeric date such as 04/05 found in a name. Auto tries MM/DD first and reads it as DD/MM when the first number is above 12. US always reads MM/DD. EU always reads DD/MM.",
                 "options": [
                     {"label": "Auto-detect (recommended)", "value": "Auto"},
                     {"label": "US (MM/DD)", "value": "US"},
@@ -397,7 +353,7 @@ class Plugin:
                 "id": "_section_rules",
                 "label": "🎯 Hide Rules",
                 "type": "info",
-                "description": "Priority-ordered rules that decide which channels to hide."
+                "description": "The ordered list of rules that decides which channels get hidden, plus the regular expressions that skip, hide or protect a channel by name."
             },
             {
                 "id": "hide_rules_priority",
@@ -405,7 +361,7 @@ class Plugin:
                 "type": "text",
                 "default": self.DEFAULT_HIDE_RULES,
                 "placeholder": "[BlankName],[NoEventPattern],[EmptyPlaceholder],[PastDate:0],[FutureDate:2],[UndatedAge:2],[ShortDescription],[ShortChannelName]",
-                "help_text": "Define rules for hiding channels in priority order (first match wins). Comma-separated tags. Available tags: [NoEPG], [BlankName], [WrongDayOfWeek], [NoEventPattern], [EmptyPlaceholder], [ShortDescription], [ShortChannelName], [NumberOnly], [PastDate:days], [PastDate:days:Xh], [FutureDate:days], [UndatedAge:days], [InactiveRegex].",
+                "help_text": "The rules that hide a channel, written as comma-separated tags. They are read left to right and the first tag that matches hides the channel, so put the rules you trust most first. A tag left out of this list is never applied. Some tags take a number after a colon, for example [PastDate:0] or [UndatedAge:2]. Available tags: [NoEPG], [BlankName], [WrongDayOfWeek], [NoEventPattern], [EmptyPlaceholder], [ShortDescription], [ShortChannelName], [NumberOnly], [PastDate:days], [PastDate:days:Xh], [FutureDate:days], [UndatedAge:days], [InactiveRegex].",
             },
             {
                 "id": "regex_channels_to_ignore",
@@ -413,7 +369,7 @@ class Plugin:
                 "type": "text",
                 "default": "",
                 "placeholder": "^BACKUP|^TEST",
-                "help_text": "Regular expression to match channel names that should be skipped entirely. Matching channels will not be processed.",
+                "help_text": "A channel whose name matches this pattern is skipped completely: no hide rule runs on it and its visibility is never changed. Case-insensitive regular expression. Separate alternatives with the | character, for example: ^BACKUP|^TEST. Leave blank to skip nothing.",
             },
             {
                 "id": "regex_mark_inactive",
@@ -421,7 +377,7 @@ class Plugin:
                 "type": "text",
                 "default": "",
                 "placeholder": "CANCELLED|COMING SOON|^TEST|^BACKUP|PLACEHOLDER",
-                "help_text": "Regular expression to hide channels. This is processed as part of the [InactiveRegex] hide rule.",
+                "help_text": "A channel whose name matches this pattern is hidden, but only while the [InactiveRegex] tag is present in the Hide Rules Priority list above. Case-insensitive regular expression, alternatives separated by the | character, for example: CANCELLED|COMING SOON. Leave blank to disable.",
             },
             {
                 "id": "regex_force_visible",
@@ -429,27 +385,27 @@ class Plugin:
                 "type": "text",
                 "default": "",
                 "placeholder": "^NEWS|^WEATHER",
-                "help_text": "Regular expression to match channel names that should ALWAYS be visible, overriding any hide rules.",
+                "help_text": "A channel whose name matches this pattern is always left visible and no hide rule can hide it. Case-insensitive regular expression, alternatives separated by the | character, for example: ^NEWS|^WEATHER. Leave blank to disable.",
             },
             {
                 "id": "past_date_grace_hours",
                 "label": "📅 Past Date Grace Period (Hours)",
                 "type": "number",
                 "default": int(self.DEFAULT_PAST_DATE_GRACE_HOURS),
-                "help_text": "Hours to wait after midnight before hiding past events. Useful for events that run late.",
+                "help_text": "How many whole hours after midnight a channel dated for an earlier day stays visible before the [PastDate] rule hides it. Raise it for events that run past midnight.",
             },
             {
                 "id": "_section_duplicates",
                 "label": "🎭 Duplicates",
                 "type": "info",
-                "description": "How to handle channels whose events collide."
+                "description": "What to do when several channels carry the same event at the same time."
             },
             {
                 "id": "duplicate_strategy",
                 "label": "🎭 Duplicate Handling Strategy",
                 "type": "select",
                 "default": self.DEFAULT_DUPLICATE_STRATEGY,
-                "help_text": "Strategy to use when multiple channels have the same event.",
+                "help_text": "When several channels carry the same event, this decides which single channel stays visible. The others are hidden. Ignored while 'Keep Duplicate Channels' below is enabled.",
                 "options": [
                     {"label": "Keep Lowest Channel Number", "value": "lowest_number"},
                     {"label": "Keep Highest Channel Number", "value": "highest_number"},
@@ -461,44 +417,44 @@ class Plugin:
                 "label": "🔄 Keep Duplicate Channels",
                 "type": "boolean",
                 "default": self.DEFAULT_KEEP_DUPLICATES,
-                "help_text": "If enabled, duplicate channels will be kept visible instead of being hidden. The duplicate strategy above will be ignored.",
+                "help_text": "Leave every copy of a duplicated event visible instead of keeping one. While this is on, the Duplicate Handling Strategy above has no effect.",
             },
             {
                 "id": "_section_epg",
                 "label": "🔌 EPG Management",
                 "type": "info",
-                "description": "Optional automation for EPG assignment on visibility changes and a managed dummy EPG for channels without real EPG."
+                "description": "Optional guide-data automation: clearing EPG from channels as they are hidden, and giving visible channels with no guide data a dummy EPG built from their names."
             },
             {
                 "id": "auto_set_dummy_epg_on_hide",
                 "label": "🔌 Auto-Remove EPG on Hide",
                 "type": "boolean",
                 "default": self.DEFAULT_AUTO_REMOVE_EPG,
-                "help_text": "If enabled, automatically removes EPG data from a channel when it is hidden by the plugin.",
+                "help_text": "Clears the EPG assignment from a channel at the moment this plugin hides it. This setting only REMOVES guide data. The setting that creates guide data is 'Manage Dummy EPG' below.",
             },
             {
                 "id": "manage_dummy_epg",
                 "label": "🗓️ Manage Dummy EPG",
                 "type": "boolean",
                 "default": self.DEFAULT_MANAGE_DUMMY_EPG,
-                "help_text": "If enabled, visible channels with no EPG assigned will be bound to a plugin-managed dummy EPG source. The guide shows the extracted event during its time window (and 'Offline' outside it), or the channel name as a 24-hour fallback if no time is parseable. NOTE: this is the setting that CREATES guide data — not '🔌 Auto-Remove EPG on Hide' above, which clears it.",
+                "help_text": "Attaches a dummy EPG source, managed by this plugin, to every visible channel that has no EPG assigned. The guide then shows the event read out of the channel name during its time window and 'Offline' outside it. When no time can be read from the name, the guide shows the channel name for the whole day instead. This is the setting that CREATES guide data. '🔌 Auto-Remove EPG on Hide' above only clears it.",
             },
             {
                 "id": "override_existing_epg",
                 "label": "♻️ Override Empty Existing EPG",
                 "type": "boolean",
                 "default": self.DEFAULT_OVERRIDE_EXISTING_EPG,
-                "help_text": "Requires '🗓️ Manage Dummy EPG'. By default the managed dummy is only attached to visible channels that have NO EPG at all. Enable this to ALSO take over visible channels that are already linked to a real EPG source which currently has no programmes (a blank guide) — e.g. event channels the provider mapped to an empty tvg-id. Channels whose linked EPG actually has upcoming programmes are never touched. Default OFF.",
+                "help_text": "Requires '🗓️ Manage Dummy EPG'. By default the managed dummy is attached only to visible channels that have NO EPG at all. Turn this on to ALSO take over a visible channel that is linked to a real EPG source carrying no programmes, which shows as a blank guide. A common cause is an event channel the provider mapped to an empty tvg-id. A channel whose linked EPG does have upcoming programmes is never touched. Off by default.",
             },
             {
                 "id": "dummy_epg_channel_format",
                 "label": "📡 Channel Name Format",
                 "type": "select",
                 "default": self.DEFAULT_DUMMY_EPG_CHANNEL_FORMAT,
-                "help_text": "How channel names are structured for the dummy EPG parser. US = 'PPV EVENT 12: Title (MM.DD HH:MM AM/PM TZ)'. SE = 'PREFIX | Event Title | DDD DD Mon HH:MM TZ | extras | channel name' — the last segment (e.g. 'SE: VIAPLAY PPV 20') is stored as the EPG display name so the guide channel list shows the broadcaster instead of the full stream name.",
+                "help_text": "Which name layout the dummy EPG parser should expect. US reads 'PPV EVENT 12: Title (MM.DD HH:MM AM/PM TZ)'. SE reads 'PREFIX | Event Title | DDD DD Mon HH:MM TZ | extras | channel name', where the last segment, for example 'SE: VIAPLAY PPV 20', becomes the EPG display name so the guide lists the broadcaster rather than the full stream name. Pick the one your provider uses; the wrong choice means no event is read out of the name.",
                 "options": [
-                    {"label": "US  –  PPV/LIVE EVENT ##: Title (MM.DD HH:MM AM/PM TZ)",             "value": "US"},
-                    {"label": "SE  –  PREFIX | Title | DDD DD Mon HH:MM TZ | extras | channel name", "value": "SE"},
+                    {"label": "US:  PPV/LIVE EVENT ##: Title (MM.DD HH:MM AM/PM TZ)",              "value": "US"},
+                    {"label": "SE:  PREFIX | Title | DDD DD Mon HH:MM TZ | extras | channel name", "value": "SE"},
                 ]
             },
             {
@@ -506,56 +462,56 @@ class Plugin:
                 "label": "⏱️ Event Duration (hours)",
                 "type": "number",
                 "default": int(self.DEFAULT_EVENT_DURATION_HOURS),
-                "help_text": "How long each scheduled event should appear in the guide (hours). Before this window the guide shows 'Upcoming at <time>: <event>'; after, 'Ended at <time>: <event>'.",
+                "help_text": "How many hours each event fills in the guide, starting at the time read from the channel name. Before that window the guide shows 'Upcoming at <time>: <event>', and after it 'Ended at <time>: <event>'.",
             },
             {
                 "id": "dummy_epg_event_timezone",
                 "label": "📺 Channel Name Event Timezone",
                 "type": "select",
                 "default": self.DEFAULT_DUMMY_EPG_TIMEZONE,
-                "help_text": "Timezone encoded in the event times inside channel names (e.g., US/Eastern for channels like '(4.17 8:30 PM ET)'). Independent of Dispatcharr's display time zone.",
+                "help_text": "The timezone the times inside channel names are written in, for example US/Eastern for a channel named '(4.17 8:30 PM ET)'. This tells the plugin how to READ those times. It is separate from the timezone Dispatcharr displays the guide in.",
                 "options": self._load_timezones_from_file()
             },
             {
                 "id": "_section_scheduling",
                 "label": "⏰ Scheduling & Export",
                 "type": "info",
-                "description": "Scheduled runs and CSV export options."
+                "description": "Unattended runs: the times the scan starts by itself, and whether those runs leave a CSV behind."
             },
             {
                 "id": "scheduled_times",
-                "label": "⏰ Scheduled Run Times (24-hour format)",
+                "label": "⏰ Scheduled Run Times (24-hour, comma-separated)",
                 "type": "text",
                 "default": "",
                 "placeholder": "0600,1300,1800",
-                "help_text": "Comma-separated times to run automatically each day (24-hour format). Example: 0600,1300,1800 runs at 6 AM, 1 PM, and 6 PM daily. Leave blank to disable scheduling.",
+                "help_text": "Times of day to run the scan automatically, each written as four digits in 24-hour form. Separate several times with commas, for example: 0600,1300,1800 runs at 6 AM, 1 PM and 6 PM every day. Times follow Dispatcharr's own timezone. Leave blank to disable scheduled runs. Click 'Save Schedule' after changing this.",
             },
             {
                 "id": "enable_scheduled_csv_export",
                 "label": "📄 Enable Scheduled CSV Export",
                 "type": "boolean",
                 "default": self.DEFAULT_SCHEDULED_CSV_EXPORT,
-                "help_text": "If enabled, a CSV file of the scan results will be created when the plugin runs on a schedule. If disabled, no CSV will be created for scheduled runs.",
+                "help_text": "Writes a CSV of the results to /data/exports every time a SCHEDULED run finishes. This controls scheduled runs only: Run Now and Dry Run always write a CSV whatever it is set to.",
             },
             {
                 "id": "auto_rescan_on_m3u_refresh",
                 "label": "🔄 Auto-rescan after M3U refresh",
                 "type": "boolean",
                 "default": self.DEFAULT_AUTO_RESCAN_ON_M3U_REFRESH,
-                "help_text": "If enabled, the plugin re-runs its visibility scan automatically after each M3U account refresh. Dispatcharr's Auto Channel Sync re-enables (un-hides) channels in synced groups on every refresh; this re-hides them right after. Leave off if you do not use Auto Channel Sync.",
+                "help_text": "Runs the visibility scan again as soon as an M3U account finishes refreshing. Dispatcharr's Auto Channel Sync un-hides every channel in a synced group on each refresh, and this re-hides them straight afterwards. Leave it off if you do not use Auto Channel Sync.",
             },
             {
                 "id": "_section_advanced",
                 "label": "⚙️ Advanced",
                 "type": "info",
-                "description": "Performance and pacing controls for large channel profiles."
+                "description": "Pacing for very large profiles. Leave this alone unless a scan is putting the database under strain."
             },
             {
                 "id": "rate_limiting",
                 "label": "🐢 Rate Limiting",
                 "type": "select",
                 "default": self.DEFAULT_RATE_LIMITING,
-                "help_text": "Pause between per-channel ORM operations. 'none' is fastest; 'low/medium/high' add 0.05/0.2/0.5 seconds per channel. Useful when scanning very large profiles (thousands of channels) on a small DB.",
+                "help_text": "How long to pause between the database writes the scan makes for each channel. None is fastest. Low, Medium and High wait about 0.05, 0.2 and 0.5 seconds per channel, which makes a scan of a profile holding thousands of channels much slower but far gentler on a small database.",
                 "options": [
                     {"label": "None (fastest)", "value": "none"},
                     {"label": "Low (~0.05s / channel)", "value": "low"},
@@ -571,30 +527,26 @@ class Plugin:
     # Actions metadata mirrors plugin.json (which drives the Dispatcharr UI).
     # Kept here so code that introspects Plugin.actions sees the same shape.
     actions = [
-        {"id": "validate_configuration", "label": "Validate Configuration", "description": "Test and validate all plugin settings", "button_label": "🔎 Validate", "button_variant": "outline", "button_color": "blue"},
-        {"id": "update_schedule", "label": "Update Schedule", "description": "Save settings and update the scheduled run times", "button_label": "💾 Save Schedule", "button_variant": "filled", "button_color": "green"},
-        {"id": "dry_run", "label": "Dry Run (Export to CSV)", "description": "Preview which channels would be hidden/shown without making changes", "button_label": "👁️ Dry Run", "button_variant": "outline", "button_color": "cyan"},
-        {"id": "run_now", "label": "Run Now", "description": "Immediately scan and update channel visibility based on current EPG data", "button_label": "▶️ Run Now", "button_variant": "filled", "button_color": "green", "confirm": {"message": "This will apply visibility changes and (if enabled) attach/detach managed EPG. Continue?"}},
-        {"id": "on_m3u_refresh", "label": "Auto-rescan after M3U refresh", "description": "Runs a visibility scan automatically after each M3U refresh when '🔄 Auto-rescan after M3U refresh' is enabled in settings.", "events": ["m3u_refresh"]},
-        {"id": "remove_epg_from_hidden", "label": "Remove EPG from Hidden Channels", "description": "Remove all EPG data from channels that are disabled/hidden in the selected profile", "button_label": "🧹 Remove EPG from Hidden", "button_variant": "filled", "button_color": "red", "confirm": {"message": "This will CLEAR EPG data from every hidden channel in the selected profile. Cannot be undone by this plugin. Continue?"}},
-        {"id": "clear_csv_exports", "label": "Clear CSV Exports", "description": "Delete all CSV export files created by this plugin", "button_label": "🗑️ Clear CSV Exports", "button_variant": "filled", "button_color": "red", "confirm": {"message": "This will delete every CSV file in /data/exports created by this plugin. Continue?"}},
-        {"id": "cleanup_periodic_tasks", "label": "Cleanup Orphaned Tasks", "description": "Remove any orphaned Celery periodic tasks from old plugin versions", "button_label": "🧼 Cleanup Orphaned Tasks", "button_variant": "outline", "button_color": "orange", "confirm": {"message": "This removes orphaned Celery periodic tasks left by older plugin versions. Continue?"}},
-        {"id": "check_scheduler_status", "label": "Check Scheduler Status", "description": "Display scheduler thread status and diagnostic information", "button_label": "🩺 Check Scheduler", "button_variant": "outline", "button_color": "blue"},
+        {"id": "validate_configuration", "label": "Validate Configuration", "description": "Saves the settings above, then checks them for problems: an invalid regular expression, a profile or channel group that does not exist, a malformed schedule. Changes no channels.", "button_label": "🔎 Validate", "button_variant": "outline", "button_color": "blue"},
+        {"id": "update_schedule", "label": "Update Schedule", "description": "Saves the settings above and re-arms the background scheduler with the run times you entered. Use this after editing Scheduled Run Times.", "button_label": "💾 Save Schedule", "button_variant": "filled", "button_color": "green"},
+        {"id": "dry_run", "label": "Dry Run (Export to CSV)", "description": "Reports which channels WOULD be hidden or shown and writes the full list to a CSV in /data/exports. Changes nothing.", "button_label": "👁️ Dry Run", "button_variant": "outline", "button_color": "cyan"},
+        {"id": "run_now", "label": "Run Now", "description": "Scans now and applies the visibility changes straight away, using the settings as they are currently saved.", "button_label": "▶️ Run Now", "button_variant": "filled", "button_color": "green", "confirm": {"message": "This will apply visibility changes and (if enabled) attach/detach managed EPG. Continue?"}},
+        {"id": "on_m3u_refresh", "label": "Auto-rescan after M3U refresh", "description": "Runs a visibility scan automatically after each M3U refresh, but only while '🔄 Auto-rescan after M3U refresh' is enabled in the settings above. There is no button: Dispatcharr triggers it.", "events": ["m3u_refresh"]},
+        {"id": "remove_epg_from_hidden", "label": "Remove EPG from Hidden Channels", "description": "Clears the EPG assignment from every channel that is currently hidden in the configured profiles, in one pass. Use it to tidy up channels hidden before 'Auto-Remove EPG on Hide' was turned on.", "button_label": "🧹 Remove EPG from Hidden", "button_variant": "filled", "button_color": "red", "confirm": {"message": "This will CLEAR EPG data from every hidden channel in the selected profile. Cannot be undone by this plugin. Continue?"}},
+        {"id": "clear_csv_exports", "label": "Clear CSV Exports", "description": "Deletes every CSV file this plugin has written to /data/exports. No channel or EPG data is touched.", "button_label": "🗑️ Clear CSV Exports", "button_variant": "filled", "button_color": "red", "confirm": {"message": "This will delete every CSV file in /data/exports created by this plugin. Continue?"}},
+        {"id": "cleanup_periodic_tasks", "label": "Cleanup Orphaned Tasks", "description": "Removes Celery periodic tasks left behind by older versions of this plugin, which scheduled runs through Celery instead of the built-in scheduler. Harmless to run when there are none.", "button_label": "🧼 Cleanup Orphaned Tasks", "button_variant": "outline", "button_color": "orange", "confirm": {"message": "This removes orphaned Celery periodic tasks left by older plugin versions. Continue?"}},
+        {"id": "check_scheduler_status", "label": "Check Scheduler Status", "description": "Shows whether this worker's background scheduler thread is running, which times it is armed for, when the next one is due and when a scan last ran.", "button_label": "🩺 Check Scheduler", "button_variant": "outline", "button_color": "blue"},
     ]
     
     def __init__(self):
         self.results_file = PluginConfig.RESULTS_FILE
         self.settings_file = PluginConfig.SETTINGS_FILE
-        self.version_check_file = PluginConfig.VERSION_CHECK_FILE
         self.last_results = []
 
         # Thread-safe operation locking
         self._thread = None
         self._thread_lock = threading.Lock()
         self._op_stop_event = threading.Event()
-
-        # Version check cache
-        self.cached_version_info = None
 
         LOGGER.info(f"{LOG_PREFIX} {self.name} Plugin v{self.version} initialized")
 
@@ -638,139 +590,6 @@ class Plugin:
         except Exception as e:
             LOGGER.error(f"Error loading settings: {e}")
             self.saved_settings = {}
-
-    def _get_latest_version(self, owner, repo):
-        """
-        Fetches the latest release tag name from GitHub using only Python's standard library.
-        Returns the version string or an error message.
-        """
-        url = f"https://api.github.com/repos/{owner}/{repo}/releases/latest"
-
-        # Add a user-agent to avoid potential 403 Forbidden errors
-        headers = {
-            'User-Agent': 'Dispatcharr-Plugin-Version-Checker'
-        }
-
-        try:
-            # Create a request object with headers
-            req = urllib.request.Request(url, headers=headers)
-
-            # Make the request and open the URL with a timeout
-            with urllib.request.urlopen(req, timeout=5) as response:
-                # Read the response and decode it as UTF-8
-                data = response.read().decode('utf-8')
-
-                # Parse the JSON string
-                json_data = json.loads(data)
-
-                # Get the tag name
-                latest_version = json_data.get("tag_name")
-
-                if latest_version:
-                    return latest_version
-                else:
-                    return "Error: 'tag_name' key not found."
-
-        except urllib.error.HTTPError as http_err:
-            if http_err.code == 404:
-                return f"Error: Repo not found or has no releases."
-            else:
-                return f"HTTP error: {http_err.code}"
-        except Exception as e:
-            # Catch other errors like timeouts
-            return f"Error: {str(e)}"
-
-    def _read_cached_version_info(self):
-        """Return the stored update-check result, or None. Reads, never fetches.
-
-        Kept separate from _should_check_for_updates so the settings form has a
-        way to report the last known result without deciding whether a fresh
-        check is due, and without any path that could reach the network.
-        """
-        if not os.path.exists(self.version_check_file):
-            return None
-        with open(self.version_check_file, encoding="utf-8") as f:
-            data = json.load(f)
-        if not data.get("latest_version"):
-            return None
-        self.cached_version_info = {
-            "latest_version": data["latest_version"],
-            "last_check_time": data.get("last_check_time"),
-        }
-        return self.cached_version_info
-
-    def _refresh_version_check(self):
-        """Contact GitHub if a check is due, and record the outcome either way.
-
-        Called from the Validate Configuration action, never from the `fields`
-        property. Recording a FAILED attempt is the point: the previous code
-        only wrote the timestamp on success, so a box that could not reach
-        GitHub never engaged the once-a-day throttle and retried on every
-        settings-page render.
-        """
-        if not self._should_check_for_updates():
-            return None
-        latest = self._get_latest_version(PluginConfig.GITHUB_OWNER,
-                                          PluginConfig.GITHUB_REPO)
-        failed = latest.startswith("Error") or latest.startswith("HTTP error")
-        self._save_version_check(None if failed else latest)
-        return latest
-
-    def _should_check_for_updates(self):
-        """
-        Check if we should perform a version check (once per day).
-        Returns True if we should check, False otherwise.
-        Also loads and caches the last check data.
-        """
-        try:
-            if os.path.exists(self.version_check_file):
-                with open(self.version_check_file, encoding="utf-8") as f:
-                    data = json.load(f)
-                    last_check_time = data.get('last_check_time')
-                    cached_latest_version = data.get('latest_version')
-
-                    # The throttle is driven by the TIMESTAMP alone. It used to
-                    # require a cached version string as well, which meant a
-                    # failed check never throttled anything: nothing was written
-                    # on failure, so an unreachable GitHub was retried on every
-                    # settings-page render instead of once a day.
-                    if last_check_time:
-                        # Check if last check was within 24 hours
-                        last_check_dt = datetime.fromisoformat(last_check_time)
-                        now = datetime.now()
-                        time_diff = now - last_check_dt
-
-                        if time_diff.total_seconds() < self.VERSION_CHECK_INTERVAL:
-                            if cached_latest_version:
-                                self.cached_version_info = {
-                                    'latest_version': cached_latest_version,
-                                    'last_check_time': last_check_time
-                                }
-                            return False  # Don't check again
-
-            # Either file doesn't exist, or it's been more than 24 hours
-            return True
-
-        except Exception as e:
-            LOGGER.debug(f"Error checking version check time: {e}")
-            return True  # Check if there's an error
-
-    def _save_version_check(self, latest_version):
-        """Record the outcome of an update check, with a timestamp.
-
-        `latest_version` is None when the check failed. The timestamp is written
-        either way, so the once-a-day throttle engages on failure too.
-        """
-        try:
-            data = {
-                'latest_version': latest_version,
-                'last_check_time': datetime.now().isoformat()
-            }
-            with open(self.version_check_file, 'w', encoding="utf-8") as f:
-                json.dump(data, f, indent=2)
-            LOGGER.debug(f"Saved version check: {latest_version}")
-        except Exception as e:
-            LOGGER.debug(f"Error saving version check: {e}")
 
     def run(self, action, params, context):
         """Main plugin entry point"""
@@ -875,15 +694,6 @@ class Plugin:
         """Validate all plugin configuration settings"""
         # Save settings first to ensure any changes in the UI are persisted
         self._save_settings(settings)
-
-        # Refresh the update check here rather than in the `fields` property.
-        # This action runs only when the operator clicks it, so a slow or
-        # unreachable GitHub delays a deliberate click instead of every render
-        # of the settings page. A failure must never fail validation.
-        try:
-            self._refresh_version_check()
-        except Exception as e:
-            logger.debug(f"Update check skipped: {e}")
 
         validation_results = []
         has_errors = False

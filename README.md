@@ -66,8 +66,8 @@ Settings are grouped into six sections in the UI.
 
 | Setting | Type | Default | Description |
 | :--- | :--- | :--- | :--- |
-| **📺 Channel Profile Names (Required)** | `text` | — | Channel Profile(s) to monitor. Use comma-separated names for multiple profiles. |
-| **📂 Channel Groups** | `text` | — | Comma-separated group names to monitor. Leave empty for all groups in the profile(s). Matched **case-insensitively** (as of v1.26.1711623); a configured group name that matches no channels is reported in the scan log / result message instead of being silently ignored. |
+| **📺 Channel Profile Names (Required, comma-separated)** | `text` | — | Channel Profile(s) to monitor. Use comma-separated names for multiple profiles. |
+| **📂 Channel Groups (comma-separated)** | `text` | — | Comma-separated group names to monitor. Leave empty for all groups in the profile(s). Matched **case-insensitively** (as of v1.26.1711623); a configured group name that matches no channels is reported in the scan log / result message instead of being silently ignored. |
 | **🔤 Name Source** | `select` | `Channel_Name` | Choose the source for rule matching: `Channel_Name` uses the channel name, `Stream_Name` uses the first stream's name in the channel. |
 
 ### 🎯 Hide Rules
@@ -102,7 +102,7 @@ Settings are grouped into six sections in the UI.
 
 | Setting | Type | Default | Description |
 | :--- | :--- | :--- | :--- |
-| **⏰ Scheduled Run Times** | `text` | — | Comma-separated times (24-hour HHMM format) to run daily. Leave blank to disable. |
+| **⏰ Scheduled Run Times (24-hour, comma-separated)** | `text` | — | Comma-separated times (24-hour HHMM format) to run daily. Leave blank to disable. |
 | **📄 Enable Scheduled CSV Export** | `boolean` | `False` | If enabled, a CSV report will be created when the plugin runs on a schedule. |
 | **🔄 Auto-rescan after M3U refresh** | `boolean` | `False` | If enabled, the plugin re-runs its visibility scan automatically after each M3U account refresh. Dispatcharr's Auto Channel Sync re-enables (un-hides) channels in synced groups on every refresh; this re-hides them right after. Leave off if you do not use Auto Channel Sync. |
 
@@ -264,7 +264,6 @@ When **`Event Timezone`** (`dummy_epg_event_timezone`) and **Dispatcharr's globa
 * **Last Run Tracker** (scheduled run history, cross-worker safe): `/data/event_channel_managarr_last_run.json`
 * **Scan Lock** (cross-worker mutex): `/data/event_channel_managarr_scan.lock`
 * **Undated-Channel Tracker** (for `[UndatedAge:N]`): `/data/event_channel_managarr_undated_first_seen.json`
-* **Version Check Cache**: `/data/event_channel_managarr_version_check.json`
 * **CSV Exports**: `/data/exports/event_channel_managarr_[dryrun|applied]_YYYYMMDD_HHMMSS.csv`
 * **EPG Removal Reports**: `/data/exports/epg_removal_YYYYMMDD_HHMMSS.csv`
 
@@ -342,13 +341,11 @@ Every CSV includes a block of summary header lines (prefixed with `#`) before th
 
 ## Updating the Plugin
 
-The settings page shows a **📦 Plugin Version Status** line reporting the installed version against
-the newest release. **As of v1.26.2241846 it reads a cached result and never contacts GitHub while
-the page loads.** Before that it called GitHub every time the settings page was rendered, with a five
-second timeout, so the page could not load without internet access — and because the once-a-day limit
-was only recorded after a *successful* check, a machine that could not reach GitHub retried on every
-single page load. The check now runs when you click **🔎 Validate Configuration**, and records failed
-attempts too, so it backs off properly either way.
+The plugin no longer checks GitHub for a newer release, and the settings page no longer shows a
+version status line. Earlier versions checked on every settings-page render, which made the page
+depend on outbound internet access; the check was moved behind a button in v1.26.2241846 and removed
+outright afterwards. The installed version is shown by Dispatcharr on the Plugins page, and releases
+are listed on the GitHub releases page and in the Dispatcharr Plugin Hub.
 
 To update Event Channel Managarr from a previous version:
 
