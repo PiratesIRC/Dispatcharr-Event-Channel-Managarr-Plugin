@@ -158,6 +158,50 @@ def test_us_et_title_extracts_where_the_name_has_event_text():
     assert m and m.group("title") == "MARS Late Models at Farmer City"
 
 
+# --- bare-numbered event names (no PPV/LIVE/EVENT keyword) ---------------------
+#
+# Measured on the live installation 2026-08-14: a provider names its NFL slots
+# "07 - 8/14 7pm Broncos at Falcons", with no keyword before the slot number. The
+# keyword-only pattern did not match, so Dispatcharr's renderer fell through to
+# generate_fallback_programs and the guide showed a repeating block titled with
+# the whole channel name instead of the upcoming and ended entries.
+
+@pytest.mark.parametrize("name,expected", [
+    ("07 - 8/14 7pm Broncos at Falcons", "Broncos at Falcons"),
+    ("10 - 8/15 1pm Panthers at Bills", "Panthers at Bills"),
+    ("16 - 8/15 8pm Cowboys at Seahawks", "Cowboys at Seahawks"),
+    ("3 - 9/1 12:30pm Some Team at Another", "Some Team at Another"),
+    ("07 | 8/14 7pm Broncos at Falcons", "Broncos at Falcons"),
+    ("07 - 7pm Broncos at Falcons", "Broncos at Falcons"),
+])
+def test_us_et_title_extracts_from_bare_numbered_event_names(name, expected):
+    """A slot number with no keyword, followed by a date or a time, is an event."""
+    us = next(p for p in ecm_profiles.PROFILES if p.key == "us_et")
+    rx = ecm_profiles.compile_pattern(us.title_pattern)
+    m = rx.search(name)
+    assert m, f"no match for {name!r}"
+    assert m.group("title") == expected
+
+
+@pytest.mark.parametrize("name", [
+    "60 Minutes",
+    "48 Hours",
+    "9 News",
+    "100 Huntley Street",
+    "24 Hours in A&E",
+    "1 - Some Channel",
+    "3 | News Talk",
+])
+def test_us_et_title_does_not_claim_an_ordinary_numeric_channel_name(name):
+    """Accepting a bare slot number must not strip the number off an ordinary
+    channel name. Without a guard, "60 Minutes" extracts the title "Minutes"
+    and the guide silently renames the channel. This is the same failure the
+    keyword requirement was protecting against (bug-051)."""
+    us = next(p for p in ecm_profiles.PROFILES if p.key == "us_et")
+    rx = ecm_profiles.compile_pattern(us.title_pattern)
+    assert rx.search(name) is None, f"{name!r} must not be treated as an event name"
+
+
 # --- routing over the real corpus ----------------------------------------------
 
 def test_route_returns_a_bucket_per_profile_plus_unclaimed():

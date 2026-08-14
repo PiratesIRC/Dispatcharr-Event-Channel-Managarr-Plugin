@@ -44,14 +44,27 @@ import ecm_profiles  # noqa: E402
 #
 # Re-recording a pin is only honest when the change that moved it was intended
 # and is separately tested. tests/unit/test_se_time_placeholders.py covers the
-# behaviour these two hashes no longer pin. The other three remain at their
-# original S2 baseline values and must not be touched without the same argument.
+# behaviour these two hashes no longer pin.
+#
+# _get_or_create_managed_epg_source was re-recorded a SECOND time on 2026-08-14.
+# Its us_title_pattern literal no longer requires a PPV, LIVE or EVENT keyword
+# before the slot number, so a provider naming its slots "07 - 8/14 7pm Broncos
+# at Falcons" now gets upcoming and ended titles rather than the renderer's
+# static fallback. The same method also gained the superseded pattern in its
+# stock_patterns set, without which an existing installation would keep the old
+# pattern for ever. Both halves are covered by
+# tests/unit/test_ecm_profiles.py (extraction from bare-numbered names, and the
+# guard that keeps "60 Minutes" from being treated as an event) and by
+# tests/contract/test_us_pattern_parity.py (the plugin.py literal still equals
+# ecm_profiles.US_ET, and the superseded pattern is still listed).
+# The other three remain at their original S2 baseline values and must not be
+# touched without the same argument.
 FROZEN_BODIES = {
     "_attach_managed_epg": "b0126debd9231deb49625ca0404952679197b862bff6cd86c618eb46fe3b335e",
     "_detach_managed_epg": "9e8d367e7d0789715e04249dab786a494b7f6919a60d6f9c755029e8261b98ca",
     "_managed_override_ids": "5d41e55a7146863609792f31f20134469c090b51938c1ab67d0f34399c526d6c",
-    # re-recorded 2026-08-12, see the note above
-    "_get_or_create_managed_epg_source": "372b7c1982cedf76b05aa9962159e3d380a06d53f8ecd5c0e6d307df48f4479a",
+    # re-recorded 2026-08-12 and again 2026-08-14, see the notes above
+    "_get_or_create_managed_epg_source": "ae1566e1a34359afb566fdf1c924b4d88bfb01cd7ff19fa33cc9f6e0216234a6",
     # re-recorded 2026-08-12, see the note above
     "_localized_template_props": "8daf6f68b33352690f255dc6d7185546c0ea70596743e633b0403861c62e75dd",
 }

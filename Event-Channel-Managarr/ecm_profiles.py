@@ -198,8 +198,27 @@ US_ET = Profile(
     # idle DAZN slots that never should have matched. Both branches are
     # independently ^-anchored (verified: top-level alternation).
     selector=r"^\s*(?:PPV|LIVE)\s*(?:EVENT\s*)?\d+|^\s*EVENT\s*\d+",
+    # PINNED to plugin.py's us_title_pattern literal; enforced by
+    # tests/contract/test_us_pattern_parity.py, because the renderer reads the
+    # plugin.py value and only routing reads this one.
+    #
+    # The PPV/LIVE/EVENT keyword is OPTIONAL. A provider that names its slots
+    # "07 - 8/14 7pm Broncos at Falcons" carries no keyword at all, and the
+    # keyword-required form left every such channel on the renderer's static
+    # fallback instead of an upcoming or ended title.
+    #
+    # The leading lookahead is what makes that safe. Accepting a bare number
+    # outright would strip the number off ordinary channel names -- "60 Minutes"
+    # extracts the title "Minutes" -- which is the failure the keyword
+    # requirement was guarding against (bug-051). So a keyword-less name
+    # qualifies only when the number is followed by an EXPLICIT separator
+    # character and then a date or a clock time. "60 Minutes" has neither and is
+    # left alone.
     title_pattern=(
-        r"(?:(?:PPV|LIVE)\s*(?:EVENT\s*)?|EVENT\s*)\d+\s*[:|\-\s]\s*"
+        r"(?=(?:PPV|LIVE|EVENT)|"
+        r"\d+\s*[:|\-]\s*(?:\d{1,2}[./]\d{1,2}|\d{1,2}(?::\d{2})?\s*[AaPp][Mm]))"
+        r"(?:(?:PPV|LIVE)\s*(?:EVENT\s*)?|EVENT\s*)?\d+\s*[:|\-\s]\s*"
+        r"(?:(?<datepart>\d{1,2}[./]\d{1,2}(?:[./]\d{2,4})?)\s+)?"
         r"(?:(?<leading_time>\d{1,2}(?::\d{2})?\s*[AaPp][Mm])\s+)?"
         r"(?<title>.+?)"
         r"(?=\s*\(|\s+\d{1,2}(?::\d{2})?\s*[AaPp][Mm]|"

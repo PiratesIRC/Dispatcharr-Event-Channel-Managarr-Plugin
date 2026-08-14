@@ -56,7 +56,7 @@ _scheduler_lock = threading.Lock()  # Prevent concurrent scheduler starts
 class PluginConfig:
     """Centralized configuration constants for Event Channel Managarr."""
 
-    PLUGIN_VERSION = "1.26.2251616"
+    PLUGIN_VERSION = "1.26.2261346"
 
     # Fallback timezone when Dispatcharr's global time zone is unset/invalid.
     DEFAULT_TIMEZONE = "UTC"
@@ -2384,13 +2384,27 @@ class Plugin:
         # leading_time handles names where the time appears BEFORE the event text (LIVE format).
         # The separator class includes '-' so " - " between the event number and the
         # title is consumed (otherwise the leading dash leaks into {title}).
-        # The prefix accepts "PPV EVENT N", "LIVE EVENT N", "PPV N", "LIVE N", and also a
-        # bare "EVENT N" with NO PPV/LIVE prefix (e.g. "EVENT 21: Dirt Zone (6.19 7:30 PM
-        # ET)") so those providers capture a real {title} instead of the static fallback
-        # (bug-051). The "EVENT" keyword is still required when PPV/LIVE is absent, so an
-        # unrelated bare "<number>:" token is NOT matched.
+        # The prefix accepts "PPV EVENT N", "LIVE EVENT N", "PPV N", "LIVE N", a bare
+        # "EVENT N" with NO PPV/LIVE prefix (e.g. "EVENT 21: Dirt Zone (6.19 7:30 PM ET)")
+        # so those providers capture a real {title} instead of the static fallback
+        # (bug-051), and a bare slot NUMBER with no keyword at all (e.g. "07 - 8/14 7pm
+        # Broncos at Falcons"), which is how at least one provider names its NFL slots.
+        #
+        # The leading lookahead is what makes the keyword-less form safe. Accepting a bare
+        # number outright strips the number off ordinary channel names -- "60 Minutes"
+        # extracts the title "Minutes" and the guide silently renames the channel, which
+        # is exactly what the keyword requirement was guarding against. So a keyword-less
+        # name qualifies only when the number is followed by an EXPLICIT separator
+        # character and then a date or a clock time. "60 Minutes", "48 Hours" and
+        # "100 Huntley Street" have neither and stay on the fallback, as before.
+        #
+        # This literal is duplicated as ecm_profiles.US_ET.title_pattern; the renderer
+        # reads THIS one. tests/contract/test_us_pattern_parity.py keeps them equal.
         us_title_pattern = (
-            r"(?:(?:PPV|LIVE)\s*(?:EVENT\s*)?|EVENT\s*)\d+\s*[:|\-\s]\s*"
+            r"(?=(?:PPV|LIVE|EVENT)|"
+            r"\d+\s*[:|\-]\s*(?:\d{1,2}[./]\d{1,2}|\d{1,2}(?::\d{2})?\s*[AaPp][Mm]))"
+            r"(?:(?:PPV|LIVE)\s*(?:EVENT\s*)?|EVENT\s*)?\d+\s*[:|\-\s]\s*"
+            r"(?:(?<datepart>\d{1,2}[./]\d{1,2}(?:[./]\d{2,4})?)\s+)?"
             r"(?:(?<leading_time>\d{1,2}(?::\d{2})?\s*[AaPp][Mm])\s+)?"
             r"(?<title>.+?)"
             r"(?=\s*\(|\s+\d{1,2}(?::\d{2})?\s*[AaPp][Mm]|"
@@ -2499,10 +2513,24 @@ class Plugin:
             r"\s+(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)\s+\d+|$)"
         )
 
+        # Superseded on 2026-08-14: required a PPV, LIVE or EVENT keyword before the slot
+        # number, so a provider naming its slots "07 - 8/14 7pm Broncos at Falcons" got
+        # the renderer's static fallback and never an upcoming or ended title. Listed here
+        # so sources still carrying it auto-upgrade to the keyword-optional default.
+        _prev_us_title_keyword_required = (
+            r"(?:(?:PPV|LIVE)\s*(?:EVENT\s*)?|EVENT\s*)\d+\s*[:|\-\s]\s*"
+            r"(?:(?<leading_time>\d{1,2}(?::\d{2})?\s*[AaPp][Mm])\s+)?"
+            r"(?<title>.+?)"
+            r"(?=\s*\(|\s+\d{1,2}(?::\d{2})?\s*[AaPp][Mm]|"
+            r"\s+(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)\s+\d+|$)"
+        )
+
         stock_patterns = {
             "title_pattern": {us_title_pattern, _py_named(us_title_pattern),
                               _py_named(us_title_pattern).replace(r"[:|\-\s]", r"[:|\s]"),
                               _orig_title, _prev_us_title, _py_named(_prev_us_title),
+                              _prev_us_title_keyword_required,
+                              _py_named(_prev_us_title_keyword_required),
                               se_title_pattern, _py_named(se_title_pattern)},
             "time_pattern": {us_time_pattern, _py_named(us_time_pattern), _orig_time,
                              se_time_pattern, _py_named(se_time_pattern)},
