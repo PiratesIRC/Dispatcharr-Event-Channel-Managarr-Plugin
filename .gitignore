@@ -64,6 +64,10 @@ Thumbs.db
 .wolf/
 CLAUDE.md
 GEMINI.md
+# Agent notes and hand-off prompts kept beside the published docs. These are
+# internal working files: they quote support cases, LAN addresses and settings
+# from a real installation, and none of it belongs in a public repository.
+docs/CLAUDE-*.md
 
 # Local files
 Event-Channel-Managarr.txt

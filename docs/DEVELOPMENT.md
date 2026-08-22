@@ -1,4 +1,14 @@
-# Event Channel Managarr — Developer Workflow
+# Event Channel Managarr development notes
+
+The runtime model is the first thing to understand: the plugin runs **inside
+Dispatcharr's Django backend**. There is no build step, no standalone run and no
+staging environment, so `apps.*`, `django.*` and `core.utils` imports resolve only
+inside the container. The test suite stubs them.
+
+The **[user guide](USER-GUIDE.md)** covers settings, rules and troubleshooting.
+The **[project front page](../README.md)** describes what the plugin is.
+
+---
 
 A practical guide for contributors and maintainers.
 
@@ -346,3 +356,48 @@ These items were identified during a workflow review as worthwhile future work:
 - **Install `gh` CLI or a GitHub MCP.** The `gh` CLI is not installed; release steps use raw REST API calls. Installing `gh` or a GitHub MCP would reduce friction and let the `/release` skill automate more steps end-to-end.
 - **Docker MCP or helper script.** The `docker cp` + restart loop and MSYS path-mangling workarounds add friction. A Docker MCP or a single `deploy.sh` wrapper (handling `MSYS_NO_PATHCONV` internally) would smooth this out.
 - **Fix or disable the noisy `claude-mem` hook** if it produces spurious output during normal sessions.
+
+---
+
+## Contributing
+
+Pull requests welcome. To submit changes:
+
+### To this repo (`PiratesIRC/Dispatcharr-Event-Channel-Managarr-Plugin`)
+
+0. **Check open issues and PRs first** — review open issues + PRs on this repo (and any open `[event-channel-managarr]` PRs on `Dispatcharr/Plugins`) before cutting a release, so in-flight reports/fixes are included and nothing conflicts or duplicates.
+1. Bump version: `python3 bump_version.py` (auto-stamps with current UTC day-of-year + HHMM).
+2. Commit, push, tag, and release:
+   ```bash
+   git tag <version> && git push origin <version>
+   gh release create <version> --title "v<version>" --notes "..."
+   gh release upload <version> Event-Channel-Managarr.zip
+   ```
+
+### To the upstream marketplace (`Dispatcharr/Plugins`)
+
+Updates also need to be PR'd to `Dispatcharr/Plugins` so the plugin updates in users' Dispatcharr UIs. The repo's GitHub Actions validator enforces strict rules — failing any blocks the merge:
+
+| Check | Requirement |
+| :--- | :--- |
+| **PR title** | Must match `[event-channel-managarr]: <description>`. The `validate-title` job fails on any other format. **Most common trip-up.** |
+| **Version bump** | `plugin.json` `version` must be greater than the version on upstream `main` for any code/asset change. Metadata-only edits are exempt. |
+| **Required `plugin.json` fields** | `name`, `version`, `description`, `author`, `license` (SPDX). |
+| **Authorship** | PR author's GitHub username must appear in `author` or `maintainers`, or the `close-unauthorized` job auto-closes the PR. |
+| **Folder name** | `plugins/event-channel-managarr/` (lowercase-kebab) — note this differs from the `Event-Channel-Managarr/` capitalization used in this repo's zip. |
+
+Workflow:
+
+```bash
+# In your fork of Dispatcharr/Plugins:
+git fetch upstream && git checkout main && git merge upstream/main --ff-only && git push origin main
+git checkout -b ecm-v<version>
+cp <this-repo>/Event-Channel-Managarr/plugin.{py,json} plugins/event-channel-managarr/
+git commit -am "[event-channel-managarr]: ..."
+git push -u origin ecm-v<version>
+gh pr create --repo Dispatcharr/Plugins --base main \
+    --title "[event-channel-managarr]: Bump to v<version> — <summary>" \
+    --body "..."
+```
+
+On merge, upstream automation builds the zip + checksums and updates `manifest.json` on the `releases` branch — do not touch that branch manually.
