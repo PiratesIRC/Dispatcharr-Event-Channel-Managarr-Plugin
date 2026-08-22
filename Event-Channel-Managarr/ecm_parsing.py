@@ -285,3 +285,58 @@ def parse_scheduled_times(scheduled_times_str):
                 continue
         rejects.append(time_str)
     return times, rejects
+
+
+# Default lengths for the two "this name is too short to be an event" rules.
+# They are the values those rules used when the numbers were written into the
+# rule bodies, so a bare [ShortDescription] or [ShortChannelName] tag behaves
+# exactly as it always has.
+SHORT_DESCRIPTION_DEFAULT = 15
+SHORT_CHANNEL_NAME_DEFAULT = 25
+
+# A colon only separates a name from its description when whitespace follows it.
+# Without that lookahead a clock time ("LIVE 10:30") reads as a separator.
+_COLON_SEPARATOR_RE = re.compile(r":(?=\s)(.+)$")
+_PIPE_SEPARATOR_RE = re.compile(r"\|(.+)$")
+_DASH_SEPARATOR_RE = re.compile(r"\s-\s*(.*)$")
+_DASH_PRESENT_RE = re.compile(r"\s-\s")
+
+
+def short_description_match(channel_name, threshold=SHORT_DESCRIPTION_DEFAULT):
+    """Return (separator, length) when the text after a separator is too short.
+
+    Returns None when the name has no separator, or when the description after
+    every separator present is at least ``threshold`` characters long.
+
+    The threshold used to be written into the rule body as a bare 15, so a
+    channel called "NCAAF 25: FS1 [1080p]" was hidden (11 characters after the
+    colon) while "NCAAF 26: SEC NETWORK [1080p]" stayed visible (19), and there
+    was no way to move the line except to stop using the rule. Callers pass the
+    number from the rule tag, for example [ShortDescription:20].
+    """
+    for label, pattern in (("colon", _COLON_SEPARATOR_RE),
+                           ("pipe", _PIPE_SEPARATOR_RE),
+                           ("dash", _DASH_SEPARATOR_RE)):
+        match = pattern.search(channel_name or "")
+        if match:
+            length = len(match.group(1).strip())
+            if length < threshold:
+                return label, length
+    return None
+
+
+def short_channel_name_match(channel_name, threshold=SHORT_CHANNEL_NAME_DEFAULT):
+    """Return the normalized length when a separator-less name is too short.
+
+    Returns None when the name carries any separator at all, or when it is at
+    least ``threshold`` characters long. Whitespace is collapsed first so runs
+    of spaces and tabs do not inflate the measurement.
+    """
+    normalized = re.sub(r"\s+", " ", (channel_name or "").strip())
+    if (_COLON_SEPARATOR_RE.search(normalized)
+            or _PIPE_SEPARATOR_RE.search(normalized)
+            or _DASH_PRESENT_RE.search(normalized)):
+        return None
+    if len(normalized) < threshold:
+        return len(normalized)
+    return None

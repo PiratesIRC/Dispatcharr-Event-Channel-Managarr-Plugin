@@ -361,7 +361,7 @@ class Plugin:
                 "type": "text",
                 "default": self.DEFAULT_HIDE_RULES,
                 "placeholder": "[BlankName],[NoEventPattern],[EmptyPlaceholder],[PastDate:0],[FutureDate:2],[UndatedAge:2],[ShortDescription],[ShortChannelName]",
-                "help_text": "The rules that hide a channel, written as comma-separated tags. They are read left to right and the first tag that matches hides the channel, so put the rules you trust most first. A tag left out of this list is never applied. Some tags take a number after a colon, for example [PastDate:0] or [UndatedAge:2]. Available tags: [NoEPG], [BlankName], [WrongDayOfWeek], [NoEventPattern], [EmptyPlaceholder], [ShortDescription], [ShortChannelName], [NumberOnly], [PastDate:days], [PastDate:days:Xh], [FutureDate:days], [UndatedAge:days], [InactiveRegex].",
+                "help_text": "The rules that hide a channel, written as comma-separated tags. They are read left to right and the first tag that matches hides the channel, so put the rules you trust most first. A tag left out of this list is never applied. Some tags take a number after a colon, for example [PastDate:0] or [UndatedAge:2]. Available tags: [NoEPG], [BlankName], [WrongDayOfWeek], [NoEventPattern], [EmptyPlaceholder], [ShortDescription], [ShortDescription:chars], [ShortChannelName], [ShortChannelName:chars], [NumberOnly], [PastDate:days], [PastDate:days:Xh], [FutureDate:days], [UndatedAge:days], [InactiveRegex]. [ShortDescription] uses 15 characters and [ShortChannelName] 25 unless you give them a number.",
             },
             {
                 "id": "regex_channels_to_ignore",
@@ -1216,48 +1216,35 @@ class Plugin:
             return False, None
         
         elif rule_name == "ShortDescription":
-            # Check description length after separators (colon, pipe, or dash).
-            # The `(?=\s)` lookahead after the colon excludes time-colons like "7:00AM"
-            # so only real separator colons like "PPV 12: Title" are measured.
-            colon_match = re.search(r':(?=\s)(.+)$', channel_name)
-            if colon_match:
-                description = colon_match.group(1).strip()
-                if len(description) < 15:
-                    return True, f"[ShortDescription] Description after colon too short ({len(description)} chars)"
-
-            pipe_match = re.search(r'\|(.+)$', channel_name)
-            if pipe_match:
-                description = pipe_match.group(1).strip()
-                if len(description) < 15:
-                    return True, f"[ShortDescription] Description after pipe too short ({len(description)} chars)"
-
-            # Match dash as separator (whitespace followed by dash)
-            # Find the rightmost occurrence to get the actual description
-            dash_match = re.search(r'\s-\s*(.*)$', channel_name)
-            if dash_match:
-                description = dash_match.group(1).strip()
-                if len(description) < 15:
-                    return True, f"[ShortDescription] Description after dash too short ({len(description)} chars)"
+            # The cutoff is [ShortDescription:N], defaulting to the 15 this rule
+            # always used. The rule parser has always accepted a number here and
+            # the rule then ignored it, so a user who wrote [ShortDescription:20]
+            # silently got 15 and nothing said otherwise. Measuring lives in
+            # ecm_parsing so it can be unit-tested outside the container.
+            threshold = rule_param if rule_param is not None else ecm_parsing.SHORT_DESCRIPTION_DEFAULT
+            hit = ecm_parsing.short_description_match(channel_name, threshold)
+            if hit:
+                separator, length = hit
+                return True, (f"[ShortDescription:{threshold}] Description after {separator} "
+                              f"too short ({length} chars, threshold: {threshold})")
 
             return False, None
-        
+
         elif rule_name == "ShortChannelName":
-            # Check total name length if no separator (colon, pipe, or dash)
-            # Normalize whitespace first to handle multiple spaces, tabs, etc.
-            normalized_name = re.sub(r'\s+', ' ', channel_name.strip())
-
-            # `(?=\s)` excludes time-colons (7:00, 9:45) so a channel like "LIVE 10:30"
-            # is correctly seen as having NO real separator. Also requires content after
-            # the colon so trailing-empty colons ("PPV 25:") still count as "no separator"
-            # here — matching pre-fix behavior. [EmptyPlaceholder] catches those cases
-            # earlier in the rule chain.
-            colon_match = re.search(r':(?=\s)(.+)$', normalized_name)
-            pipe_match = re.search(r'\|(.+)$', normalized_name)
-            dash_match = re.search(r'\s-\s', normalized_name)  # Dash with surrounding spaces
-
-            if not colon_match and not pipe_match and not dash_match:
-                if len(normalized_name) < 25:
-                    return True, f"[ShortChannelName] Name too short without event details ({len(normalized_name)} chars)"
+            # The cutoff is [ShortChannelName:N], defaulting to the 25 this rule
+            # always used, for the same reason as [ShortDescription:N] above.
+            #
+            # The measurement (in ecm_parsing) collapses whitespace first, and
+            # treats a name as having no separator when it has no colon followed
+            # by whitespace, no pipe and no spaced dash. The colon test requires
+            # content after it, so a trailing empty colon ("PPV 25:") still counts
+            # as "no separator" here, matching the behaviour this rule has always
+            # had; [EmptyPlaceholder] catches those earlier in the rule chain.
+            threshold = rule_param if rule_param is not None else ecm_parsing.SHORT_CHANNEL_NAME_DEFAULT
+            length = ecm_parsing.short_channel_name_match(channel_name, threshold)
+            if length is not None:
+                return True, (f"[ShortChannelName:{threshold}] Name too short without event "
+                              f"details ({length} chars, threshold: {threshold})")
 
             return False, None
 
