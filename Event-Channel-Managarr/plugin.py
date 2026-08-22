@@ -116,6 +116,15 @@ class PluginConfig:
     RESULTS_FILE = "/data/event_channel_managarr_results.json"
     UNDATED_FIRST_SEEN_FILE = "/data/event_channel_managarr_undated_first_seen.json"
     EXPORTS_DIR = "/data/exports"
+    # An append-only record of what applied runs actually CHANGED, one JSON line
+    # each. It exists so a running total can be reported without re-deriving it
+    # from the CSV exports, which a plugin action deletes and which scheduled runs
+    # only write when the operator has turned that setting on. Dry runs never
+    # append, and neither does an applied run that changed nothing, so a line
+    # means real work. Rotation keeps one predecessor; at a few hundred bytes per
+    # run this is decades away and the reader globs both files.
+    LEDGER_FILE = "/data/event_channel_managarr_ledger.jsonl"
+    LEDGER_MAX_BYTES = 5 * 1024 * 1024
 
 
 _LAST_RUN_FILE = PluginConfig.LAST_RUN_FILE
@@ -938,6 +947,45 @@ class Plugin:
             entry = {"first_seen": today_str, "name": channel_name}
             tracker[key] = entry
         return entry
+
+    def _append_ledger_entry(self, shown, hidden, is_scheduled_run, logger):
+        """Record what one applied run changed. Never raises.
+
+        Called only after the visibility transaction has committed, so a line
+        describes changes that really happened rather than changes that were
+        planned. `shown` and `hidden` are TRANSITION counts: channels whose
+        visibility actually flipped this run. Counting the channels that were
+        already hidden would re-count the same channel on every scheduled run
+        and turn a total of work done into a meaningless multiple of it.
+
+        A failure here must never fail a scan. The ledger is a reporting
+        convenience; the channels are the product.
+        """
+        try:
+            path = self.LEDGER_FILE
+            try:
+                if os.path.getsize(path) >= self.LEDGER_MAX_BYTES:
+                    os.replace(path, path + ".1")
+            except OSError:
+                pass  # Missing file on the first run, or an unreadable size.
+
+            entry = {
+                # `timezone` here is django.utils.timezone, not datetime.timezone.
+                # timezone.now() is the idiom this module already uses and returns
+                # an aware UTC datetime; datetime.timezone.utc is NOT reachable
+                # through this name, and django.utils.timezone.utc was removed in
+                # Django 5.
+                "ts": timezone.now().isoformat(),
+                "version": self.version,
+                "shown": int(shown),
+                "hidden": int(hidden),
+                "scheduled": bool(is_scheduled_run),
+            }
+            with open(path, "a", encoding="utf-8") as handle:
+                handle.write(json.dumps(entry) + "\n")
+        except Exception as e:
+            logger.warning(f"{LOG_PREFIX} Could not append to the run ledger ({e}); "
+                           f"the scan itself is unaffected.")
 
     def _parse_hide_rules(self, rules_text, logger):
         """Parse hide rules priority text into list of rule tuples"""
@@ -3514,6 +3562,16 @@ class Plugin:
                         ).update(enabled=True)
 
                 logger.info("Visibility changes applied successfully to all profiles")
+
+                # Record the run only now: the transaction above has committed, so
+                # these are changes that happened rather than changes that were
+                # planned. Nothing below may depend on this succeeding.
+                self._append_ledger_entry(
+                    shown=len(channels_to_show),
+                    hidden=len(channels_to_hide),
+                    is_scheduled_run=is_scheduled_run,
+                    logger=logger,
+                )
 
             # Handle automatic EPG removal if enabled (bulk update)
             if not dry_run and self._get_bool_setting(settings, "auto_set_dummy_epg_on_hide", False) and channels_to_hide:

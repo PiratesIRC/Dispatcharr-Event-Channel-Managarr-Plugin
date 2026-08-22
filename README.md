@@ -292,8 +292,23 @@ When **`Event Timezone`** (`dummy_epg_event_timezone`) and **Dispatcharr's globa
 * **Last Run Tracker** (scheduled run history, cross-worker safe): `/data/event_channel_managarr_last_run.json`
 * **Scan Lock** (cross-worker mutex): `/data/event_channel_managarr_scan.lock`
 * **Undated-Channel Tracker** (for `[UndatedAge:N]`): `/data/event_channel_managarr_undated_first_seen.json`
+* **Run Ledger**: `/data/event_channel_managarr_ledger.jsonl` (rotates once to `.jsonl.1` at 5 MB)
 * **CSV Exports**: `/data/exports/event_channel_managarr_[dryrun|applied]_YYYYMMDD_HHMMSS.csv`
 * **EPG Removal Reports**: `/data/exports/epg_removal_YYYYMMDD_HHMMSS.csv`
+
+### Run Ledger
+
+An append-only record of what applied runs actually **changed**, one JSON line each:
+
+```json
+{"ts": "2026-08-22T16:45:00+00:00", "version": "1.26.2341433", "shown": 11, "hidden": 100, "scheduled": true}
+```
+
+`shown` and `hidden` are **transition** counts: channels whose visibility actually flipped on that run. They are not the number of channels currently visible or hidden, and not the number processed. The plugin looks at every channel in scope on every scheduled run, so a running total of anything other than transitions would re-count the same channel indefinitely.
+
+A line is written only after the database transaction that applied the changes has committed. **Dry runs never write a line**, and neither does an applied run that found nothing to change, so every line represents real work. A failure to write the ledger is logged as a warning and never fails a scan.
+
+Nothing in the plugin reads this file; it exists so a running total can be reported without re-deriving it from the CSV exports, which the **🗑️ Clear CSV Exports** action deletes and which scheduled runs write only when **📄 Enable Scheduled CSV Export** is enabled.
 
 ## CSV Export Format
 
