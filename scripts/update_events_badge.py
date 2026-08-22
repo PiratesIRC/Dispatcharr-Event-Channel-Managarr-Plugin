@@ -65,6 +65,15 @@ STATE_PATH = ROOT / "scripts" / ".events_badge_gist"
 LABEL = "events surfaced"
 COLOR = "blue"
 
+# Every external command gets a timeout. This script runs unattended from Task
+# Scheduler, and both tools it calls can block rather than fail: the docker CLI
+# has been observed waiting indefinitely on this machine, and gh can stall on a
+# network or credential-store call. Without a timeout the run never ends, the
+# task reports no result, and it leaves a console window open until someone
+# notices. The task's own 10 minute limit is the backstop; these are the fix.
+DOCKER_TIMEOUT = 120
+GH_TIMEOUT = 90
+
 
 def read_ledger_counts():
     """-> (shown, hidden, runs, scheduled_runs).
@@ -101,12 +110,21 @@ def read_ledger_counts():
         "sys.stdout.write(json.dumps({'shown': shown, 'hidden': hidden,\n"
         "                             'runs': runs, 'scheduled': scheduled}))\n"
     )
-    result = subprocess.run(
-        # -i matters: without stdin the container's python runs an EMPTY program,
-        # exits 0 and prints nothing, which is indistinguishable from an empty
-        # ledger.
-        ["docker", "exec", "-u", "dispatch", "-i", CONTAINER, "python", "-"],
-        input=probe, capture_output=True, text=True)
+    try:
+        result = subprocess.run(
+            # -i matters: without stdin the container's python runs an EMPTY program,
+            # exits 0 and prints nothing, which is indistinguishable from an empty
+            # ledger.
+            ["docker", "exec", "-u", "dispatch", "-i", CONTAINER, "python", "-"],
+            input=probe, capture_output=True, text=True, timeout=DOCKER_TIMEOUT)
+    except subprocess.TimeoutExpired:
+        # The docker CLI can hang on this machine rather than erroring, and this
+        # script runs unattended from Task Scheduler. Without a timeout the run
+        # never ends, the task never reports a result, and it leaves a console
+        # window open until someone notices.
+        raise SystemExit(
+            f"docker did not answer within {DOCKER_TIMEOUT}s; is Docker Desktop running? "
+            f"Nothing was published.")
     if result.returncode != 0:
         raise SystemExit(f"could not read the container: {result.stderr.strip()}")
     payload = result.stdout.strip()
@@ -135,7 +153,12 @@ def endpoint_document(shown):
 
 
 def gh(*args, check=True):
-    result = subprocess.run([GH, *args], capture_output=True, text=True)
+    try:
+        result = subprocess.run([GH, *args], capture_output=True, text=True,
+                                timeout=GH_TIMEOUT)
+    except subprocess.TimeoutExpired:
+        raise SystemExit(
+            f"gh {' '.join(args)} did not finish within {GH_TIMEOUT}s; nothing was published.")
     if check and result.returncode != 0:
         raise SystemExit(f"gh {' '.join(args)} failed: {result.stderr.strip()}")
     return result.stdout.strip()
