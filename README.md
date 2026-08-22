@@ -13,6 +13,9 @@ A Dispatcharr plugin that automatically manages channel visibility based on EPG 
 
 [![GitHub Release](https://img.shields.io/github/v/release/PiratesIRC/Dispatcharr-Event-Channel-Managarr-Plugin?include_prereleases&logo=github)](https://github.com/PiratesIRC/Dispatcharr-Event-Channel-Managarr-Plugin/releases)
 [![Downloads](https://img.shields.io/github/downloads/PiratesIRC/Dispatcharr-Event-Channel-Managarr-Plugin/total?color=success&label=Downloads&logo=github)](https://github.com/PiratesIRC/Dispatcharr-Event-Channel-Managarr-Plugin/releases)
+[![Events surfaced](https://img.shields.io/endpoint?url=https://gist.githubusercontent.com/PiratesIRC/6d203e81e83657ee1cbc6e77f5c03d65/raw/event-channel-managarr-events.json)](#run-ledger)
+
+<sub>The **events surfaced** badge is the number of event channels this plugin has switched from hidden to visible on the maintainer's own installation, counted from its run ledger and refreshed twice a day. It counts channels that actually changed, so a channel that stays visible across many scheduled runs is counted once, when it appeared. Channels hidden, channels merely scanned, and dry runs are all excluded, so the number is work done rather than activity. The ledger starts when it was first deployed rather than at the plugin's first release, so this is a total since then, not a lifetime one. It is one installation's total, not a project metric.</sub>
 
 ![Top Language](https://img.shields.io/github/languages/top/PiratesIRC/Dispatcharr-Event-Channel-Managarr-Plugin)
 ![Repo Size](https://img.shields.io/github/repo-size/PiratesIRC/Dispatcharr-Event-Channel-Managarr-Plugin)
