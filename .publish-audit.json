@@ -91,6 +91,10 @@
     {
       "pattern": "C:.Users.User.docker.Event-Channel-Managarr",
       "reason": "this repository's own checkout path, quoted once in docs/superpowers/plans/2026-07-18-durable-epg-capture-s0-s1.md as orientation for whoever executes that plan. The account name is literally 'User' and the final segment is the public repository name, so it identifies no person and reveals no layout the repository name does not. The separator is a '.' wildcard rather than an escaped backslash on purpose: a literal backslash needs FOUR in JSON, and two earlier attempts produced a regex error instead of a rule. Scoped to THIS path, so the generic Windows drive-path rule still fires on every other one"
+    },
+    {
+      "pattern": "C[:]\\\\Users\\\\User\\\\AppData\\\\Local\\\\Programs\\\\Python|C[:]\\\\Program Files\\\\Docker",
+      "reason": "the two tool paths pinned in scripts/update_events_badge.ps1. A scheduled task starts with a minimal environment, so the wrapper cannot resolve python or docker from PATH and must name them. Both are stock installation locations for Python and Docker Desktop, and the Windows account on this machine is literally named 'User', so neither string names a person, a host, a provider or a credential. The drive letter is written as a character class so this rules file does not itself trip the built-in windows-drive-path rule"
     }
   ]
 }
