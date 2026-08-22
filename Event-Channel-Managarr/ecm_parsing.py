@@ -253,3 +253,35 @@ def lock_is_stale(mtime, now, max_age_seconds):
         return (now - mtime) > max_age_seconds
     except TypeError:
         return False
+
+
+def parse_scheduled_times(scheduled_times_str):
+    """Split a comma-separated HHMM schedule into accepted times and rejected text.
+
+    Returns ``(times, rejects)``. ``times`` holds ``datetime.time`` objects in the
+    order given; ``rejects`` holds the raw text of every entry that could not be
+    used, so a caller can tell the user which of their run times will never fire.
+
+    The rejected entries used to be discarded here with no record anywhere. A
+    schedule of "0600,2400" therefore armed one run time instead of two, and both
+    the settings form and the scheduler reported success. ``2400`` is the common
+    case: it is four digits, so a check that only tests the shape accepts it, but
+    there is no hour 24 and midnight is written ``0000``.
+    """
+    times = []
+    rejects = []
+    if not scheduled_times_str or not scheduled_times_str.strip():
+        return times, rejects
+
+    for time_str in scheduled_times_str.split(","):
+        time_str = time_str.strip()
+        if not time_str:
+            continue
+        if len(time_str) == 4 and time_str.isdigit():
+            hour = int(time_str[:2])
+            minute = int(time_str[2:])
+            if 0 <= hour < 24 and 0 <= minute < 60:
+                times.append(datetime.strptime(time_str, "%H%M").time())
+                continue
+        rejects.append(time_str)
+    return times, rejects

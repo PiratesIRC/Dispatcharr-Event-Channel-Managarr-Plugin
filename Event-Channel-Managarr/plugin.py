@@ -838,13 +838,21 @@ class Plugin:
         # 6. Validate schedule
         scheduled_times = settings.get("scheduled_times", "").strip()
         if scheduled_times:
-            times_list = [t.strip() for t in scheduled_times.split(',') if t.strip()]
-            invalid = [t for t in times_list if len(t) != 4 or not t.isdigit()]
-            if invalid:
-                validation_results.append(f"❌ Schedule: Invalid - {', '.join(invalid)}")
+            # Judge the entries with the SAME parser the scheduler arms itself from.
+            # The old check here only tested "four digits", which accepts 2400 while
+            # the scheduler rejects it, so Validate reported a schedule as good and
+            # that run time then never fired.
+            rejected = []
+            accepted = self._parse_scheduled_times(scheduled_times, rejects=rejected)
+            if rejected:
+                validation_results.append(
+                    "❌ Schedule: " + ", ".join(rejected) + " will be ignored - "
+                    "use HHMM between 0000 and 2359 (midnight is 0000, not 2400)")
                 has_errors = True
-            else:
-                validation_results.append(f"✅ Schedule: {len(times_list)} times")
+            if accepted:
+                validation_results.append(f"✅ Schedule: {len(accepted)} times")
+            elif not rejected:
+                validation_results.append("⚠️ Schedule: no usable times")
         else:
             validation_results.append("ℹ️ Schedule: Not set")
 
@@ -1670,13 +1678,21 @@ class Plugin:
             self._start_background_scheduler(settings)
             
             if scheduled_times_str:
-                times = self._parse_scheduled_times(scheduled_times_str)
+                rejected = []
+                times = self._parse_scheduled_times(scheduled_times_str, rejects=rejected)
                 if times:
                     tz_str = self._get_system_timezone(settings)
                     time_list = [t.strftime('%H:%M') for t in times]
+                    # Name the entries that were thrown away. Dropping them silently
+                    # meant a run time the user had typed never fired and the message
+                    # still read as a complete success.
+                    warn = ""
+                    if rejected:
+                        warn = ("\n\nIgnored (use HHMM between 0000 and 2359; midnight "
+                                "is 0000, not 2400): " + ", ".join(rejected))
                     return {
                         "status": "success",
-                        "message": f"Schedule updated successfully!\n\nScheduled to run daily at: {', '.join(time_list)} ({tz_str})\n\nBackground scheduler is running."
+                        "message": f"Schedule updated successfully!\n\nScheduled to run daily at: {', '.join(time_list)} ({tz_str})\n\nBackground scheduler is running.{warn}"
                     }
                 else:
                     return {
@@ -1725,19 +1741,18 @@ class Plugin:
         LOGGER.debug(f"Using default timezone: {self.DEFAULT_TIMEZONE}")
         return self.DEFAULT_TIMEZONE
         
-    def _parse_scheduled_times(self, scheduled_times_str):
-        """Parse scheduled times string into list of datetime.time objects"""
-        if not scheduled_times_str or not scheduled_times_str.strip():
-            return []
-        
-        times = []
-        for time_str in scheduled_times_str.split(','):
-            time_str = time_str.strip()
-            if len(time_str) == 4 and time_str.isdigit():
-                hour = int(time_str[:2])
-                minute = int(time_str[2:])
-                if 0 <= hour < 24 and 0 <= minute < 60:
-                    times.append(datetime.strptime(time_str, '%H%M').time())
+    def _parse_scheduled_times(self, scheduled_times_str, rejects=None):
+        """Parse scheduled times string into list of datetime.time objects.
+
+        Pass a list as `rejects` to collect the entries that were thrown away. An
+        entry that is not four digits, or whose hour or minute is out of range, was
+        dropped with no record anywhere, so a run time the user had configured never
+        fired and nothing reported it. `2400` is the common case: it is four digits,
+        so a naive format check accepts it, but there is no hour 24.
+        """
+        times, rejected = ecm_parsing.parse_scheduled_times(scheduled_times_str)
+        if rejects is not None:
+            rejects.extend(rejected)
         return times
 
     def _start_background_scheduler(self, settings):
@@ -3049,9 +3064,21 @@ class Plugin:
                         f"profile(s) '{', '.join(found_profile_names)}': "
                         f"{', '.join(unmatched_groups)} — check spelling/case/unicode.")
 
+            # A group entry containing "|" is a user carrying the alternation character
+            # over from the three regex fields into this comma-separated one. It glues
+            # several real group names into a single name that matches nothing, so a
+            # whole slice of the configuration drops out of scope while the run still
+            # reports success. Say so explicitly rather than leaving them to spot it.
+            piped_groups = [g for g in unmatched_groups if "|" in g]
+            separator_hint = (
+                "Channel Groups is comma-separated; the | character belongs only in "
+                "the regex fields." if piped_groups else "")
+
             if total_channels == 0:
                 extra = (f" Unmatched group name(s): {', '.join(unmatched_groups)}."
                          if unmatched_groups else "")
+                if separator_hint:
+                    extra += f" {separator_hint}"
                 return {"status": "error", "message": f"No channels found in profile(s) '{', '.join(found_profile_names)}' with the specified groups.{extra}"}
             
             logger.info(f"Processing {total_channels} channels...")
@@ -3336,7 +3363,46 @@ class Plugin:
 
             total_duplicates_hidden = len(duplicate_hide_list)
             logger.info(f"Scan completed: {len(channels_to_hide)} to hide, {len(channels_to_show)} to show, {len(channels_ignored)} ignored, {total_duplicates_hidden} duplicates hidden")
-            
+
+            # Count what each of the three regex fields actually matched. A field the
+            # user filled in that matched nothing is the single clearest sign the
+            # pattern is wrong, and previously nothing anywhere reported it: the run
+            # looked identical to one where the pattern was doing its job. The counts
+            # come from the decisions already recorded in `results`, so this adds no
+            # extra pass over the channels.
+            regex_field_counts = []
+            _inactive_str = settings.get("regex_mark_inactive", "").strip()
+            if regex_ignore_str:
+                regex_field_counts.append(("Regex: Channel Names to Ignore", len(channels_ignored)))
+            if _inactive_str:
+                # Count by re-testing the names rather than by counting [InactiveRegex]
+                # decisions. Hide rules are first-match-wins, so a channel this pattern
+                # genuinely matches can be hidden by a rule placed earlier in the
+                # priority list, and a decision count would then report "matched
+                # nothing" for a pattern that is working. Compiled the same way the
+                # rule itself compiles it, including the unicode_escape step.
+                try:
+                    _inactive_re = re.compile(
+                        bytes(_inactive_str, "utf-8").decode("unicode_escape"), re.IGNORECASE)
+                    regex_field_counts.append((
+                        "Regex: Mark Channel as Inactive",
+                        sum(1 for r in results if _inactive_re.search(r.get("channel_name") or ""))))
+                except re.error:
+                    # An invalid pattern is already reported by Validate Configuration
+                    # and warned about per channel; do not add a misleading zero here.
+                    pass
+            if regex_force_visible_str:
+                regex_field_counts.append((
+                    "Regex: Force Visible Channels",
+                    sum(1 for r in results if r.get("hide_rule") == "[ForceVisible]")))
+            unmatched_regex_fields = [label for label, count in regex_field_counts if count == 0]
+            for label, count in regex_field_counts:
+                if count == 0:
+                    logger.warning(
+                        f"{LOG_PREFIX} '{label}' is set but matched no channels this scan. "
+                        f"These fields are matched against the channel or stream name only, "
+                        f"never against guide programme titles.")
+
             # Export to CSV
             csv_filepath = None
             should_create_csv = False
@@ -3372,6 +3438,16 @@ class Plugin:
                     header_lines.append("Rule Effectiveness:")
                     for rule, count in sorted(rule_stats.items(), key=lambda x: x[1], reverse=True):
                         header_lines.append(f"  {rule}: {count} channels")
+                if regex_field_counts:
+                    header_lines.append("Regex Field Matches:")
+                    for label, count in regex_field_counts:
+                        note = "  <- matched nothing" if count == 0 else ""
+                        header_lines.append(f"  {label}: {count} channels{note}")
+                if unmatched_groups:
+                    header_lines.append(
+                        f"Channel Groups that matched no channels: {', '.join(unmatched_groups)}")
+                    if separator_hint:
+                        header_lines.append(f"  {separator_hint}")
                 header_lines.append(f"Hide Rules Priority: {hide_rules_text_for_export}")
 
                 # Full settings snapshot so a CSV is self-describing. Skip legacy keys
@@ -3487,7 +3563,25 @@ class Plugin:
             # Build summary message
             mode_text = "Dry Run" if dry_run else "Applied"
             
-            message_parts = [
+            # Configuration problems go FIRST. Dispatcharr's toast shows roughly seven
+            # lines and clips from the MIDDLE, so a warning appended at the end is the
+            # part most likely to be cut. Until now these two only reached the
+            # container log, where a user never looks, and the run read as a success.
+            message_parts = []
+            if unmatched_groups:
+                message_parts.append(
+                    f"⚠️ {len(unmatched_groups)} configured channel group(s) matched no "
+                    f"channels: {', '.join(unmatched_groups)}")
+                if separator_hint:
+                    message_parts.append(separator_hint)
+            if unmatched_regex_fields:
+                message_parts.append(
+                    f"⚠️ Set but matched nothing: {', '.join(unmatched_regex_fields)}. "
+                    f"These read the channel or stream name, never guide programme titles.")
+            if message_parts:
+                message_parts.append("")
+
+            message_parts += [
                 f"Channel Visibility Scan {mode_text}:",
                 f"• Total channels processed: {total_channels}",
                 f"• Channels to hide: {len(channels_to_hide)}",

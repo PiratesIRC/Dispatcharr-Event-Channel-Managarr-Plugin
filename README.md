@@ -68,7 +68,7 @@ Settings are grouped into six sections in the UI.
 | Setting | Type | Default | Description |
 | :--- | :--- | :--- | :--- |
 | **📺 Channel Profile Names (Required, comma-separated)** | `text` | — | Channel Profile(s) to monitor. Use comma-separated names for multiple profiles. |
-| **📂 Channel Groups (comma-separated)** | `text` | — | Comma-separated group names to monitor. Leave empty for all groups in the profile(s). Matched **case-insensitively** (as of v1.26.1711623); a configured group name that matches no channels is reported in the scan log / result message instead of being silently ignored. |
+| **📂 Channel Groups (comma-separated)** | `text` | — | Comma-separated group names to monitor. Leave empty for all groups in the profile(s). Matched **case-insensitively** (as of v1.26.1711623). ⚠️ **Separate these with commas, not `\|`.** The `\|` character belongs only in the three regex fields below; using it here glues several group names into one name that matches nothing, silently dropping them from the scan. Any configured group name that matches no channels is now named in the result message and the CSV header on **every** run, not only when the scan finds nothing at all. |
 | **🔤 Name Source** | `select` | `Channel_Name` | Choose the source for rule matching: `Channel_Name` uses the channel name, `Stream_Name` uses the first stream's name in the channel. |
 
 ### 🎯 Hide Rules
@@ -78,7 +78,9 @@ Settings are grouped into six sections in the UI.
 | **📜 Hide Rules Priority** | `text` | (see default) | Define rules for hiding channels in priority order. First match wins. See "Hide Rule Logic" below. |
 | **🚫 Regex: Channel Names to Ignore** | `text` | — | Regular expression to match channel names that should be skipped entirely. |
 | **💤 Regex: Mark Channel as Inactive** | `text` | — | Regular expression to hide channels. Processed as part of the `[InactiveRegex]` hide rule. |
-| **✅ Regex: Force Visible Channels** | `text` | — | Regular expression to match channels that should ALWAYS be visible, overriding any hide rules. |
+| **✅ Regex: Force Visible Channels** | `text` | — | Regular expression to match channels that should ALWAYS be visible, overriding any hide rules. Use this for year-round channels that sit in an event group, such as a league's RedZone or Network feed, which carry no date and are otherwise hidden by `[UndatedAge:N]`. |
+
+**All three regex fields above are matched against the channel or stream name only** (whichever the **Name Source** setting selects). They are never matched against guide programme titles or descriptions, so text copied out of the TV Guide will not match anything. Separate alternatives with `|`, for example `NFL REDZONE|NFL NETWORK`. A regex field that you have filled in but that matched no channels is reported in the result message and counted in the CSV header under **Regex Field Matches**, so a pattern that can never fire is visible rather than looking like one that works.
 | **📅 Past Date Grace Period (Hours)** | `number` | `4` | Extra hours to wait before hiding a past event, used by the `[PastDate]` rule. For day-only names this is the wait after midnight; for names carrying a clock time it is added on top of the event's start + Event Duration. |
 
 ### 🎭 Duplicates
@@ -165,6 +167,20 @@ The plugin checks channels against the **Hide Rules Priority** list in the order
 | **[UndatedAge:days]** | `days` (int) | Hides channels whose names contain **no parseable date** once they've been visible for more than `days` days. Persists per-channel first-seen state in `/data/event_channel_managarr_undated_first_seen.json`. Resets a channel's age when its name changes. |
 | **[InactiveRegex]** | — | Hides if the name matches the `Regex: Mark Channel as Inactive` setting. |
 
+#### How far ahead should a channel appear? (`[FutureDate:days]`)
+
+This is the most commonly misread rule, because a channel named for a game that has not started yet is *supposed* to be visible under the default.
+
+`[FutureDate:days]` hides a channel only when its date is **more than** `days` ahead. With the default `[FutureDate:2]`, a channel named `NFL : 15 - 8/22 10pm Cowboys at Cardinals` is visible all day on 8/20, 8/21 and 8/22, and is hidden only while the date is three or more days out. If you see event channels with no game on right now, check their names: if the date is tomorrow, this is the rule working as configured.
+
+| You want | Use |
+| :--- | :--- |
+| The channel visible only on the day of the event | `[FutureDate:0]` |
+| Visible from the day before | `[FutureDate:1]` |
+| Visible up to two days ahead (default) | `[FutureDate:2]` |
+
+`[PastDate:0]` handles the other end, removing the channel once the event has finished plus the **Past Date Grace Period**.
+
 ### Duplicate Handling
 To prevent multiple versions of the same event from being visible, the plugin:
 1.  Normalizes channel names *and* event descriptions (e.g., "PPV 1: UFC" and "PPV 2: UFC" are duplicates, but "PPV 1: UFC" and "PPV 1: Boxing" are not).
@@ -213,6 +229,17 @@ When **🗓️ Manage Dummy EPG** is enabled:
   * **After the event window**: `Ended at <end-time>: <title>`.
   * **For names with no parseable time**: a 24-hour program with the channel name (fallback template).
 * Toggling **Manage Dummy EPG** off cleanly unbinds every channel the plugin attached — on the next scan, `epg_data` is set to `None` for any channel still pointing at the managed source. The source row itself is preserved for cheap re-adoption.
+
+### ⚠️ Guide titles come from the CHANNEL name, even when Name Source is Stream Name
+
+This catches out anyone whose provider puts the event details in the **stream** name while the **channel** name stays fixed, for example a channel called `NFL : 15 - [1080p]` fed by a stream called `NFL : 15 - 8/22 10pm Cowboys at Cardinals [1080p]`.
+
+Setting **Name Source** to `Stream_Name` changes what **this plugin's hide rules read**, and nothing else. Dispatcharr renders dummy guide entries itself, from the channel's own name, and a stream name is never available to it. So in that setup:
+
+* **Hiding and showing work correctly.** The rules see the game, the date and the time.
+* **The guide entry cannot show the game.** The channel name does not match the event title pattern, so the renderer falls back to the channel name plus the static description `Live event — guide information is currently unavailable.`
+
+This is a limit of dummy guide data, not a fault, and re-running a scan will not change it. To get event titles into the guide, the **channel** names have to carry the event text, which is a Dispatcharr channel-naming matter rather than a plugin setting.
 
 ### Channel Name Formats
 
@@ -316,12 +343,53 @@ Every CSV includes a block of summary header lines (prefixed with `#`) before th
 | **managed_epg_assigned** | `True` if this scan attached the channel to the plugin-managed dummy EPG source, else `False`. |
 | **managed_epg_detached** | `True` if this scan detached the channel from the plugin-managed dummy EPG source, else `False`. |
 
+## Client Setup (Jellyfin, Plex, Emby)
+
+Hiding a channel changes what Dispatcharr **serves**. It does not reach into a client that has already imported a channel list, and it only affects the outputs that are scoped to a profile. Most "the plugin isn't hiding anything" reports turn out to be one of the three points below.
+
+### 1. Point the client at the PROFILE's URLs, not the default ones
+
+Open Dispatcharr's **Channels** page, select the profile the plugin manages in the dropdown at the top, and copy the links from there. They look like this, where `Sports` is the profile name:
+
+| Client field | URL to use |
+| :--- | :--- |
+| Tuner / M3U playlist | `http://<dispatcharr>:<port>/output/m3u/<Profile>` (or the HDHR link, `/hdhr/<Profile>`) |
+| Guide / XMLTV provider | `http://<dispatcharr>:<port>/output/epg/<Profile>` |
+
+Both of these exclude channels the plugin has hidden in that profile. The unscoped default URLs do not.
+
+**The single most common mistake is putting the M3U URL into the guide provider field.** An XMLTV parser cannot read an M3U playlist, so the client ends up with no guide data at all and keeps showing whatever channel list it imported previously. The guide URL contains `/output/epg/`, not `/output/m3u/`.
+
+### 2. Refresh the client's guide
+
+Clients cache what they imported. Until the client refreshes, it will keep listing channels Dispatcharr has already stopped serving.
+
+* **Jellyfin**: Dashboard → Scheduled Tasks → **Refresh Guide**. Setting this to run every 1 to 2 hours is reasonable; there is no benefit in going below the plugin's own run frequency.
+* **Plex**: DVR settings → refresh the guide.
+
+If hidden channels survive a guide refresh, remove the tuner in the client and add it again, which rebuilds its channel list from scratch.
+
+### 3. A third-party bridge may bypass all of this
+
+The hides exist only in Dispatcharr's own profile-scoped outputs. If a plugin or proxy in front of Dispatcharr (an Xtream-codes bridge, for example) builds its channel list from somewhere else, nothing this plugin does can reach it. Test with the two URLs above directly before assuming the plugin is at fault.
+
+### Checking your work inside Dispatcharr
+
+Dispatcharr's own **TV Guide** page has a profile filter. With it set to **All Profiles** the page deliberately shows every channel, hidden or not, so a correctly hidden channel still appears there. Select the managed profile to see what your clients actually receive.
+
 ## Troubleshooting
 
 ### General Issues
 * **"Channel Profile not found"**: Ensure the name(s) entered in the settings exactly match the names in Dispatcharr. Check for typos or extra spaces if using multiple comma-separated names.
 * **"No channels found…"**: Verify that the specified profile(s) have channels assigned and that the group names (if used) are spelled correctly. Run **🔎 Validate** — as of v1.26.1711720 it distinguishes a misspelled group ("not found in Dispatcharr") from a real group that simply has no channels in the selected profile(s) ("will match 0 this scan"), and matches profile names case-insensitively (consistent with Run Now). Group names in the **Channel Groups** box are also matched case-insensitively.
 * **Scheduler Not Running**: After changing the schedule, you must click **💾 Save Schedule** to save and activate it. Ensure the times are in `HHMM` format (e.g., `0700` for 7 AM).
+* **One of my scheduled times never runs**: Valid entries are `0000` to `2359`. **Midnight is `0000`, not `2400`** — `2400` is four digits but is not a real time, and it used to be discarded without a word, so that run simply never happened. Both **🔎 Validate** and **💾 Save Schedule** now name any entry they are going to ignore, and Validate judges the times with the same parser the scheduler arms itself from, so the two can no longer disagree.
+* **Fewer channels were processed than I expected / a group I listed did nothing**: Check the result message and the CSV header for **"Channel Groups that matched no channels"**. The usual cause is separating group names in **Channel Groups** with `|` instead of commas: that field is comma-separated, `|` belongs only in the three regex fields, and using it glues several real group names into one name that exists nowhere. Group names are matched case-insensitively, but the spelling must match.
+* **A regex field I filled in seems to do nothing**: The CSV header's **Regex Field Matches** block counts what each one matched, and a field that matched zero channels is called out in the result message. The three regex fields are matched against the channel or stream name only, never against guide programme titles, so text copied out of the TV Guide will never match. Filler text such as a "guide information is currently unavailable" line is a programme description generated by Dispatcharr, not a channel name.
+* **Event channels are visible when nothing is playing right now**: Look at the channel names. If they carry a date in the next day or two, this is `[FutureDate:2]` behaving as configured — see "How far ahead should a channel appear?" above, and use `[FutureDate:0]` if you want a channel to appear only on the day of its event.
+* **A year-round channel in an event group keeps getting hidden**: Channels like a league's RedZone or Network feed carry no date, so `[UndatedAge:N]` hides them once they have been around for N days. Put them in **✅ Regex: Force Visible Channels**, for example `NFL REDZONE\|NFL NETWORK`.
+* **Hidden channels still show in Dispatcharr's TV Guide page**: That page's profile filter is probably set to **All Profiles**, which shows every channel by design. Select the managed profile instead.
+* **A run reports "Channels to Hide: 0" and "Channels to Show: 0"**: That reads identically to a run where no channels entered scope at all, so check scope before rules. In order: does the group exist and have channels; do those channels have a membership row in the configured **profile** (a channel with no membership row is invisible both to Dispatcharr and to this plugin); and only then look at the hide rules. A group named in your settings but absent from the CSV means zero channels in scope, not zero changes.
 * **Channels Aren't Hiding/Showing**: Run a **Dry Run** and check the `reason` and `hide_rule` columns for that channel. This will tell you exactly why a decision was made. You may need to adjust your **Hide Rules Priority** list.
 * **"Another scan is already running"**: A cross-process lock prevents concurrent scans. Wait for the current scan to finish. Scheduled runs will skip cleanly when a manual scan is in progress.
 * **Hidden channels reappear after a while / after an M3U refresh**: Dispatcharr's **Auto Channel Sync** re-enables every channel in a synced group on each M3U refresh, overriding the plugin's hide. To fix this, enable **🔄 Auto-rescan after M3U refresh** (in the **⏰ Scheduling & Export** section) so the plugin re-runs its scan automatically right after each M3U refresh and re-hides affected channels. Alternatively, turn off Auto Channel Sync for the managed groups in Dispatcharr's M3U account settings.
