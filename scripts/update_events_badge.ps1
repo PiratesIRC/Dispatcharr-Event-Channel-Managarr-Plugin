@@ -1,5 +1,5 @@
 <#
-Wrapper that Task Scheduler runs to refresh the README "events surfaced" badge.
+Wrapper that Task Scheduler runs to refresh the README "visibility changes" badge.
 
 This matches the arrangement already used for the Newsflasharr and IPTV Checker
 badges: one task per plugin, each running that plugin's own wrapper from its own

@@ -1,30 +1,34 @@
 #!/usr/bin/env python3
-"""Refresh the public "events surfaced" badge on the README.
+"""Refresh the public "visibility changes" badge on the README.
 
-WHAT THIS DOES. Counts the event channels Event Channel Managarr has switched to
-visible, reading its own run ledger inside the Dispatcharr container, and writes
-a Shields.io endpoint document to a GitHub Gist. The README badge points at that
-Gist, so this script is what makes the public number change.
+WHAT THIS DOES. Counts the channels whose visibility Event Channel Managarr has
+actually changed, reading its own run ledger inside the Dispatcharr container,
+and writes a Shields.io endpoint document to a GitHub Gist. The README badge
+points at that Gist, so this script is what makes the public number change.
 
     python scripts/update_events_badge.py             # refresh the Gist
     python scripts/update_events_badge.py --dry-run   # print, write nothing
     python scripts/update_events_badge.py --create    # first-time Gist setup
 
-WHAT COUNTS AS ONE SURFACED EVENT. One channel that the plugin switched from
-hidden to visible on a run that actually applied its changes. That is a
-TRANSITION, and the distinction is the whole design. The plugin looks at every
-channel in scope on every scheduled run, several times a day, so counting
-"channels processed" or "channels currently visible" would re-count the same
-channel indefinitely and produce a number in the millions that describes nothing.
-The ledger therefore records only what changed, and only after the database
-transaction that changed it has committed.
+WHAT COUNTS AS ONE CHANGE. One channel that the plugin switched from hidden to
+visible, or from visible to hidden, on a run that actually applied its changes.
+That is a TRANSITION, and the distinction is the whole design. The plugin looks
+at every channel in scope on every scheduled run, several times a day, so
+counting "channels processed" or "channels currently visible" would re-count the
+same channel indefinitely and produce a number in the millions that describes
+nothing. The ledger therefore records only what changed, and only after the
+database transaction that changed it has committed.
 
-WHAT IS DELIBERATELY NOT COUNTED. Dry runs, which change nothing by design.
-Applied runs that found nothing to change. Channels hidden, which are recorded in
-the same ledger line and printed on every run here, but are a different number
-with a different meaning: hiding is tidying, surfacing is the thing a viewer
-notices. Switching the badge to the combined figure would mean summing both keys
-rather than one, and nothing else.
+WHY BOTH DIRECTIONS. The badge published only the surfaced count at first, on the
+reasoning that a viewer notices a channel appearing and not one going away. On
+the maintainer's installation that number sat at 0 while real work was happening:
+the dominant activity there is re-hiding channels that an M3U refresh re-enabled,
+125 of them in a single run. Both counts have always been written to every ledger
+line, so this was a change of which key is published and nothing else. The split
+is still printed on every run below.
+
+WHAT IS DELIBERATELY NOT COUNTED. Dry runs, which change nothing by design, and
+applied runs that found nothing to change.
 
 HOW FAR BACK IT REACHES. The ledger begins the day the plugin started writing it,
 so this is not a lifetime total of everything the plugin has ever done; earlier
@@ -50,7 +54,7 @@ ROOT = pathlib.Path(__file__).resolve().parent.parent
 CONTAINER = "dispatcharr"
 LEDGER_GLOB = "/data/event_channel_managarr_ledger.jsonl*"
 GIST_FILENAME = "event-channel-managarr-events.json"
-GIST_DESCRIPTION = "Event Channel Managarr events-surfaced badge (Shields.io endpoint)"
+GIST_DESCRIPTION = "Event Channel Managarr visibility-changes badge (Shields.io endpoint)"
 
 # gh is installed and authenticated but is NOT on PATH in either shell here, so
 # `command -v gh` reports it missing and is not evidence. Pin the absolute path.
@@ -62,7 +66,7 @@ GH = ("C:/Users/User/AppData/Local/Microsoft/WinGet/Packages/"
 # The id is not a secret: the README badge URL names it.
 STATE_PATH = ROOT / "scripts" / ".events_badge_gist"
 
-LABEL = "events surfaced"
+LABEL = "visibility changes"
 COLOR = "blue"
 
 # Every external command gets a timeout. This script runs unattended from Task
@@ -141,14 +145,21 @@ def read_ledger_counts():
             data.get("runs", 0), data.get("scheduled", 0))
 
 
-def endpoint_document(shown):
+def endpoint_document(shown, hidden):
     """The Shields.io endpoint schema, and nothing else in the file.
+
+    The published figure is shown + hidden: every channel whose visibility this
+    plugin actually flipped. It was originally the surfaced count alone, but on
+    the maintainer's installation the dominant activity is re-hiding channels
+    that an M3U refresh re-enabled, so that number sat at 0 while real work was
+    being done. Both counts have always been recorded in every ledger line, so
+    this is a change of which key is published and nothing else.
 
     Extra keys are not added even though they would be convenient for a human
     reading the Gist: Shields validates this document, and a field it does not
     recognise is a way to break the badge for no benefit.
     """
-    return {"schemaVersion": 1, "label": LABEL, "message": str(shown),
+    return {"schemaVersion": 1, "label": LABEL, "message": str(shown + hidden),
             "color": COLOR}
 
 
@@ -196,10 +207,11 @@ def main():
     args = parser.parse_args()
 
     shown, hidden, runs, scheduled = read_ledger_counts()
-    document = endpoint_document(shown)
+    document = endpoint_document(shown, hidden)
 
-    print(f"events surfaced: {shown}")
-    print(f"  channels hidden (recorded, not counted in the badge): {hidden}")
+    print(f"visibility changes: {shown + hidden}")
+    print(f"  of which surfaced (hidden -> visible): {shown}")
+    print(f"  of which hidden   (visible -> hidden): {hidden}")
     print(f"  applied runs that changed something: {runs} "
           f"({scheduled} scheduled, {runs - scheduled} manual)")
     if runs == 0:
