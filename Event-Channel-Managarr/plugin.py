@@ -962,9 +962,15 @@ class Plugin:
         convenience; the channels are the product.
         """
         try:
-            path = self.LEDGER_FILE
+            # These constants live on PluginConfig, NOT on Plugin. `self.LEDGER_FILE`
+            # raised AttributeError on every applied run that changed something, and
+            # the broad `except Exception` below swallowed it into a WARNING nobody
+            # reads, so the ledger stayed empty and the badge stayed at 0 while every
+            # other signal looked healthy. Every other file path in this class is
+            # reached the same way; follow it.
+            path = PluginConfig.LEDGER_FILE
             try:
-                if os.path.getsize(path) >= self.LEDGER_MAX_BYTES:
+                if os.path.getsize(path) >= PluginConfig.LEDGER_MAX_BYTES:
                     os.replace(path, path + ".1")
             except OSError:
                 pass  # Missing file on the first run, or an unreadable size.
