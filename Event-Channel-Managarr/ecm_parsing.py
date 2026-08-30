@@ -354,7 +354,18 @@ def short_channel_name_match(channel_name, threshold=SHORT_CHANNEL_NAME_DEFAULT)
 # The way a US event channel name writes a clock time: an hour, an optional
 # :minute, and an am or pm marker. The marker is REQUIRED here so a bare slot
 # number, such as the 07 in "PPV 07 - Main Card", is not read as 7 o'clock.
-_DEFAULT_TIME_OF_DAY = r"(?P<hour>\d{1,2})(?::(?P<minute>\d{2}))?\s*(?P<ampm>[AaPp][Mm])"
+#
+# Both guards are load-bearing. Without the trailing (?![A-Za-z]) the marker matches
+# the opening letters of an ordinary word, so "PPV 12 AMERICAN LEGENDS" reads as
+# midnight and "ALI vs 8 AMATEUR BOUTS" as 8 o'clock, and [UndatedEnded] would hide
+# such a channel on a time that is not in its name at all. The leading (?<![\d:])
+# stops a match beginning inside a longer number or inside a clock time.
+#
+# This must stay equal to `us_time_pattern` in plugin.py, which is the copy written
+# onto the managed EPG source and therefore the one used for any channel bound to it.
+# tests/contract/test_us_pattern_parity.py holds the two together.
+_DEFAULT_TIME_OF_DAY = (
+    r"(?<![\d:])(?P<hour>\d{1,2})(?::(?P<minute>\d{2}))?\s*(?P<ampm>[AaPp][Mm])(?![A-Za-z])")
 
 # Rewrites a JavaScript named group (?<name> into the Python (?P<name> form while
 # leaving a lookbehind (?<= or (?<! alone. Dispatcharr stores its patterns in the
@@ -440,3 +451,29 @@ def infer_undated_event_window(first_seen_date, hour, minute, tz_name,
     except (TypeError, ValueError):
         grace = 0
     return start, start + timedelta(minutes=duration, hours=grace)
+
+
+def undated_event_has_ended(now, hide_after, first_seen_at=None):
+    """Decide whether an undated event channel should be hidden.
+
+    True only when `now` is past `hide_after`. Split out of the rule in plugin.py so the
+    decision itself is unit-testable: plugin.py imports Django at module scope and cannot
+    be imported outside the container, so anything left in it can only be tested by
+    reading its source, which cannot tell a working comparison from a broken one.
+
+    `first_seen_at` is the moment the channel was first recorded. When the inferred window
+    closes at or before that moment, the window is not describing an event this channel can
+    have been carrying: a channel that appears at 23:00 named for a 1:00am event is named
+    for the NEXT 1:00am, not the one seventeen hours before anybody saw it. Hiding on such
+    a window would remove a channel whose event has not started. This returns False in that
+    case, leaving the channel visible and the decision to [UndatedAge:N].
+
+    A missing `first_seen_at`, which is what a record written by an earlier version carries,
+    applies no such check. That preserves the older behaviour for those records rather than
+    disabling the rule for them, and each one gains the stamp as soon as its name changes.
+    """
+    if now is None or hide_after is None:
+        return False
+    if first_seen_at is not None and hide_after <= first_seen_at:
+        return False
+    return now > hide_after

@@ -227,3 +227,70 @@ def test_infer_undated_event_window_crosses_midnight():
 def test_infer_undated_event_window_rejects_an_unknown_timezone():
     assert ecm_parsing.infer_undated_event_window(
         date(2026, 8, 30), 20, 0, "Mars/Olympus", 180, 1) is None
+
+
+# --- the hide decision itself, which the contract tests cannot exercise -------------
+
+def _eastern(year, month, day, hour, minute=0):
+    import pytz
+    return pytz.timezone("US/Eastern").localize(
+        datetime(year, month, day, hour, minute))
+
+
+def test_undated_event_has_not_ended_while_the_event_is_running():
+    # Event at 20:00, three hours long, one hour of grace, so it hides from 00:00.
+    _, hide_after = ecm_parsing.infer_undated_event_window(
+        date(2026, 8, 30), 20, 0, "US/Eastern", 180, 1)
+    assert ecm_parsing.undated_event_has_ended(
+        _eastern(2026, 8, 30, 21), hide_after) is False
+
+
+def test_undated_event_has_ended_once_the_window_closes():
+    _, hide_after = ecm_parsing.infer_undated_event_window(
+        date(2026, 8, 30), 20, 0, "US/Eastern", 180, 1)
+    assert ecm_parsing.undated_event_has_ended(
+        _eastern(2026, 8, 31, 1), hide_after) is True
+
+
+def test_the_grace_period_moves_the_boundary():
+    """A longer grace period must keep the channel visible at a moment a shorter one hides.
+
+    Without this, a rule that ignored the configured grace period entirely would still
+    pass every other test in this file.
+    """
+    moment = _eastern(2026, 8, 31, 3)
+    _, one_hour = ecm_parsing.infer_undated_event_window(
+        date(2026, 8, 30), 20, 0, "US/Eastern", 180, 1)
+    _, six_hours = ecm_parsing.infer_undated_event_window(
+        date(2026, 8, 30), 20, 0, "US/Eastern", 180, 6)
+    assert ecm_parsing.undated_event_has_ended(moment, one_hour) is True
+    assert ecm_parsing.undated_event_has_ended(moment, six_hours) is False
+
+
+def test_a_window_that_closed_before_the_channel_appeared_does_not_hide_it():
+    """A channel seen at 23:00 named for a 1:00am event is named for the NEXT 1:00am.
+
+    The first-seen date is today, so the inferred window is 01:00 to 05:00 THIS morning,
+    already past. Hiding on it would remove a channel two hours before its event starts.
+    """
+    _, hide_after = ecm_parsing.infer_undated_event_window(
+        date(2026, 8, 30), 1, 0, "US/Eastern", 180, 1)
+    first_seen_at = _eastern(2026, 8, 30, 23)
+    assert ecm_parsing.undated_event_has_ended(
+        _eastern(2026, 8, 30, 23), hide_after, first_seen_at) is False
+    # And it stays visible later that night, rather than only at the instant of the scan.
+    assert ecm_parsing.undated_event_has_ended(
+        _eastern(2026, 8, 31, 0, 30), hide_after, first_seen_at) is False
+
+
+def test_a_record_without_a_first_seen_moment_still_hides_a_finished_event():
+    """An entry written by an earlier version carries the date only, and must still work."""
+    _, hide_after = ecm_parsing.infer_undated_event_window(
+        date(2026, 8, 30), 20, 0, "US/Eastern", 180, 1)
+    assert ecm_parsing.undated_event_has_ended(
+        _eastern(2026, 8, 31, 1), hide_after, None) is True
+
+
+def test_undated_event_has_ended_is_false_when_there_is_no_window():
+    assert ecm_parsing.undated_event_has_ended(_eastern(2026, 8, 30, 23), None) is False
+    assert ecm_parsing.undated_event_has_ended(None, _eastern(2026, 8, 30, 23)) is False

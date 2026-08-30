@@ -129,6 +129,7 @@ Four things are worth knowing before you rely on it:
 * **It controls visibility only.** Dispatcharr renders a dateless time as a programme that recurs every day, so the repeated guide entry stops when the channel is hidden and not before. The plugin cannot make Dispatcharr stop generating that entry.
 * **The hide happens on the next scan**, so schedule a run shortly after your latest events end. A channel stays visible until a scan evaluates it.
 * **Keep `[UndatedAge:days]` in the list after it.** It is the outer bound for a channel whose first-seen record was written late or rebuilt, where the inferred window would be wrong by a day.
+* **A channel that appears after its inferred window has already closed is left visible.** A channel first seen at 23:00 and named for a 1:00am event is named for the next 1:00am, not the one that ended eighteen hours earlier, so the rule declines to act rather than hiding a channel whose event has not started. This needs the first-seen moment, which the plugin began recording alongside the date in this version; a record written by an earlier version carries the date only and does not get the check until its channel name next changes.
 * **An existing installation keeps its stored rule list.** Dispatcharr never prunes or rewrites a setting you have saved, so if you have edited **Hide Rules Priority** you must add `[UndatedEnded]` to it by hand, before `[UndatedAge:2]`.
 
 #### How far ahead should a channel appear? (`[FutureDate:days]`)
@@ -256,7 +257,7 @@ When **`Event Timezone`** (`dummy_epg_event_timezone`) and **Dispatcharr's globa
 * **Last Run Results**: `/data/event_channel_managarr_results.json`
 * **Last Run Tracker** (scheduled run history, cross-worker safe): `/data/event_channel_managarr_last_run.json`
 * **Scan Lock** (cross-worker mutex): `/data/event_channel_managarr_scan.lock`
-* **Undated-Channel Tracker** (for `[UndatedAge:N]`): `/data/event_channel_managarr_undated_first_seen.json`
+* **Undated-Channel Tracker** (for `[UndatedAge:N]` and `[UndatedEnded]`): `/data/event_channel_managarr_undated_first_seen.json`. Each entry holds the channel name, the date it was first seen, and the exact moment it was first seen. `[UndatedAge:N]` uses the date; `[UndatedEnded]` uses the moment as well, to reject an event window that closed before the channel existed.
 * **Run Ledger**: `/data/event_channel_managarr_ledger.jsonl` (rotates once to `.jsonl.1` at 5 MB)
 * **CSV Exports**: `/data/exports/event_channel_managarr_[dryrun|applied]_YYYYMMDD_HHMMSS.csv`
 * **EPG Removal Reports**: `/data/exports/epg_removal_YYYYMMDD_HHMMSS.csv`

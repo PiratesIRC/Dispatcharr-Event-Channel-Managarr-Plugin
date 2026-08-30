@@ -56,7 +56,7 @@ _scheduler_lock = threading.Lock()  # Prevent concurrent scheduler starts
 class PluginConfig:
     """Centralized configuration constants for Event Channel Managarr."""
 
-    PLUGIN_VERSION = "1.26.2422156"
+    PLUGIN_VERSION = "1.26.2422213"
 
     # Fallback timezone when Dispatcharr's global time zone is unset/invalid.
     DEFAULT_TIMEZONE = "UTC"
@@ -952,12 +952,21 @@ class Plugin:
             logger.error(f"{LOG_PREFIX} Failed to save undated tracker: {e}")
             return False
 
-    def _record_undated_channel(self, tracker, channel_id, channel_name, today_str):
-        """Record/refresh a channel in the undated tracker. Returns the entry."""
+    def _record_undated_channel(self, tracker, channel_id, channel_name, today_str,
+                                now_iso=None):
+        """Record/refresh a channel in the undated tracker. Returns the entry.
+
+        `now_iso` stamps the entry with the moment it was created, which [UndatedEnded]
+        needs in order to reject an inferred event window that closed before the channel
+        was ever seen. It is optional so an entry written by an older version, which
+        carries the date only, still loads and is still usable by [UndatedAge:N].
+        """
         key = str(channel_id)
         entry = tracker.get(key)
         if not entry or entry.get("name") != channel_name:
             entry = {"first_seen": today_str, "name": channel_name}
+            if now_iso:
+                entry["first_seen_at"] = now_iso
             tracker[key] = entry
         return entry
 
@@ -1563,7 +1572,20 @@ class Plugin:
                 local_tz = pytz.timezone(tz_str)
             except pytz.exceptions.UnknownTimeZoneError:
                 local_tz = pytz.timezone(self.DEFAULT_TIMEZONE)
-            if datetime.now(local_tz) > hide_after:
+
+            # The moment this channel was first recorded, when the record carries one.
+            # A record written before this stamp existed carries the date only and
+            # applies no such check, which keeps the rule working for it.
+            first_seen_at = None
+            raw_first_seen_at = entry.get('first_seen_at')
+            if raw_first_seen_at:
+                try:
+                    first_seen_at = datetime.fromisoformat(raw_first_seen_at)
+                except (TypeError, ValueError):
+                    first_seen_at = None
+
+            if ecm_parsing.undated_event_has_ended(
+                    datetime.now(local_tz), hide_after, first_seen_at):
                 return True, (
                     f"[UndatedEnded] No date in name; first seen {first_seen.isoformat()}, "
                     f"inferred start {start.strftime('%m/%d %I:%M %p %Z')} "
@@ -2593,7 +2615,13 @@ class Plugin:
             r"(?=\s*\(|\s+\d{1,2}(?::\d{2})?\s*[AaPp][Mm]|"
             r"\s+(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)\s+\d+|$)"
         )
-        us_time_pattern = r"(?<hour>\d{1,2})(?::(?<minute>\d{2}))?\s*(?<ampm>[AaPp][Mm])"
+        # The trailing (?![A-Za-z]) is load-bearing: without it the am/pm marker matches the
+        # first two letters of an ordinary word, so "PPV 12 AMERICAN LEGENDS" reads as
+        # midnight and "ALI vs 8 AMATEUR BOUTS" as 8 o'clock. That was harmless while the
+        # pattern only titled a guide entry, but [UndatedEnded] hides a channel on the time
+        # it returns. The leading (?<![\d:]) stops a match beginning inside a longer number
+        # or inside a clock time, the same hazard bug-146 fixed for the title pattern.
+        us_time_pattern = r"(?<![\d:])(?<hour>\d{1,2})(?::(?<minute>\d{2}))?\s*(?<ampm>[AaPp][Mm])(?![A-Za-z])"
         us_date_pattern = r"\b(?<month>\d{1,2})[./](?<day>\d{1,2})(?:[./](?<year>\d{2,4}))?\b"
 
         # Format: "SE" (pipe-delimited, 24h time, named month):
@@ -2672,7 +2700,12 @@ class Plugin:
         PATTERN_KEYS = ("title_pattern", "time_pattern", "date_pattern")
 
         def _py_named(p):
-            return p.replace("(?<", "(?P<")
+            # Rewrites a JavaScript named group (?<name> into the Python (?P<name> form
+            # while leaving a lookbehind (?<= or (?<! alone. A blunt string replace would
+            # turn (?<! into (?P<! and put a pattern in stock_patterns that could never
+            # match a real stored value, which would silently stop that value being
+            # recognised as a plugin default and therefore stop it being upgraded.
+            return re.sub(r"\(\?<(?![=!])", "(?P<", p)
 
         # Original shipped defaults (commit b1ef257-era): mandatory ":minute" leading time
         # and optional am/pm. Carried by ~22 early releases' source rows.
@@ -2684,6 +2717,10 @@ class Plugin:
             r"\s+(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)\s+\d+|$)"
         )
         _orig_time = r"(?P<hour>\d{1,2}):(?P<minute>\d{2})\s*(?P<ampm>[AaPp][Mm])?"
+
+        # Previous default, shipped through 1.26.2422156: no boundary either side of the
+        # clock time, so the am/pm marker could match the opening letters of a word.
+        _prev_us_time_unbounded = r"(?<hour>\d{1,2})(?::(?<minute>\d{2}))?\s*(?<ampm>[AaPp][Mm])"
 
         # Previous default (pre bug-051, JS form as stored on live sources): required a
         # PPV/LIVE prefix, so bare "EVENT N:" names fell to the renderer fallback. Listed
@@ -2733,6 +2770,7 @@ class Plugin:
                               _py_named(_prev_us_title_unguarded_clock_time),
                               se_title_pattern, _py_named(se_title_pattern)},
             "time_pattern": {us_time_pattern, _py_named(us_time_pattern), _orig_time,
+                             _prev_us_time_unbounded, _py_named(_prev_us_time_unbounded),
                              se_time_pattern, _py_named(se_time_pattern)},
             "date_pattern": {us_date_pattern, _py_named(us_date_pattern),
                              se_date_pattern, _py_named(se_date_pattern)},
@@ -3300,8 +3338,13 @@ class Plugin:
                 local_tz = pytz.timezone(self.DEFAULT_TIMEZONE)
             # Capture once per scan so records and rule evaluations agree even if
             # the scan crosses local midnight.
-            self._undated_today_str = datetime.now(local_tz).date().isoformat()
+            scan_started_at = datetime.now(local_tz)
+            self._undated_today_str = scan_started_at.date().isoformat()
             today_str = self._undated_today_str
+            # The moment a first-seen record is stamped with, kept beside the date so
+            # [UndatedEnded] can tell that an inferred event window closed before the
+            # channel was ever visible. A date alone cannot express that.
+            self._undated_now_iso = scan_started_at.isoformat()
             tracked_this_scan = set()
 
             results = []
@@ -3380,7 +3423,8 @@ class Plugin:
                 # Update undated-channel tracker: record channels with no extractable date,
                 # drop those that now have a date.
                 if self._extract_date_from_channel_name(channel_name, logger, settings) is None:
-                    self._record_undated_channel(self._undated_tracker, channel.id, channel_name, today_str)
+                    self._record_undated_channel(self._undated_tracker, channel.id, channel_name, today_str,
+                                                 now_iso=getattr(self, '_undated_now_iso', None))
                     tracked_this_scan.add(str(channel.id))
                 else:
                     self._undated_tracker.pop(str(channel.id), None)
