@@ -16,7 +16,7 @@ from __future__ import annotations
 
 import logging
 import re
-from datetime import datetime
+from datetime import datetime, time, timedelta
 
 LOG = logging.getLogger("event_channel_managarr.parsing")
 
@@ -340,3 +340,103 @@ def short_channel_name_match(channel_name, threshold=SHORT_CHANNEL_NAME_DEFAULT)
     if len(normalized) < threshold:
         return len(normalized)
     return None
+
+
+# --- undated event windows ------------------------------------------------------
+#
+# A channel name carrying a clock time but no date, such as
+# "Boxing 3 : MOSES vs HRGOVIC  4:00pm". [UndatedAge:N] can only count whole
+# calendar days for such a name, so it hides a late event at midnight and keeps a
+# finished one until the next day. These two helpers build the real window instead:
+# the date the channel was first seen, the time read from the name, the programme
+# duration, and a grace period for an event that overruns (issue 28).
+
+# The way a US event channel name writes a clock time: an hour, an optional
+# :minute, and an am or pm marker. The marker is REQUIRED here so a bare slot
+# number, such as the 07 in "PPV 07 - Main Card", is not read as 7 o'clock.
+_DEFAULT_TIME_OF_DAY = r"(?P<hour>\d{1,2})(?::(?P<minute>\d{2}))?\s*(?P<ampm>[AaPp][Mm])"
+
+# Rewrites a JavaScript named group (?<name> into the Python (?P<name> form while
+# leaving a lookbehind (?<= or (?<! alone. Dispatcharr stores its patterns in the
+# JavaScript form because its frontend validator rejects the Python one (issue 21).
+_JS_NAMED_GROUP_RE = re.compile(r"\(\?<(?![=!])([^>]+)>")
+
+
+def _compile_time_pattern(time_pattern):
+    """Compile a stored time pattern, or return the built-in default. Never raises."""
+    if time_pattern:
+        for candidate in (time_pattern,
+                          _JS_NAMED_GROUP_RE.sub(r"(?P<\1>", time_pattern)):
+            try:
+                return re.compile(candidate)
+            except re.error:
+                continue
+    return re.compile(_DEFAULT_TIME_OF_DAY)
+
+
+def extract_time_of_day(channel_name, time_pattern=None):
+    """Return (hour, minute) on a 24 hour clock for the first clock time in the name.
+
+    Returns None when the name carries no time the pattern can read. The pattern may
+    use either the JavaScript (?<name>) or the Python (?P<name>) named-group form and
+    is expected to provide an `hour` group plus optional `minute` and `ampm` groups.
+
+    A supplied pattern that does not compile, or that matches nothing, falls back to
+    the built-in default rather than raising or giving up, because the pattern comes
+    from an EPG source property the user is free to edit.
+    """
+    if not channel_name:
+        return None
+    match = _compile_time_pattern(time_pattern).search(channel_name)
+    if match is None and time_pattern:
+        match = re.compile(_DEFAULT_TIME_OF_DAY).search(channel_name)
+    if match is None:
+        return None
+    groups = match.groupdict()
+    try:
+        hour = int(groups.get("hour"))
+    except (TypeError, ValueError):
+        return None
+    try:
+        minute = int(groups.get("minute") or 0)
+    except (TypeError, ValueError):
+        minute = 0
+    hour = apply_meridiem(hour, groups.get("ampm"))
+    if not 0 <= hour <= 23 or not 0 <= minute <= 59:
+        return None
+    return hour, minute
+
+
+def infer_undated_event_window(first_seen_date, hour, minute, tz_name,
+                               duration_minutes, grace_hours):
+    """Build (start, hide_after) for an event whose name carries a time but no date.
+
+    `start` is the first-seen date at the parsed time, read in `tz_name`. `hide_after`
+    is that start plus the programme duration plus the grace period, so a caller hides
+    the channel once the current time passes it.
+
+    Returns None when `tz_name` is not a zone this installation knows, or when the
+    hour and minute do not make a real time. The caller then has no window and makes
+    no hide decision, which leaves the channel visible.
+    """
+    import pytz  # local, matching coerce_timezone: the module imports without it
+
+    try:
+        event_tz = pytz.timezone(str(tz_name).strip())
+    except Exception:
+        return None
+    try:
+        naive_start = datetime.combine(
+            first_seen_date, time(hour=int(hour), minute=int(minute)))
+    except (TypeError, ValueError):
+        return None
+    start = event_tz.localize(naive_start)
+    try:
+        duration = max(int(duration_minutes), 0)
+    except (TypeError, ValueError):
+        duration = 0
+    try:
+        grace = max(int(grace_hours), 0)
+    except (TypeError, ValueError):
+        grace = 0
+    return start, start + timedelta(minutes=duration, hours=grace)

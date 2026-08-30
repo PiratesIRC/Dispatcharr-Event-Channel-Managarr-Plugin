@@ -7,7 +7,7 @@ Failing any of these tests means a regression in the parsing logic.
 """
 
 import pytest
-from datetime import datetime
+from datetime import date, datetime
 
 import ecm_parsing
 from ecm_parsing import (
@@ -184,3 +184,46 @@ def test_lock_is_stale_handles_bad_input():
     assert lock_is_stale(None, 1000.0, 900.0) is False
     assert lock_is_stale(0.0, None, 900.0) is False
     assert lock_is_stale(0.0, 1000.0, None) is False
+
+
+# --- [UndatedEnded]: a clock time with no date, and the window inferred from it ------
+
+@pytest.mark.parametrize("name, expected", [
+    ("Boxing 3 : MOSES vs HRGOVIC  4:00pm", (16, 0)),
+    ("PPV 07 - 8pm Main Card", (20, 0)),
+    ("EVENT 12 | 11:30 AM Coverage", (11, 30)),
+    ("PPV 02 - Championship Final", None),
+])
+def test_extract_time_of_day_reads_the_first_clock_time(name, expected):
+    assert ecm_parsing.extract_time_of_day(name) == expected
+
+
+def test_extract_time_of_day_uses_a_supplied_24_hour_pattern():
+    # The SE channel-name format carries a 24-hour clock and no am/pm marker.
+    name = "LIVE | GIRONA - REAL SOCIEDAD | Thu 14 May 19:55 CEST (SE)"
+    pattern = r"(?<hour>\d{1,2}):(?<minute>\d{2})"
+    assert ecm_parsing.extract_time_of_day(name, pattern) == (19, 55)
+
+
+def test_extract_time_of_day_falls_back_when_the_pattern_does_not_compile():
+    assert ecm_parsing.extract_time_of_day("PPV 07 - 8pm Main Card", "(unclosed") == (20, 0)
+
+
+def test_infer_undated_event_window_adds_duration_and_grace():
+    start, hide_after = ecm_parsing.infer_undated_event_window(
+        date(2026, 8, 30), 20, 0, "US/Eastern", 180, 1)
+    assert (start.year, start.month, start.day, start.hour) == (2026, 8, 30, 20)
+    # 20:00 plus a three hour programme plus one hour of grace is 00:00 the next day.
+    assert (hide_after.year, hide_after.month, hide_after.day, hide_after.hour) == (2026, 8, 31, 0)
+    assert start.tzinfo is not None and hide_after.tzinfo is not None
+
+
+def test_infer_undated_event_window_crosses_midnight():
+    start, hide_after = ecm_parsing.infer_undated_event_window(
+        date(2026, 8, 30), 22, 30, "US/Eastern", 240, 2)
+    assert (hide_after.month, hide_after.day, hide_after.hour, hide_after.minute) == (8, 31, 4, 30)
+
+
+def test_infer_undated_event_window_rejects_an_unknown_timezone():
+    assert ecm_parsing.infer_undated_event_window(
+        date(2026, 8, 30), 20, 0, "Mars/Olympus", 180, 1) is None
