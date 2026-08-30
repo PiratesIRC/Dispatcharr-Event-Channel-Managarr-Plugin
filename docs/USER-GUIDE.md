@@ -33,6 +33,7 @@ Settings are grouped into six sections in the UI.
 
 **All three regex fields above are matched against the channel or stream name only** (whichever the **Name Source** setting selects). They are never matched against guide programme titles or descriptions, so text copied out of the TV Guide will not match anything. Separate alternatives with `|`, for example `NFL REDZONE|NFL NETWORK`. A regex field that you have filled in but that matched no channels is reported in the result message and counted in the CSV header under **Regex Field Matches**, so a pattern that can never fire is visible rather than looking like one that works.
 | **📅 Past Date Grace Period (Hours)** | `number` | `4` | Extra hours to wait before hiding a past event, used by the `[PastDate]` rule. For day-only names this is the wait after midnight; for names carrying a clock time it is added on top of the event's start + Event Duration. |
+| **🕒 Undated Event Grace Period (Hours)** | `number` | `1` | Extra hours to wait past an undated event's inferred end before hiding it, used by the `[UndatedEnded]` rule. Raise it for events that overrun. `[UndatedEnded:hours]` overrides it for one rule list. |
 
 ### 🎭 Duplicates
 
@@ -99,7 +100,7 @@ Settings are grouped into six sections in the UI.
 The plugin checks channels against the **Hide Rules Priority** list in the order you define. The first rule that matches is applied, and the channel is marked to be hidden. If no rules match, the channel is marked to be shown.
 
 **Default Rules:**
-`[InactiveRegex],[BlankName],[WrongDayOfWeek],[NoEventPattern],[EmptyPlaceholder],[PastDate:0],[FutureDate:2],[UndatedAge:2],[ShortDescription],[ShortChannelName]`
+`[InactiveRegex],[BlankName],[WrongDayOfWeek],[NoEventPattern],[EmptyPlaceholder],[PastDate:0],[FutureDate:2],[UndatedEnded],[UndatedAge:2],[ShortDescription],[ShortChannelName]`
 
 **Available Rule Tags:**
 
@@ -116,7 +117,19 @@ The plugin checks channels against the **Hide Rules Priority** list in the order
 | **[PastDate:days]** or **[PastDate:days:Xh]** | `days` (int), optional `Xh` (grace hours) | Hides if the name contains a date that is more than `days` in the past (e.g., `[PastDate:0]` hides yesterday's events). Optionally specify grace period inline like `[PastDate:0:4h]` to override the global grace period setting. **Time-aware matching (v1.26.1711623):** if the name carries an explicit `stop:YYYY-MM-DD HH:MM:SS` end timestamp, the rule compares the **actual end time** (`stop:` + `days`/grace); if it carries a clock time but no `stop:` (e.g. `(6.19 7:30 PM ET)`), the event is assumed to end **Event Duration hours** after its start (localized in the **Channel Name Event Timezone**), and the rule hides it once that end + `days`/grace has elapsed. Day-only names (no parseable time) keep the original calendar-day behavior. |
 | **[FutureDate:days]** | `days` (int) | Hides if the name contains a date that is more than `days` in the future (e.g., `[FutureDate:2]` hides events 3+ days from now). "Today" is resolved in Dispatcharr's time zone, consistent with the other date rules (v1.26.1711623). |
 | **[UndatedAge:days]** | `days` (int) | Hides channels whose names contain **no parseable date** once they've been visible for more than `days` days. Persists per-channel first-seen state in `/data/event_channel_managarr_undated_first_seen.json`. Resets a channel's age when its name changes. |
+| **[UndatedEnded]** or **[UndatedEnded:hours]** | optional `hours` (int) | Hides a channel whose name carries a **clock time but no date** once that event's inferred end has passed. The window is the date the channel was first seen (the same `/data/event_channel_managarr_undated_first_seen.json` record `[UndatedAge:days]` uses), plus the time read from the name, plus the event duration and time pattern taken from the dummy EPG source the channel is bound to (falling back to the **Event Duration** and **Channel Name Event Timezone** settings), plus the grace period. Without a number it reads the **Undated Event Grace Period (Hours)** setting. Every step fails open: a channel with no first-seen record, no readable time or an unusable timezone stays visible and is left to `[UndatedAge:days]`. |
 | **[InactiveRegex]** | — | Hides if the name matches the `Regex: Mark Channel as Inactive` setting. |
+
+#### Undated events with a clock time (`[UndatedEnded]`)
+
+Some providers name a channel with a start time and no date at all, such as `Boxing 3 : MOSES vs HRGOVIC  4:00pm`. `[UndatedAge:days]` can only count whole calendar days for such a name, so it hides a late-evening event at midnight or keeps a finished one until the next day. `[UndatedEnded]` computes the real window instead and hides the channel once the event has actually ended, plus the grace period.
+
+Four things are worth knowing before you rely on it:
+
+* **It controls visibility only.** Dispatcharr renders a dateless time as a programme that recurs every day, so the repeated guide entry stops when the channel is hidden and not before. The plugin cannot make Dispatcharr stop generating that entry.
+* **The hide happens on the next scan**, so schedule a run shortly after your latest events end. A channel stays visible until a scan evaluates it.
+* **Keep `[UndatedAge:days]` in the list after it.** It is the outer bound for a channel whose first-seen record was written late or rebuilt, where the inferred window would be wrong by a day.
+* **An existing installation keeps its stored rule list.** Dispatcharr never prunes or rewrites a setting you have saved, so if you have edited **Hide Rules Priority** you must add `[UndatedEnded]` to it by hand, before `[UndatedAge:2]`.
 
 #### How far ahead should a channel appear? (`[FutureDate:days]`)
 
