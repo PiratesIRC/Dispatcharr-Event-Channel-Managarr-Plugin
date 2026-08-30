@@ -214,10 +214,15 @@ US_ET = Profile(
     # qualifies only when the number is followed by an EXPLICIT separator
     # character and then a date or a clock time. "60 Minutes" has neither and is
     # left alone.
+    #
+    # The negative lookahead before the slot number stops the match beginning INSIDE an
+    # air time. Without it "Boxing 3 : MOSES vs HRGOVIC  4:00pm" matched at the time
+    # rather than at the slot number and captured the title "00pm" (bug-146).
     title_pattern=(
         r"(?=(?:PPV|LIVE|EVENT)|"
         r"\d+\s*[:|\-]\s*(?:\d{1,2}[./]\d{1,2}|\d{1,2}(?::\d{2})?\s*[AaPp][Mm]))"
-        r"(?:(?:PPV|LIVE)\s*(?:EVENT\s*)?|EVENT\s*)?\d+\s*[:|\-\s]\s*"
+        r"(?:(?:PPV|LIVE)\s*(?:EVENT\s*)?|EVENT\s*)?"
+        r"(?!\d{1,2}:\d{2}\s*[AaPp][Mm])\d+\s*[:|\-\s]\s*"
         r"(?:(?<datepart>\d{1,2}[./]\d{1,2}(?:[./]\d{2,4})?)\s+)?"
         r"(?:(?<leading_time>\d{1,2}(?::\d{2})?\s*[AaPp][Mm])\s+)?"
         r"(?<title>.+?)"

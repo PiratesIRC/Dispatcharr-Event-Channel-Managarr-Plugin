@@ -395,3 +395,50 @@ def test_resolve_output_timezone_degrades_without_raising(src, sys_tz):
     got = ecm_profiles.resolve_output_timezone(src, sys_tz)
     assert set(got) == {"output_timezone", "title_template",
                         "upcoming_title_template", "ended_title_template"}
+
+
+# --- a clock time must not be read as a slot number and separator -------------
+#
+# Measured on the live installation 2026-08-29: four visible channels named
+# "Boxing 3 : MOSES vs HRGOVIC  4:00pm" rendered the guide title "00pm", and the
+# ended template turned that into "Ended at 8/29 7 PM CDT: 00pm". The slot number
+# 3 is followed by text rather than by a date or a time, so the engine skipped it
+# and started the match on the air time itself: "4" became the slot number, the
+# time's own colon became the separator, and "00pm" became the title.
+#
+# This is the same failure bug-051 describes, reached through the keyword-less
+# branch added in 1.26.2261346. Such a name has no parseable slot, so the correct
+# outcome is no match at all, which leaves the channel on the renderer fallback
+# exactly as it was before that release.
+
+@pytest.mark.parametrize("name", [
+    "Boxing 3 : MOSES vs HRGOVIC  4:00pm",
+    "Boxing 1 : MOSES vs HRGOVIC  4:00pm",
+    "Fight Night 7 : Smith vs Jones 10:30pm",
+    "Wrestling : Main Card 8:15 PM",
+])
+def test_us_et_title_does_not_start_a_match_inside_a_clock_time(name):
+    us = next(p for p in ecm_profiles.PROFILES if p.key == "us_et")
+    rx = ecm_profiles.compile_pattern(us.title_pattern)
+    m = rx.search(name)
+    assert m is None, (
+        f"{name!r} matched and produced the title {m.group('title')!r}; the match "
+        f"began inside the air time rather than at a slot number")
+
+
+@pytest.mark.parametrize("name,expected", [
+    ("PPV EVENT 07: MARS Late Models at Farmer City (7.17 7:30 PM ET)",
+     "MARS Late Models at Farmer City"),
+    ("07 - 8/14 7pm Broncos at Falcons", "Broncos at Falcons"),
+    ("07 - 7pm Broncos at Falcons", "Broncos at Falcons"),
+    ("3 - 9/1 12:30pm Some Team at Another", "Some Team at Another"),
+    ("07 | 8/14 7pm Broncos at Falcons", "Broncos at Falcons"),
+    ("LIVE EVENT 11 - 8pm Lara v Ornelas", "Lara v Ornelas"),
+])
+def test_the_clock_time_guard_leaves_real_event_names_alone(name, expected):
+    """The guard must not cost any name that parsed correctly before it."""
+    us = next(p for p in ecm_profiles.PROFILES if p.key == "us_et")
+    rx = ecm_profiles.compile_pattern(us.title_pattern)
+    m = rx.search(name)
+    assert m, f"no match for {name!r}"
+    assert m.group("title") == expected

@@ -57,14 +57,25 @@ import ecm_profiles  # noqa: E402
 # guard that keeps "60 Minutes" from being treated as an event) and by
 # tests/contract/test_us_pattern_parity.py (the plugin.py literal still equals
 # ecm_profiles.US_ET, and the superseded pattern is still listed).
+#
+# _get_or_create_managed_epg_source was re-recorded a THIRD time on 2026-08-29.
+# Its us_title_pattern literal gained a negative lookahead before the slot number
+# so a match cannot begin inside an air time. Without it a name whose slot number
+# is followed by text rather than by a date or a time -- measured live as
+# "Boxing 3 : MOSES vs HRGOVIC  4:00pm" -- matched at the time instead and put
+# the title "00pm" in the guide (bug-146). The same method also gained that
+# superseded pattern in its stock_patterns set so existing installations upgrade.
+# Both halves are covered by tests/unit/test_ecm_profiles.py (the guard, and the
+# names that must still parse unchanged) and by
+# tests/contract/test_us_pattern_parity.py.
 # The other three remain at their original S2 baseline values and must not be
 # touched without the same argument.
 FROZEN_BODIES = {
     "_attach_managed_epg": "b0126debd9231deb49625ca0404952679197b862bff6cd86c618eb46fe3b335e",
     "_detach_managed_epg": "9e8d367e7d0789715e04249dab786a494b7f6919a60d6f9c755029e8261b98ca",
     "_managed_override_ids": "5d41e55a7146863609792f31f20134469c090b51938c1ab67d0f34399c526d6c",
-    # re-recorded 2026-08-12 and again 2026-08-14, see the notes above
-    "_get_or_create_managed_epg_source": "ae1566e1a34359afb566fdf1c924b4d88bfb01cd7ff19fa33cc9f6e0216234a6",
+    # re-recorded 2026-08-12, 2026-08-14 and 2026-08-29, see the notes above
+    "_get_or_create_managed_epg_source": "659f027f3869bd6590a417579f809d79383ff6b5d763ed67e8c225a61af78e95",
     # re-recorded 2026-08-12, see the note above
     "_localized_template_props": "8daf6f68b33352690f255dc6d7185546c0ea70596743e633b0403861c62e75dd",
 }

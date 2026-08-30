@@ -56,7 +56,7 @@ _scheduler_lock = threading.Lock()  # Prevent concurrent scheduler starts
 class PluginConfig:
     """Centralized configuration constants for Event Channel Managarr."""
 
-    PLUGIN_VERSION = "1.26.2351639"
+    PLUGIN_VERSION = "1.26.2420322"
 
     # Fallback timezone when Dispatcharr's global time zone is unset/invalid.
     DEFAULT_TIMEZONE = "UTC"
@@ -2454,12 +2454,22 @@ class Plugin:
         # character and then a date or a clock time. "60 Minutes", "48 Hours" and
         # "100 Huntley Street" have neither and stay on the fallback, as before.
         #
+        # The negative lookahead before the slot number stops the match beginning INSIDE
+        # an air time. Without it, a name whose slot number is followed by text rather
+        # than by a date or a time -- "Boxing 3 : MOSES vs HRGOVIC  4:00pm" -- was skipped
+        # at the number and matched at the time instead: "4" read as the slot, the time's
+        # own colon as the separator, and "00pm" captured as the title. Four live channels
+        # rendered the guide entry "Ended at 8/29 7 PM CDT: 00pm" on 2026-08-29. Such a
+        # name carries no parseable slot, so no match is the correct outcome and the
+        # renderer fallback handles it.
+        #
         # This literal is duplicated as ecm_profiles.US_ET.title_pattern; the renderer
         # reads THIS one. tests/contract/test_us_pattern_parity.py keeps them equal.
         us_title_pattern = (
             r"(?=(?:PPV|LIVE|EVENT)|"
             r"\d+\s*[:|\-]\s*(?:\d{1,2}[./]\d{1,2}|\d{1,2}(?::\d{2})?\s*[AaPp][Mm]))"
-            r"(?:(?:PPV|LIVE)\s*(?:EVENT\s*)?|EVENT\s*)?\d+\s*[:|\-\s]\s*"
+            r"(?:(?:PPV|LIVE)\s*(?:EVENT\s*)?|EVENT\s*)?"
+            r"(?!\d{1,2}:\d{2}\s*[AaPp][Mm])\d+\s*[:|\-\s]\s*"
             r"(?:(?<datepart>\d{1,2}[./]\d{1,2}(?:[./]\d{2,4})?)\s+)?"
             r"(?:(?<leading_time>\d{1,2}(?::\d{2})?\s*[AaPp][Mm])\s+)?"
             r"(?<title>.+?)"
@@ -2581,12 +2591,29 @@ class Plugin:
             r"\s+(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)\s+\d+|$)"
         )
 
+        # Superseded on 2026-08-29: the keyword-less branch let a clock time act as the
+        # slot number and separator, so "Boxing 3 : MOSES vs HRGOVIC  4:00pm" rendered the
+        # guide title "00pm" (bug-146). Listed here so sources still carrying it
+        # auto-upgrade to the guarded default.
+        _prev_us_title_unguarded_clock_time = (
+            r"(?=(?:PPV|LIVE|EVENT)|"
+            r"\d+\s*[:|\-]\s*(?:\d{1,2}[./]\d{1,2}|\d{1,2}(?::\d{2})?\s*[AaPp][Mm]))"
+            r"(?:(?:PPV|LIVE)\s*(?:EVENT\s*)?|EVENT\s*)?\d+\s*[:|\-\s]\s*"
+            r"(?:(?<datepart>\d{1,2}[./]\d{1,2}(?:[./]\d{2,4})?)\s+)?"
+            r"(?:(?<leading_time>\d{1,2}(?::\d{2})?\s*[AaPp][Mm])\s+)?"
+            r"(?<title>.+?)"
+            r"(?=\s*\(|\s+\d{1,2}(?::\d{2})?\s*[AaPp][Mm]|"
+            r"\s+(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)\s+\d+|$)"
+        )
+
         stock_patterns = {
             "title_pattern": {us_title_pattern, _py_named(us_title_pattern),
                               _py_named(us_title_pattern).replace(r"[:|\-\s]", r"[:|\s]"),
                               _orig_title, _prev_us_title, _py_named(_prev_us_title),
                               _prev_us_title_keyword_required,
                               _py_named(_prev_us_title_keyword_required),
+                              _prev_us_title_unguarded_clock_time,
+                              _py_named(_prev_us_title_unguarded_clock_time),
                               se_title_pattern, _py_named(se_title_pattern)},
             "time_pattern": {us_time_pattern, _py_named(us_time_pattern), _orig_time,
                              se_time_pattern, _py_named(se_time_pattern)},
