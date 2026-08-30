@@ -65,13 +65,18 @@ class PluginConfig:
     DEFAULT_NAME_SOURCE = "Channel_Name"  # Options: "Channel_Name" or "Stream_Name"
 
     # Default hide rules priority (comma-separated)
-    DEFAULT_HIDE_RULES = "[InactiveRegex],[BlankName],[WrongDayOfWeek],[NoEventPattern],[EmptyPlaceholder],[PastDate:0],[FutureDate:2],[UndatedAge:2],[ShortDescription],[ShortChannelName]"
+    DEFAULT_HIDE_RULES = "[InactiveRegex],[BlankName],[WrongDayOfWeek],[NoEventPattern],[EmptyPlaceholder],[PastDate:0],[FutureDate:2],[UndatedEnded],[UndatedAge:2],[ShortDescription],[ShortChannelName]"
 
     # Default duplicate handling strategy
     DEFAULT_DUPLICATE_STRATEGY = "lowest_number"  # Options: "lowest_number", "highest_number", "longest_name"
 
     # Default grace period for past date rule (in hours)
     DEFAULT_PAST_DATE_GRACE_HOURS = "4"
+
+    # Default grace period after an undated event's inferred end, in hours. Events
+    # overrun, so the channel stays visible for this long past the computed end
+    # before [UndatedEnded] hides it.
+    DEFAULT_UNDATED_EVENT_GRACE_HOURS = "1"
 
     # Default automatic EPG removal on hide
     DEFAULT_AUTO_REMOVE_EPG = True
@@ -251,6 +256,7 @@ class Plugin:
     DEFAULT_HIDE_RULES = PluginConfig.DEFAULT_HIDE_RULES
     DEFAULT_DUPLICATE_STRATEGY = PluginConfig.DEFAULT_DUPLICATE_STRATEGY
     DEFAULT_PAST_DATE_GRACE_HOURS = PluginConfig.DEFAULT_PAST_DATE_GRACE_HOURS
+    DEFAULT_UNDATED_EVENT_GRACE_HOURS = PluginConfig.DEFAULT_UNDATED_EVENT_GRACE_HOURS
     DEFAULT_AUTO_REMOVE_EPG = PluginConfig.DEFAULT_AUTO_REMOVE_EPG
     DEFAULT_SCHEDULED_CSV_EXPORT = PluginConfig.DEFAULT_SCHEDULED_CSV_EXPORT
     DEFAULT_AUTO_RESCAN_ON_M3U_REFRESH = PluginConfig.DEFAULT_AUTO_RESCAN_ON_M3U_REFRESH
@@ -402,6 +408,13 @@ class Plugin:
                 "type": "number",
                 "default": int(self.DEFAULT_PAST_DATE_GRACE_HOURS),
                 "help_text": "How many whole hours after midnight a channel dated for an earlier day stays visible before the [PastDate] rule hides it. Raise it for events that run past midnight.",
+            },
+            {
+                "id": "undated_event_grace_hours",
+                "label": "🕒 Undated Event Grace Period (Hours)",
+                "type": "number",
+                "default": int(self.DEFAULT_UNDATED_EVENT_GRACE_HOURS),
+                "help_text": "How many whole hours past an undated event's inferred end a channel stays visible before the [UndatedEnded] rule hides it. The inferred end is the date the channel was first seen, plus the time read from its name, plus the event duration. Raise it for events that overrun.",
             },
             {
                 "id": "_section_duplicates",
@@ -1145,6 +1158,52 @@ class Plugin:
         )
 
 
+    def _undated_event_properties(self, channel, settings):
+        """The time pattern, timezone and duration to use for one undated channel.
+
+        A channel bound to a dummy EPG source is rendered from that source's own
+        properties, so an installation running more than one managed source (one per
+        provider timezone, for example) must infer the event window from the source the
+        channel actually sits on. Anything the source does not supply falls back to the
+        plugin settings, which is also the whole answer for a channel that is bound to
+        nothing yet.
+
+        Never raises: a missing relation, a missing property or a property of the wrong
+        shape falls back rather than failing, because the caller must be able to leave
+        the channel visible instead of hiding it on a bad read.
+        """
+        tz_name = str(settings.get("dummy_epg_event_timezone",
+                                   self.DEFAULT_DUMMY_EPG_TIMEZONE)).strip()
+        try:
+            duration_hours = int(str(settings.get(
+                "dummy_epg_event_duration_hours", self.DEFAULT_EVENT_DURATION_HOURS)).strip())
+        except (ValueError, TypeError):
+            duration_hours = int(self.DEFAULT_EVENT_DURATION_HOURS)
+        if duration_hours <= 0:
+            duration_hours = int(self.DEFAULT_EVENT_DURATION_HOURS)
+        duration_minutes = duration_hours * 60
+        time_pattern = None
+
+        try:
+            source = channel.epg_data.epg_source
+        except AttributeError:
+            source = None
+        if source is not None and getattr(source, "source_type", None) == "dummy":
+            props = source.custom_properties
+            if isinstance(props, dict):
+                if props.get("time_pattern"):
+                    time_pattern = props["time_pattern"]
+                if props.get("timezone"):
+                    tz_name = str(props["timezone"]).strip()
+                try:
+                    from_source = int(props.get("program_duration"))
+                    if from_source > 0:
+                        duration_minutes = from_source
+                except (TypeError, ValueError):
+                    pass
+        return time_pattern, tz_name, duration_minutes
+
+
     def _check_hide_rule(self, rule_name, rule_param, channel, channel_name, logger, settings):
         """Check if a single hide rule matches the channel. Returns (matches, reason)"""
         # Safety checks for malformed channel names
@@ -1451,6 +1510,64 @@ class Plugin:
             age_days = (today - first_seen).days
             if age_days > threshold:
                 return True, f"[UndatedAge:{threshold}] No date in name; first seen {first_seen.isoformat()} ({age_days} days ago, threshold: {threshold})"
+            return False, None
+
+        elif rule_name == "UndatedEnded":
+            # A name with a clock time but no date. [UndatedAge:N] can only count whole
+            # calendar days, so it hides a late event at midnight or keeps a finished one
+            # until tomorrow. This builds the real window instead: the date the channel
+            # was first seen, plus the time in the name, plus the programme duration and
+            # the configured grace period.
+            #
+            # Fails open at every step. A channel with no record, no parseable time or an
+            # unusable timezone returns no match, which leaves it visible and lets
+            # [UndatedAge:N] later in the rule list make the decision it makes today.
+            tracker = getattr(self, '_undated_tracker', None) or {}
+            entry = tracker.get(str(channel.id))
+            if not entry:
+                return False, None
+            try:
+                first_seen = datetime.strptime(entry['first_seen'], '%Y-%m-%d').date()
+            except (KeyError, ValueError, TypeError):
+                return False, None
+
+            time_pattern, tz_name, duration_minutes = self._undated_event_properties(
+                channel, settings)
+            parsed_time = ecm_parsing.extract_time_of_day(channel_name, time_pattern)
+            if parsed_time is None:
+                return False, None
+
+            # The tag may carry its own hour count, as [UndatedEnded:2]. Without one the
+            # rule reads the setting, which is what the requester asked for in issue 28.
+            if isinstance(rule_param, tuple):
+                grace_hours = rule_param[0]
+            elif rule_param is not None:
+                grace_hours = rule_param
+            else:
+                try:
+                    grace_hours = int(str(settings.get(
+                        "undated_event_grace_hours",
+                        self.DEFAULT_UNDATED_EVENT_GRACE_HOURS)).strip())
+                except (ValueError, TypeError):
+                    grace_hours = int(self.DEFAULT_UNDATED_EVENT_GRACE_HOURS)
+
+            window = ecm_parsing.infer_undated_event_window(
+                first_seen, parsed_time[0], parsed_time[1], tz_name,
+                duration_minutes, grace_hours)
+            if window is None:
+                return False, None
+            start, hide_after = window
+
+            tz_str = self._get_system_timezone(settings)
+            try:
+                local_tz = pytz.timezone(tz_str)
+            except pytz.exceptions.UnknownTimeZoneError:
+                local_tz = pytz.timezone(self.DEFAULT_TIMEZONE)
+            if datetime.now(local_tz) > hide_after:
+                return True, (
+                    f"[UndatedEnded] No date in name; first seen {first_seen.isoformat()}, "
+                    f"inferred start {start.strftime('%m/%d %I:%M %p %Z')} "
+                    f"(+{duration_minutes // 60}h duration, {grace_hours}h grace)")
             return False, None
 
         elif rule_name == "InactiveRegex":
@@ -3530,6 +3647,7 @@ class Plugin:
                     "regex_mark_inactive",
                     "regex_force_visible",
                     "past_date_grace_hours",
+                    "undated_event_grace_hours",
                     "duplicate_strategy",
                     "keep_duplicates",
                     "auto_set_dummy_epg_on_hide",
