@@ -9,6 +9,7 @@ and `HHMM` the UTC time of the version bump. A higher version is always later.
 
 | Version | Released | Notes |
 | :--- | :--- | :--- |
+| `v1.26.2420322` | 2026-08-30 | [Release notes](https://github.com/PiratesIRC/Dispatcharr-Event-Channel-Managarr-Plugin/releases/tag/v1.26.2420322) |
 | `v1.26.2351639` | 2026-08-23 | [Release notes](https://github.com/PiratesIRC/Dispatcharr-Event-Channel-Managarr-Plugin/releases/tag/v1.26.2351639) |
 | `v1.26.2341504` | 2026-08-22 | [Release notes](https://github.com/PiratesIRC/Dispatcharr-Event-Channel-Managarr-Plugin/releases/tag/v1.26.2341504) |
 | `v1.26.2341433` | 2026-08-22 | [Release notes](https://github.com/PiratesIRC/Dispatcharr-Event-Channel-Managarr-Plugin/releases/tag/v1.26.2341433) |
