@@ -56,7 +56,7 @@ _scheduler_lock = threading.Lock()  # Prevent concurrent scheduler starts
 class PluginConfig:
     """Centralized configuration constants for Event Channel Managarr."""
 
-    PLUGIN_VERSION = "1.26.2422213"
+    PLUGIN_VERSION = "1.26.2450117"
 
     # Fallback timezone when Dispatcharr's global time zone is unset/invalid.
     DEFAULT_TIMEZONE = "UTC"
@@ -1167,7 +1167,31 @@ class Plugin:
         )
 
 
-    def _undated_event_properties(self, channel, settings):
+    def _warn_undated_once(self, logger, key, message):
+        """Report a configuration problem once per scan instead of once per channel.
+
+        A scan evaluates every channel in scope, over 1400 on the installation this was
+        measured on, so an unguarded warning would repeat a single mistyped setting once
+        per channel and bury the log. `key` identifies the problem, not the channel, so
+        the same mistake on the same EPG source is reported once however many channels
+        it affects.
+
+        The set is created on demand rather than read with a default, so an entry path
+        that never primed it still warns. A missing set must not turn into silence: the
+        whole point of these messages is that the substitution they describe is otherwise
+        invisible (bug-139 is the same shape, where settings-derived instance state read
+        with getattr failed silently on an unprimed path).
+        """
+        seen = getattr(self, '_undated_warned', None)
+        if seen is None:
+            seen = set()
+            self._undated_warned = seen
+        if key in seen:
+            return
+        seen.add(key)
+        logger.warning(f"{LOG_PREFIX} {message}")
+
+    def _undated_event_properties(self, channel, settings, logger=None):
         """The time pattern, timezone and duration to use for one undated channel.
 
         A channel bound to a dummy EPG source is rendered from that source's own
@@ -1180,6 +1204,11 @@ class Plugin:
         Never raises: a missing relation, a missing property or a property of the wrong
         shape falls back rather than failing, because the caller must be able to leave
         the channel visible instead of hiding it on a bad read.
+
+        `logger` is optional only so an existing caller without one keeps working. When
+        it is given, every substitution this method makes for a property that IS present
+        but unreadable is reported once per scan. An ABSENT property is not reported:
+        that is the ordinary case and says nothing about a mistake.
         """
         tz_name = str(settings.get("dummy_epg_event_timezone",
                                    self.DEFAULT_DUMMY_EPG_TIMEZONE)).strip()
@@ -1202,14 +1231,38 @@ class Plugin:
             if isinstance(props, dict):
                 if props.get("time_pattern"):
                     time_pattern = props["time_pattern"]
+                    problem = ecm_parsing.time_pattern_problem(time_pattern)
+                    if problem and logger is not None:
+                        self._warn_undated_once(
+                            logger, f"time_pattern:{source.id}",
+                            f"[UndatedEnded] EPG source {source.id} "
+                            f"({getattr(source, 'name', '?')}) has a time pattern that "
+                            f"cannot be compiled ({problem}), so the built-in pattern is "
+                            f"being used instead of yours. Fix the Time Pattern on that "
+                            f"source in Dispatcharr, or this rule reads event times with "
+                            f"a pattern you did not choose.")
                 if props.get("timezone"):
                     tz_name = str(props["timezone"]).strip()
-                try:
-                    from_source = int(props.get("program_duration"))
-                    if from_source > 0:
-                        duration_minutes = from_source
-                except (TypeError, ValueError):
-                    pass
+                raw_duration = props.get("program_duration")
+                if raw_duration is not None:
+                    try:
+                        from_source = int(raw_duration)
+                    except (TypeError, ValueError):
+                        # Present but unreadable is a typing mistake, not the ordinary
+                        # absent case, and the substituted value is reported in the hide
+                        # reason as though it were configured. Say so.
+                        if logger is not None:
+                            self._warn_undated_once(
+                                logger, f"program_duration:{source.id}",
+                                f"[UndatedEnded] EPG source {source.id} "
+                                f"({getattr(source, 'name', '?')}) has a program duration "
+                                f"of {raw_duration!r}, which is not a whole number of "
+                                f"minutes. Falling back to the Event Duration setting "
+                                f"({duration_minutes // 60}h), which may hide channels "
+                                f"earlier than you intended.")
+                    else:
+                        if from_source > 0:
+                            duration_minutes = from_source
         return time_pattern, tz_name, duration_minutes
 
 
@@ -1541,7 +1594,7 @@ class Plugin:
                 return False, None
 
             time_pattern, tz_name, duration_minutes = self._undated_event_properties(
-                channel, settings)
+                channel, settings, logger)
             parsed_time = ecm_parsing.extract_time_of_day(channel_name, time_pattern)
             if parsed_time is None:
                 return False, None
@@ -1553,17 +1606,37 @@ class Plugin:
             elif rule_param is not None:
                 grace_hours = rule_param
             else:
+                raw_grace = settings.get("undated_event_grace_hours",
+                                         self.DEFAULT_UNDATED_EVENT_GRACE_HOURS)
                 try:
-                    grace_hours = int(str(settings.get(
-                        "undated_event_grace_hours",
-                        self.DEFAULT_UNDATED_EVENT_GRACE_HOURS)).strip())
+                    # Read through float first. The field is declared as a number, so a
+                    # value like 12.5 can be stored, and int() on that string raises. It
+                    # used to fall back to the shipped default of 1 hour, turning a
+                    # deliberate 12 hour grace period into an 11.5 hour early hide.
+                    grace_hours = int(float(str(raw_grace).strip()))
                 except (ValueError, TypeError):
                     grace_hours = int(self.DEFAULT_UNDATED_EVENT_GRACE_HOURS)
+                    self._warn_undated_once(
+                        logger, "grace_setting",
+                        f"[UndatedEnded] Undated Event Grace Period is {raw_grace!r}, "
+                        f"which is not a number of hours. Using the default of "
+                        f"{grace_hours}h instead, which may hide channels earlier than "
+                        f"you intended.")
 
             window = ecm_parsing.infer_undated_event_window(
                 first_seen, parsed_time[0], parsed_time[1], tz_name,
                 duration_minutes, grace_hours)
             if window is None:
+                # The timezone is the input most likely to be wrong, and it is the one a
+                # person types. A mistyped zone also gives Dispatcharr's own renderer the
+                # wrong programme times, so this rule may be the only thing that notices.
+                self._warn_undated_once(
+                    logger, f"window:{tz_name}",
+                    f"[UndatedEnded] Cannot build an event window using timezone "
+                    f"{tz_name!r}. Channels with an undated event time are being left "
+                    f"visible for this rule to avoid hiding them wrongly. Check the "
+                    f"Timezone on the dummy EPG source, or the Channel Name Event "
+                    f"Timezone setting.")
                 return False, None
             start, hide_after = window
 
@@ -3331,6 +3404,9 @@ class Plugin:
             # Load undated-channel first-seen tracker (used by [UndatedAge:N] rule)
             self._undated_tracker = self._load_undated_tracker(logger)
             tracker_before = len(self._undated_tracker)
+            # Cleared per scan so a configuration problem is reported once on every run
+            # rather than once ever, which would hide it from every later run's log.
+            self._undated_warned = set()
             tz_str = self._get_system_timezone(settings)
             try:
                 local_tz = pytz.timezone(tz_str)

@@ -385,6 +385,32 @@ def _compile_time_pattern(time_pattern):
     return re.compile(_DEFAULT_TIME_OF_DAY)
 
 
+def time_pattern_problem(time_pattern):
+    """Describe why a stored time pattern cannot be used, or return None when it can.
+
+    A pattern that does not compile is silently replaced by the built-in default, which
+    is the right thing to do at the point of use because a channel must not go unread
+    over a typing mistake. It is the wrong thing to do QUIETLY: the person who typed the
+    pattern gets the built-in behaviour instead of theirs with nothing to tell them so.
+    The caller has a logger and this gives it something to say.
+
+    Trying the JavaScript to Python conversion is routine rather than a problem, because
+    Dispatcharr stores its patterns in the JavaScript form (issue 21), so only a pattern
+    that fails BOTH forms is reported.
+    """
+    if not time_pattern:
+        return None
+    reason = None
+    for candidate in (time_pattern,
+                      _JS_NAMED_GROUP_RE.sub(r"(?P<\1>", time_pattern)):
+        try:
+            re.compile(candidate)
+            return None
+        except re.error as exc:
+            reason = str(exc)
+    return reason or "the pattern could not be compiled"
+
+
 def extract_time_of_day(channel_name, time_pattern=None):
     """Return (hour, minute) on a 24 hour clock for the first clock time in the name.
 
@@ -392,15 +418,20 @@ def extract_time_of_day(channel_name, time_pattern=None):
     use either the JavaScript (?<name>) or the Python (?P<name>) named-group form and
     is expected to provide an `hour` group plus optional `minute` and `ampm` groups.
 
-    A supplied pattern that does not compile, or that matches nothing, falls back to
-    the built-in default rather than raising or giving up, because the pattern comes
-    from an EPG source property the user is free to edit.
+    A supplied pattern that does not COMPILE falls back to the built-in default rather
+    than raising, because the pattern comes from an EPG source property the user is free
+    to edit and a typing mistake must not stop the name being read at all. Call
+    `time_pattern_problem` to report that substitution rather than making it silently.
+
+    A supplied pattern that compiles and MATCHES NOTHING is respected: the answer is
+    that this name carries no time. It used to fall back to the built-in default here,
+    which silently reverted a deliberate narrowing. Narrowing a time pattern so that a
+    slot number is not read as an hour is exactly what this plugin had to do to its own
+    title pattern (bug-146), so it is a thing users do on purpose.
     """
     if not channel_name:
         return None
     match = _compile_time_pattern(time_pattern).search(channel_name)
-    if match is None and time_pattern:
-        match = re.compile(_DEFAULT_TIME_OF_DAY).search(channel_name)
     if match is None:
         return None
     groups = match.groupdict()
@@ -411,7 +442,10 @@ def extract_time_of_day(channel_name, time_pattern=None):
     try:
         minute = int(groups.get("minute") or 0)
     except (TypeError, ValueError):
-        minute = 0
+        # Give up rather than assume o'clock. A minute this function cannot read means
+        # it does not know when the event starts, and quietly moving the start up to
+        # 59 minutes earlier would move the end of the window with it.
+        return None
     hour = apply_meridiem(hour, groups.get("ampm"))
     if not 0 <= hour <= 23 or not 0 <= minute <= 59:
         return None
@@ -426,30 +460,38 @@ def infer_undated_event_window(first_seen_date, hour, minute, tz_name,
     is that start plus the programme duration plus the grace period, so a caller hides
     the channel once the current time passes it.
 
-    Returns None when `tz_name` is not a zone this installation knows, or when the
-    hour and minute do not make a real time. The caller then has no window and makes
-    no hide decision, which leaves the channel visible.
-    """
-    import pytz  # local, matching coerce_timezone: the module imports without it
+    Returns None when any input cannot be read: an unknown timezone, an hour and minute
+    that do not make a real time, or a duration or grace period that is not a number.
+    The caller then has no window, makes no hide decision, and the channel stays visible.
 
+    Every failure gives up rather than substituting a smaller number. An unreadable
+    duration used to become zero minutes and an unreadable grace period zero hours,
+    which did not abandon the calculation but SHORTENED it, so the channel was hidden
+    earlier than any configured value asked for. A shorter window is not a safe
+    degradation for a rule whose effect is to remove a channel from the lineup.
+    """
+    # Imported inside the function, matching coerce_timezone, so the module stays
+    # importable on a machine without pytz. The import is inside the try because an
+    # ImportError here must produce the same "no window" answer as a bad timezone
+    # rather than escaping into the caller, which has no try around its rule loop.
     try:
+        import pytz
         event_tz = pytz.timezone(str(tz_name).strip())
-    except Exception:
+    except ImportError:
+        return None
+    except (pytz.exceptions.UnknownTimeZoneError, AttributeError, TypeError, ValueError):
         return None
     try:
         naive_start = datetime.combine(
             first_seen_date, time(hour=int(hour), minute=int(minute)))
     except (TypeError, ValueError):
         return None
-    start = event_tz.localize(naive_start)
     try:
         duration = max(int(duration_minutes), 0)
-    except (TypeError, ValueError):
-        duration = 0
-    try:
         grace = max(int(grace_hours), 0)
     except (TypeError, ValueError):
-        grace = 0
+        return None
+    start = event_tz.localize(naive_start)
     return start, start + timedelta(minutes=duration, hours=grace)
 
 

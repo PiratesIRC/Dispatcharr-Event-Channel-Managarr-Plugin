@@ -136,3 +136,41 @@ def test_the_bootstrap_template_carries_every_grace_period_setting():
     template = json.loads(template_path.read_text(encoding="utf-8"))
     assert "undated_event_grace_hours" in template
     assert "past_date_grace_hours" in template
+
+
+def test_the_rule_reports_a_timezone_it_cannot_use():
+    """A substitution the operator cannot see is the failure mode this guards against.
+
+    The rule leaves a channel visible when it cannot build an event window. That is the
+    safe direction, but silent: from the operator's side a mistyped timezone looks
+    exactly like a rule that has decided the event is still running. The workspace rule
+    is to degrade to a sane value and make the degradation loud.
+    """
+    branch = _rule_branch("UndatedEnded")
+    assert "_warn_undated_once" in branch
+
+
+def test_the_property_resolver_reports_a_time_pattern_it_cannot_compile():
+    """A pattern that does not compile is replaced by the built-in one. The operator
+    then gets behaviour they did not configure, and nothing else would tell them."""
+    source = PLUGIN_PY.read_text(encoding="utf-8")
+    start = source.index("def _undated_event_properties")
+    body = source[start:source.index("def _check_hide_rule", start)]
+    assert "time_pattern_problem" in body
+    assert "_warn_undated_once" in body
+
+
+def test_the_property_resolver_reports_an_unreadable_program_duration():
+    source = PLUGIN_PY.read_text(encoding="utf-8")
+    start = source.index("def _undated_event_properties")
+    body = source[start:source.index("def _check_hide_rule", start)]
+    assert "program_duration" in body
+    # An ABSENT property is the ordinary case and must not be reported as a mistake.
+    assert "if raw_duration is not None:" in body, (
+        "the resolver must tell an absent program duration apart from an unreadable one")
+
+
+def test_the_warning_set_is_cleared_at_the_start_of_every_scan():
+    """Warning once ever would hide the problem from every run after the first."""
+    source = PLUGIN_PY.read_text(encoding="utf-8")
+    assert "self._undated_warned = set()" in source

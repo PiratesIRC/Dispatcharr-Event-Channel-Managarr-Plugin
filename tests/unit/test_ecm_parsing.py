@@ -294,3 +294,48 @@ def test_a_record_without_a_first_seen_moment_still_hides_a_finished_event():
 def test_undated_event_has_ended_is_false_when_there_is_no_window():
     assert ecm_parsing.undated_event_has_ended(_eastern(2026, 8, 30, 23), None) is False
     assert ecm_parsing.undated_event_has_ended(None, _eastern(2026, 8, 30, 23)) is False
+
+
+# --- failures must abandon the window, never shorten it -----------------------------
+
+def test_a_pattern_that_matches_nothing_means_the_name_carries_no_time():
+    """A narrowed pattern must be respected, not silently replaced by the built-in one.
+
+    The SE pattern reads a 24 hour clock. Against a name written in am/pm it matches
+    nothing, and the honest answer is that this pattern finds no time here. Falling back
+    to the built-in am/pm pattern would revert the narrowing the user configured.
+    """
+    se_pattern = r"(?<hour>\d{1,2}):(?<minute>\d{2})"
+    assert ecm_parsing.extract_time_of_day("PPV 07 - 8pm Main Card", se_pattern) is None
+
+
+def test_a_pattern_that_does_not_compile_still_falls_back_to_the_builtin():
+    """A typing mistake must not stop the name being read at all."""
+    assert ecm_parsing.extract_time_of_day("PPV 07 - 8pm Main Card", "(unclosed") == (20, 0)
+
+
+def test_time_pattern_problem_reports_only_a_pattern_that_cannot_compile():
+    assert ecm_parsing.time_pattern_problem(None) is None
+    assert ecm_parsing.time_pattern_problem("") is None
+    # The JavaScript named-group form is what Dispatcharr stores, so it is not a problem.
+    assert ecm_parsing.time_pattern_problem(r"(?<hour>\d{1,2}):(?<minute>\d{2})") is None
+    problem = ecm_parsing.time_pattern_problem("(unclosed")
+    assert isinstance(problem, str) and problem
+
+
+def test_an_unreadable_duration_abandons_the_window_rather_than_shortening_it():
+    """Collapsing to zero would hide the channel earlier than any configured value."""
+    assert ecm_parsing.infer_undated_event_window(
+        date(2026, 8, 30), 20, 0, "US/Eastern", "not a number", 1) is None
+
+
+def test_an_unreadable_grace_period_abandons_the_window():
+    assert ecm_parsing.infer_undated_event_window(
+        date(2026, 8, 30), 20, 0, "US/Eastern", 180, "not a number") is None
+
+
+def test_an_unreadable_minute_abandons_the_time_rather_than_assuming_oclock():
+    """A user pattern can capture a non-numeric minute. Assuming :00 would move the
+    inferred start up to 59 minutes earlier and the end of the window with it."""
+    pattern = r"(?<hour>\d{1,2}):(?<minute>[A-Za-z]{2})"
+    assert ecm_parsing.extract_time_of_day("Event 7:xx tonight", pattern) is None
