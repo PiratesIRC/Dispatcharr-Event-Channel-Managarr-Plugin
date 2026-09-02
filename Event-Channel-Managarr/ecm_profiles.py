@@ -60,6 +60,20 @@ class Profile:
     fallback_title_template: str
     fallback_description_template: str
     is_default: bool
+    # Added for issue 29. Both carry defaults so every existing construction of
+    # this frozen dataclass, and every dataclasses.replace call, keeps working.
+    #
+    # user_managed True means the plugin seeds the source once when it CREATES it
+    # and never writes to it again, so the operator owns its timezone, duration,
+    # patterns and templates from that moment on. That is the whole point of the
+    # per-group feature, and it is why such a source cannot carry plugin state in
+    # its custom_properties: Dispatcharr's own EPG source editor rebuilds that
+    # object from a fixed key list and drops anything it does not know, and there
+    # is no longer a rewrite on each run to repair it.
+    user_managed: bool = False
+    # Casefolded channel group names routed to this profile. Empty on the two
+    # profiles defined in code, which select by a regex on the channel NAME.
+    group_names: tuple = ()
 
 
 def to_python_named(pattern):
@@ -437,3 +451,70 @@ def parse_group_source_map(raw):
         mapping[group_key] = source
 
     return mapping, problems
+
+
+# Prefix on every group profile key. It contains a colon, which no key defined in
+# code uses and which cannot appear in the UNCLAIMED sentinel, so a mapped source
+# named "us_et" or "__unclaimed__" still produces a distinct key. That matters:
+# route() RAISES on a duplicate key or a sentinel collision, and an unhandled
+# raise on the scan path is an outage rather than a fail-safe.
+GROUP_PROFILE_KEY_PREFIX = "group:"
+
+
+def group_profile_key(source_name):
+    """The routing key for the profile serving `source_name`. Pure."""
+    return GROUP_PROFILE_KEY_PREFIX + str(source_name).casefold()
+
+
+def build_group_profiles(settings):
+    """Build one profile per mapped EPG source. Returns (profiles, problems).
+
+    Each profile is a copy of the RESOLVED default profile, so a mapped source is
+    seeded with the operator's global timezone and duration plus the shipped US
+    patterns, and is then theirs to edit. The global US or SE format choice is not
+    carried into the seed; the operator edits patterns in Dispatcharr's own EPG
+    source editor anyway, so a seeded pattern is a starting point.
+
+    The selector is empty. compile_pattern returns None for it and both route()
+    and claimed_targets() skip a None selector, so a group profile can never claim
+    a channel by its NAME. Selection by group happens in routing_destinations.
+
+    `problems` is passed straight through from the parser, because the caller
+    gates the reverse move on it: if anything failed to parse, no channel is moved
+    back, so one typo cannot rebind a whole group.
+    """
+    settings = settings or {}
+    mapping, problems = parse_group_source_map(settings.get("group_epg_source_map"))
+    if not mapping:
+        return (), problems
+
+    default = next((p for p in build_profiles(settings) if p.is_default), None)
+    if default is None:                                   # pragma: no cover
+        return (), problems + ["no default profile to seed a group source from"]
+
+    # Group several groups mapping to one source into a single profile: the unit
+    # is the SOURCE, not the group, or two groups sharing a source would produce
+    # two profiles with the same key and route() would raise.
+    groups_by_source = {}
+    for group_key, source_name in mapping.items():
+        groups_by_source.setdefault(source_name, []).append(group_key)
+
+    profiles = []
+    keys_used = set()
+    for source_name, group_keys in groups_by_source.items():
+        key = group_profile_key(source_name)
+        if key in keys_used:                              # defensive
+            problems.append(
+                f"two mapped sources produced the same routing key for "
+                f"{source_name!r}; ignoring the second")
+            continue
+        keys_used.add(key)
+        profiles.append(replace(
+            default,
+            key=key,
+            source_name=source_name,
+            selector="",
+            is_default=False,
+            user_managed=True,
+            group_names=tuple(group_keys)))
+    return tuple(profiles), problems

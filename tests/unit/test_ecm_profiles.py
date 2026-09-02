@@ -580,3 +580,126 @@ def test_mapping_order_is_preserved():
     """Routing evaluates group profiles in declaration order, so order matters."""
     mapping, _ = _parse("B = ECM - B\nA = ECM - A\nC = ECM - C")
     assert list(mapping) == ["b", "a", "c"]
+
+
+# --- build_group_profiles (issue 29, Task 2) ----------------------------------
+
+
+def _build(raw, **settings):
+    settings.setdefault("group_epg_source_map", raw)
+    return ecm_profiles.build_group_profiles(settings)
+
+
+def test_profile_props_returns_exactly_the_stored_property_keys():
+    """Pin the key set BEFORE new dataclass fields exist.
+
+    profile_props builds an EPGSource.custom_properties payload. A new field on
+    the Profile dataclass must not leak into a source's stored properties, and a
+    leaked key would be written to the live database rather than caught by a
+    type error.
+    """
+    props = ecm_profiles.profile_props(ecm_profiles.US_ET)
+    assert set(props) == {
+        "timezone", "output_timezone", "title_pattern", "date_pattern",
+        "time_pattern", "title_template", "upcoming_title_template",
+        "ended_title_template", "program_duration", "include_date",
+        "fallback_title_template", "fallback_description_template",
+    }
+
+
+def test_the_new_profile_fields_default_so_existing_constructions_keep_working():
+    assert ecm_profiles.US_ET.user_managed is False
+    assert ecm_profiles.US_ET.group_names == ()
+    assert ecm_profiles.DAZN_GMT.user_managed is False
+
+
+def test_an_empty_mapping_builds_no_group_profiles():
+    profiles, problems = _build("")
+    assert profiles == ()
+    assert problems == []
+
+
+def test_one_mapping_builds_one_user_managed_profile():
+    profiles, problems = _build("NFL Sunday Ticket = ECM - NFL")
+    assert problems == []
+    assert len(profiles) == 1
+    p = profiles[0]
+    assert p.source_name == "ECM - NFL"
+    assert p.group_names == ("nfl sunday ticket",)
+    assert p.user_managed is True
+    assert p.is_default is False
+
+
+def test_a_group_profile_cannot_claim_a_channel_by_name():
+    """Its selector must compile to None, which route() and claimed_targets skip.
+
+    Asserted as behaviour rather than by reading the selector string, because it
+    is the skip that matters, not the empty value that causes it.
+    """
+    profiles, _ = _build("NFL = ECM - NFL")
+    assert ecm_profiles.compile_pattern(profiles[0].selector) is None
+    claims = ecm_profiles.claimed_targets(
+        ["NFL Sunday Ticket week 1", "anything at all"], profiles)
+    assert claims == {}
+
+
+def test_two_groups_sharing_a_source_build_one_profile_with_both_groups():
+    profiles, problems = _build("NFL = ECM - Football\nNCAAF = ECM - Football")
+    assert problems == []
+    assert len(profiles) == 1, "one source name is one profile, not one per group"
+    assert set(profiles[0].group_names) == {"nfl", "ncaaf"}
+
+
+def test_group_profile_keys_are_unique_and_do_not_collide_with_the_code_profiles():
+    profiles, _ = _build("A = ECM - A\nB = ECM - B\nC = ECM - C")
+    keys = [p.key for p in profiles]
+    assert len(keys) == len(set(keys))
+    assert not set(keys) & {"us_et", "dazn_gmt", ecm_profiles.UNCLAIMED}
+
+
+def test_a_source_named_like_the_unclaimed_sentinel_does_not_collide():
+    """route() raises if a profile key equals the sentinel, which is an outage."""
+    profiles, _ = _build(f"NFL = {ecm_profiles.UNCLAIMED}")
+    assert profiles
+    assert profiles[0].key != ecm_profiles.UNCLAIMED
+
+
+@pytest.mark.parametrize("raw", [
+    "NFL = __unclaimed__",
+    "A = ECM - A\nB = ecm - a",
+    "= =\nNFL = ECM - NFL",
+    "NFL = us_et",
+    "NFL = dazn_gmt",
+])
+def test_route_never_raises_on_a_profile_set_built_from_a_hostile_mapping(raw):
+    """route() raises ValueError on duplicate keys or a sentinel collision.
+
+    An unhandled raise here is an outage on the scan path, not a fail-safe, so
+    the builder must never hand route() a set it will reject.
+    """
+    group_profiles, _ = _build(raw)
+    combined = tuple(group_profiles) + ecm_profiles.build_profiles({})
+    buckets = ecm_profiles.route(["some channel name"], combined)
+    assert ecm_profiles.UNCLAIMED in buckets
+
+
+def test_a_group_profile_inherits_the_global_timezone_and_duration():
+    profiles, _ = _build(
+        "NFL = ECM - NFL",
+        dummy_epg_event_timezone="America/Denver",
+        dummy_epg_event_duration_hours=2)
+    assert profiles[0].timezone == "America/Denver"
+    assert profiles[0].program_duration_minutes == 120
+
+
+def test_parser_problems_are_returned_by_the_builder():
+    """The caller gates the reverse move on this list, so it must not be dropped."""
+    profiles, problems = _build("this line has no equals sign")
+    assert profiles == ()
+    assert len(problems) == 1
+
+
+def test_a_missing_setting_key_is_treated_as_no_mapping():
+    profiles, problems = ecm_profiles.build_group_profiles({})
+    assert profiles == ()
+    assert problems == []
