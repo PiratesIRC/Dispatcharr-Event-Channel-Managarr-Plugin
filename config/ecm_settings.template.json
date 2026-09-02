@@ -5,6 +5,7 @@
   "dummy_epg_event_timezone": "America/New_York",
   "dummy_epg_event_duration_hours": 4,
   "dummy_epg_channel_format": "US",
+  "group_epg_source_map": "",
   "channel_profile_name": "REPLACE_ME_profile_name",
   "channel_groups": "REPLACE_ME_comma_separated_group_names",
   "hide_rules_priority": "[InactiveRegex],[BlankName],[WrongDayOfWeek],[NoEventPattern],[EmptyPlaceholder],[PastDate:0],[FutureDate:2],[UndatedEnded],[UndatedAge:2],[ShortDescription],[ShortChannelName]",
