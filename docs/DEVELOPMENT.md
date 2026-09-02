@@ -24,18 +24,34 @@ The artifact that Dispatcharr loads is the `Event-Channel-Managarr/` directory:
 
 | File | Ships? | Purpose |
 |---|---|---|
-| `Event-Channel-Managarr/plugin.py` | Yes | All plugin logic (~3,300 lines) |
-| `Event-Channel-Managarr/ecm_parsing.py` | Yes | Django-free date/time parsing logic |
+The set that ships is whatever is committed under `Event-Channel-Managarr/`. Read it from
+git rather than from a list here, which is how a list like this goes stale:
+
+```bash
+git ls-tree --name-only HEAD:Event-Channel-Managarr
+```
+
+| File | Ships? | Purpose |
+|---|---|---|
+| `Event-Channel-Managarr/plugin.py` | Yes | All plugin logic (about 4,250 lines) |
+| `Event-Channel-Managarr/ecm_parsing.py` | Yes | Django-free date, time and event-window logic |
+| `Event-Channel-Managarr/ecm_profiles.py` | Yes | Channel-name format profiles used to route a channel to the right managed EPG source |
 | `Event-Channel-Managarr/plugin.json` | Yes | Manifest: `fields` + `actions` arrays |
-| `Event-Channel-Managarr/__init__.py` | Yes | Package marker |
+| `Event-Channel-Managarr/__init__.py` | Yes | Package marker; must export only `Plugin` |
 | `Event-Channel-Managarr/README.txt` | Yes | In-container readme |
-| `README.md` | Yes | User-facing documentation |
+| `Event-Channel-Managarr/logo.png` | Yes | Plugin card icon |
+| `README.md` | Yes | Project front page |
+| `docs/` | Yes, except the files noted below | User guide, development notes, changelog, plans and designs |
 | `tests/` | Yes | pytest suite (unit + contract) |
 | `pyproject.toml` | Yes | ruff + pytest config |
-| `.github/workflows/ci.yml` | Yes | CI (runs tests on push/PR) |
+| `.github/workflows/ci.yml` | Yes | CI (runs tests on push and pull request) |
 | `bump_version.py` | **No** | Maintainer-local version bump tool (gitignored) |
-| `zip.cmd` | **No** | Builds the release ZIP (gitignored) |
-| `.claude/`, `.wolf/`, `docs/` | **No** | AI tooling and internal docs (gitignored) |
+| `zip.cmd` | **No** | Builds a release ZIP (gitignored, and must not be run from an agent shell: it ends in `pause`) |
+| `.claude/`, `.wolf/` | **No** | Agent tooling and session state (gitignored) |
+| `docs/CLAUDE-*.md` | **No** | Agent notes and hand-off prompts, gitignored because they quote a real installation |
+
+Note that `docs/` itself is tracked and published, and only the `docs/CLAUDE-*.md`
+files inside it are ignored. Anything written there is public.
 
 ---
 
@@ -49,26 +65,48 @@ Key methods inside `Plugin`:
 
 | Method | Role |
 |---|---|
-| `run(action_id, params, context)` | Entry point for all action calls. Builds `merged_settings`, dispatches via `_action_map`. |
-| `_action_map` | Dict mapping action id strings → handler methods. |
-| `get_fields()` | Returns the settings field definitions (must mirror `plugin.json` `fields`). |
-| `actions` property | Returns the action definitions (must mirror `plugin.json` `actions`). |
-| `_hide_rule_engine` | Evaluates channel name patterns and EPG state to decide hide/show. |
-| `_scheduler` | Handles the cron-like schedule for automatic scans. |
-| `dummy_epg_*` methods | Manages dummy EPG source creation and custom program templates. |
+| `run(action, params, context)` | Entry point for all action calls. Builds the merged settings and dispatches through a local `action_map` dict. |
+| `fields` property | Returns the settings field definitions, which must mirror `plugin.json` `fields`. Dispatcharr reads this live property, not the manifest, so help text belongs here. |
+| `actions` property | Returns the action definitions, which must mirror `plugin.json` `actions`. |
+| `_check_channel_should_hide` | Walks the configured rule list for one channel and returns the first rule that matches. |
+| `_check_hide_rule` | Evaluates a single rule tag against one channel. Every rule tag has a branch here. |
+| `_start_background_scheduler` / `_stop_background_scheduler` | Run the scan at the configured times, in Dispatcharr's own system timezone. |
+| `_get_or_create_managed_epg_source` | Creates and maintains the managed dummy EPG source, including the title, time and date patterns written onto it. |
 | `_export_csv` | Exports scan results to `/data/exports/`. |
+
+These names were checked against the source on 2026-09-02. An earlier version of this
+table listed four methods that do not exist (`get_fields`, `_action_map`,
+`_hide_rule_engine`, `_scheduler`), so confirm a name before relying on it.
 
 ECM state files (inside the container at `/data/`):
 
 - `event_channel_managarr_results.json` — last scan output
 - `event_channel_managarr_settings.json` — saved settings (on-disk cache)
 - `event_channel_managarr_last_run.json` — last-run timestamp
+- `event_channel_managarr_undated_first_seen.json` — per-channel first-seen record for channels whose names carry no date. Each entry holds the channel name, the date it was first seen and, for entries written by version `1.26.2450117` or later, the exact moment. `[UndatedAge:days]` uses the date; `[UndatedEnded]` uses the moment as well, to reject an inferred event window that closed before the channel existed.
+- `event_channel_managarr_ledger.jsonl` — one line per applied run, recording how many channels changed visibility. The README badge publishes the running total.
+- `event_channel_managarr_scan.lock` — guards against two scans running at once
+- `event_channel_managarr_version_check.json` — cache for the version check
 
 Channel visibility is per-profile via `ChannelProfileMembership.enabled`, not a flag on `Channel` itself.
 
-### `ecm_parsing.py` — Django-free date logic
+### `ecm_parsing.py` — Django-free date, time and event-window logic
 
-This sibling module was extracted so date-parsing logic can be unit-tested without a running Django/Dispatcharr environment. `plugin.py` imports it via a `sys.path` shim and delegates all date extraction to it. The module has no Django dependencies and can be imported with plain Python + `python-dateutil`.
+This sibling module was extracted so the most bug-prone logic can be unit-tested without a
+running Django or Dispatcharr environment. `plugin.py` imports it through a `sys.path` shim
+and delegates to it. The module has no Django dependencies and imports with plain Python
+plus `python-dateutil`; `pytz` is imported inside the one function that needs it, so the
+module still imports on a machine without it.
+
+It holds the date extraction, the clock-time extraction, the inferred event window used by
+the `[UndatedEnded]` hide rule, and the decision that rule makes. Putting the decision here
+rather than in `plugin.py` is deliberate: a rule left in `plugin.py` can only be tested by
+reading its source, which cannot distinguish a working comparison from a broken one.
+
+**Anything moved here must genuinely fail rather than guess.** An error handler in this
+module returns "no answer" instead of substituting a smaller number. Collapsing an
+unreadable duration to zero minutes does not fail open; it shortens the event window and
+hides a channel earlier than any configured value asked for.
 
 ### `plugin.json` — manifest
 
@@ -87,29 +125,73 @@ The manifest declares two top-level arrays that must stay in sync with `plugin.p
 
 ## Local Development & Deploy
 
-There is no local Python environment assumption. Development is: edit → copy into container → restart → verify.
+There is no local Python environment assumption. Development is: edit, run the tests, deploy
+the committed code into the container, reload, verify.
 
-### Quick deploy loop
+### Deploy loop
+
+Deploy the **whole package from the git index**, not a hand-written list of files from the
+working tree. Both shortcuts have caused real problems here: a three-file list omitted
+`ecm_profiles.py` when that file was the one that had changed, and copying the working tree
+ships Windows line endings and any private working files sitting in the directory.
 
 ```bash
-# Copy all three plugin files into the running container
-MSYS_NO_PATHCONV=1 docker cp Event-Channel-Managarr/plugin.py \
-    dispatcharr:/data/plugins/event-channel-managarr/plugin.py
+# Build the package from the committed code, with Unix line endings
+git -c core.autocrlf=false -c core.eol=lf archive --format=tar \
+    -o /tmp/ecm-deploy.tar HEAD:Event-Channel-Managarr
 
-MSYS_NO_PATHCONV=1 docker cp Event-Channel-Managarr/plugin.json \
-    dispatcharr:/data/plugins/event-channel-managarr/plugin.json
-
-MSYS_NO_PATHCONV=1 docker cp Event-Channel-Managarr/ecm_parsing.py \
-    dispatcharr:/data/plugins/event-channel-managarr/ecm_parsing.py
-
-# Restart (Dispatcharr imports plugin code at startup — restart is required)
-docker restart dispatcharr
-
-# Wait ~18 seconds, then verify the plugin loaded
-docker logs dispatcharr --since 30s | grep "Plugin v"
+# Clear the bytecode cache so a later .pyc is evidence of a real import
+docker exec -u dispatch dispatcharr sh -c \
+    'rm -rf /data/plugins/event-channel-managarr/__pycache__'
 ```
 
-> The `/deploy-plugin` skill (`.claude/skills/deploy-plugin/SKILL.md`) automates this entire loop.
+Copy the archive in from PowerShell, which does no path rewriting:
+
+```powershell
+docker cp /tmp/ecm-deploy.tar dispatcharr:/tmp/ecm-deploy.tar
+```
+
+Extract **as `dispatch`**. `docker cp` and `docker exec` default to root, and a root-owned
+file under `/data/plugins/` imports fine, so everything looks healthy while the application
+cannot write it:
+
+```bash
+docker exec -u dispatch dispatcharr sh -c \
+    'cd /data/plugins/event-channel-managarr && tar -xf /tmp/ecm-deploy.tar'
+docker exec dispatcharr sh -c 'rm -f /tmp/ecm-deploy.tar'
+
+# Must print 0
+docker exec dispatcharr sh -c \
+    'find /data/plugins/event-channel-managarr ! -user dispatch | wc -l'
+```
+
+This applies to probes too: a read-only `docker exec dispatcharr python3` that imports a
+plugin module runs as root and leaves a root-owned `__pycache__`.
+
+A matching version string is not evidence of matching code. Compare hashes of the deployed
+files against the archive before believing the deploy landed.
+
+### Reloading
+
+The files being on disk does not mean the workers are running them. Hot-reload keys on
+`plugin.json` mtime, but mtime alone triggers nothing: `loader.py` consults it only inside
+`discover_plugins()`, which runs at worker start or from the plugins API, never on a timer.
+So a correct deploy sits on disk with the old code running while every health signal reads
+green. Use the refresh control on the Plugins page, or restart the container. **A restart
+drops every in-flight stream, so check whether anything is streaming and ask first.**
+
+```bash
+# Verify the plugin loaded
+docker logs dispatcharr --since 5m | grep "Plugin v"
+```
+
+A `docker logs` search that finds nothing is not evidence of absence. It retains a limited
+window, `--since` reads a bare timestamp as local time so append `Z`, and on 2026-09-01 the
+stream stopped showing new output entirely after a restart. Prove the probe can find
+something before trusting a zero. When the log is not usable, two independent checks:
+`PluginConfig.version` changing to the new value during a reload, and evaluating the
+settings form through Dispatcharr's own `PluginManager.get()._normalize_fields(...)`, which
+proves what the deployed code would serve.
 
 ### Git Bash / MSYS path-mangling gotchas
 
@@ -198,12 +280,31 @@ docker exec dispatcharr sh -c "
 
 **`tests/unit/`** — Django-free, fast. Covers the bug-prone date-parsing logic in `ecm_parsing.py`. Fixtures were captured from live plugin behavior to prevent regressions. These tests can run with just `pytest` + `python-dateutil`; no Django or Dispatcharr stack needed.
 
-**`tests/contract/`** — Static analysis. Verifies:
-- Every action id in `Plugin.actions` (plugin.py) appears in `plugin.json` `actions`, and vice versa.
-- `PLUGIN_VERSION` in plugin.py matches `"version"` in plugin.json.
-- Basic structural sanity of both files.
+**`tests/contract/`** — Static analysis, because `plugin.py` imports Django at module scope
+and cannot be imported outside the container. Verifies, among other things:
 
-The contract tests run via AST/JSON parsing — no Django needed, and they run in seconds. If you add or rename an action and forget to update plugin.json (or vice versa), the contract test catches it immediately.
+- Every action id in `Plugin.actions` appears in `plugin.json` `actions`, and the reverse.
+- `PLUGIN_VERSION` in `plugin.py` matches `"version"` in `plugin.json`.
+- Every constant reached as `self.DEFAULT_X` exists on the `Plugin` class, not only on
+  `PluginConfig`. A missing mirror line raises only at run time.
+- `ecm_parsing.py` imports nothing from Django or Dispatcharr and holds no module-level
+  mutable state.
+- The three copies of the US channel-name patterns agree: the literal in `plugin.py` that is
+  written onto the EPG source, the copy in `ecm_profiles.py` used for routing, and the
+  fallback in `ecm_parsing.py` used for a channel bound to no source.
+- Every superseded pattern is still listed as a stock default, because the plugin only
+  replaces a pattern it recognises as one of its own, so an unlisted one is kept for ever.
+- The default hide-rule list is identical in `plugin.py`, `plugin.json` and
+  `config/ecm_settings.template.json`.
+- The body of a few named methods is unchanged, pinned by hash. Re-record a pin only with
+  the reason and the covering tests written beside it.
+
+**Know what a static test cannot do.** It reads structure, so it cannot tell a correct
+comparison from an inverted one. Six contract tests written for the `[UndatedEnded]` rule
+all passed against a version of that rule deliberately mutated to hide every channel. Where
+a decision matters, move it into `ecm_parsing.py` and unit-test the behaviour, and leave the
+contract test to hold the wiring in place. After writing a guard, break it on purpose and
+watch it fail.
 
 ---
 
@@ -287,37 +388,68 @@ PYTHONUTF8=1 python bump_version.py 1.26.1610837
 
 **Before tagging anything**, review open issues and PRs on both repos. Do not cut a release without confirming that no open bug, in-flight fix, or conflicting PR should be included first.
 
+Use the `gh` command line tool. An earlier version of this page told you to read the token
+out of Git Credential Manager; that is blocked, and reading a stored credential to reach the
+API is the wrong approach anyway.
+
 ```bash
-# Pull PAT from Git Credential Manager (do NOT print the token)
-TOKEN=$(printf "protocol=https\nhost=github.com\n\n" | git credential fill | sed -n 's/^password=//p')
+gh api "repos/PiratesIRC/Dispatcharr-Event-Channel-Managarr-Plugin/issues?state=open&per_page=100" \
+  --jq '.[] | "#\(.number) \(if .pull_request then "PR" else "issue" end) \(.title)"'
 
-# Open issues + PRs on this repo
-curl -s -H "Authorization: token $TOKEN" \
-    "https://api.github.com/repos/PiratesIRC/Dispatcharr-Event-Channel-Managarr-Plugin/issues?state=open&per_page=100"
-
-# Open PRs on the upstream marketplace repo
-curl -s -H "Authorization: token $TOKEN" \
-    "https://api.github.com/repos/Dispatcharr/Plugins/pulls?state=open&per_page=100"
+gh api "repos/Dispatcharr/Plugins/pulls?state=open&per_page=100" \
+  --jq '.[] | select(.title | test("event.channel";"i")) | "#\(.number) \(.title)"'
 ```
 
-Summarize the results and confirm scope before proceeding.
+The issues endpoint returns both issues and pull requests; a pull request carries a
+`pull_request` key. Summarise the results and confirm scope before proceeding.
 
 **Full release steps:**
 
-1. Review open issues/PRs on both repos (above). Confirm scope with the user.
-2. Bump version: `PYTHONUTF8=1 python bump_version.py [version]`
-3. Verify `PLUGIN_VERSION` in plugin.py matches `"version"` in plugin.json (the contract test checks this).
-4. Commit: `git add Event-Channel-Managarr/plugin.py Event-Channel-Managarr/plugin.json && git commit -m "chore: bump version to X.XX.XXXXXXX"`
-5. Tag and push: `git tag vX.XX.XXXXXXX && git push origin main --tags`
-6. Build the ZIP: `zip.cmd` (produces `Event-Channel-Managarr.zip`), then
-   **`python scripts/validate_zip.py Event-Channel-Managarr.zip`** — must print OK.
-   This guards bug-087: a zip with backslash path separators (as PowerShell
-   `Compress-Archive` / .NET Framework `ZipFile.CreateFromDirectory` produce) fails
-   install on Dispatcharr's Linux host with "missing plugin.py or package
-   __init__.py". `zip.cmd`'s 7-Zip output is fine; this is the regression gate.
-7. Create the GitHub release on `PiratesIRC/Dispatcharr-Event-Channel-Managarr-Plugin` with the ZIP as an asset.
-8. Open (or update) the marketplace PR to `Dispatcharr/Plugins`, copying `Event-Channel-Managarr/` into `plugins/event-channel-managarr/`.
-   - **Important:** always branch from `upstream/main`, not from the fork's main — the fork's main may carry stale unmerged upstream changes that contaminate the PR diff.
+1. Review open issues and pull requests on both repositories, as above. Confirm scope with
+   the operator.
+2. **Run the publish audit** before pushing and again before cutting the release:
+   `python ../.claude/skills/pre-publish-audit/audit_publish.py --worktree --rules .publish-audit.json`.
+   It scans the current tree only, while a push publishes every reachable commit, so scan
+   the new commits separately with `git rev-list --objects origin/main..HEAD` plus
+   `git cat-file -p` per blob. A clean result means nothing until you have watched the rules
+   fire: `python ../.claude/skills/pre-publish-audit/verify_deny_rules.py --rules .publish-audit.json`.
+3. Bump the version: `PYTHONUTF8=1 python bump_version.py`. Never hand-edit a version string.
+4. Confirm `PLUGIN_VERSION` in `plugin.py` matches `"version"` in `plugin.json`. The contract
+   test `tests/contract/test_manifest_parity.py` checks this.
+5. Update `docs/CHANGELOG.md` with the new version and a link to its release notes.
+6. Merge to `main`, then tag: `git tag vX.YY.DDDHHMM && git push origin main --tags`. Tags in
+   this repository carry the `v` prefix. Confirm the pushed authorship against what GitHub
+   reports, not against the local commit.
+7. Build the release asset **from the tag, using git archive**, so it contains the committed
+   bytes with Unix line endings:
+
+   ```bash
+   git -c core.autocrlf=false -c core.eol=lf archive --format=zip \
+       --prefix=Event-Channel-Managarr/ -o Event-Channel-Managarr.zip vX.YY.DDDHHMM
+   python scripts/validate_zip.py Event-Channel-Managarr.zip   # must print OK
+   ```
+
+   **Do not run `zip.cmd` from an agent shell**: it ends in `pause` and uses 7-Zip in add
+   mode, so it can carry stale files from a previous build. The `--prefix` is required;
+   every previous release asset has that top-level directory and a flat archive would
+   differ from all of them. Compare the entry names against the previous release's asset
+   every time. `validate_zip.py` guards against backslash path separators, which fail to
+   install on Dispatcharr's Linux host, but it does **not** check line endings; check those
+   separately by reading raw bytes.
+8. Create the GitHub release with that ZIP as an asset. Download the asset back and compare
+   it byte for byte with what you uploaded.
+9. Update the marketplace listing. **This listing is in `external` mode**, so the pull
+   request to `Dispatcharr/Plugins` changes only the `version` field in
+   `plugins/event-channel-managarr/plugin.json`. It does not copy plugin source anywhere; an
+   earlier version of this page described the `standard` mode procedure, which is wrong for
+   this plugin and would create a second copy that drifts.
+   - Always branch from `upstream/main`, never from the fork's main, which may carry stale
+     unmerged upstream changes that contaminate the diff.
+   - `source_url` keeps the `v` before `{version}` for this repository. The wrong form
+     returns 404 at publish time, not in the pull request, so nothing tells you.
+   - **A merged pull request is not a published listing.** Confirm by fetching
+     `https://dispatcharr.github.io/Plugins/manifest.json` and reading `latest_version`, not
+     `version`. The publish job does not retry, and the Pages deploy lags the merge.
 
 ---
 

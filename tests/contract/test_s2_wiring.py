@@ -68,14 +68,32 @@ import ecm_profiles  # noqa: E402
 # Both halves are covered by tests/unit/test_ecm_profiles.py (the guard, and the
 # names that must still parse unchanged) and by
 # tests/contract/test_us_pattern_parity.py.
+#
+# _get_or_create_managed_epg_source was re-recorded a FOURTH time on 2026-08-30.
+# Its us_time_pattern literal gained a boundary on each side of the clock time.
+# Without the trailing one the am or pm marker matched the opening letters of an
+# ordinary word, so "PPV 12 AMERICAN LEGENDS" read as midnight and
+# "ALI vs 8 AMATEUR BOUTS" as 8 o'clock. That was cosmetic while the pattern only
+# titled a guide entry, but the new [UndatedEnded] rule hides a channel on the
+# time this pattern returns, so a wrongly read time removed a channel from the
+# lineup. The same method also gained the superseded time pattern in its
+# stock_patterns set so existing installations upgrade, and its _py_named helper
+# now rewrites a named group with a regex rather than a blunt string replace,
+# because the blunt one would have turned the new lookbehind (?<! into (?P<! and
+# put a value in stock_patterns that could never match a real stored pattern.
+# All three halves are covered by tests/contract/test_us_pattern_parity.py (the
+# plugin.py literal still equals the ecm_profiles copy and the ecm_parsing
+# fallback, a word is no longer read as a meridiem, and the superseded pattern is
+# still listed as a stock default).
+#
 # The other three remain at their original S2 baseline values and must not be
 # touched without the same argument.
 FROZEN_BODIES = {
     "_attach_managed_epg": "b0126debd9231deb49625ca0404952679197b862bff6cd86c618eb46fe3b335e",
     "_detach_managed_epg": "9e8d367e7d0789715e04249dab786a494b7f6919a60d6f9c755029e8261b98ca",
     "_managed_override_ids": "5d41e55a7146863609792f31f20134469c090b51938c1ab67d0f34399c526d6c",
-    # re-recorded 2026-08-12, 2026-08-14 and 2026-08-29, see the notes above
-    "_get_or_create_managed_epg_source": "659f027f3869bd6590a417579f809d79383ff6b5d763ed67e8c225a61af78e95",
+    # re-recorded 2026-08-12, 2026-08-14, 2026-08-29 and 2026-08-30, see the notes above
+    "_get_or_create_managed_epg_source": "0bd2e478445ec189406b1924cf24972d057a769cd1980499be5dd57d88552656",
     # re-recorded 2026-08-12, see the note above
     "_localized_template_props": "8daf6f68b33352690f255dc6d7185546c0ea70596743e633b0403861c62e75dd",
 }

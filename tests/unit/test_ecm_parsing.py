@@ -7,7 +7,7 @@ Failing any of these tests means a regression in the parsing logic.
 """
 
 import pytest
-from datetime import datetime
+from datetime import date, datetime
 
 import ecm_parsing
 from ecm_parsing import (
@@ -184,3 +184,158 @@ def test_lock_is_stale_handles_bad_input():
     assert lock_is_stale(None, 1000.0, 900.0) is False
     assert lock_is_stale(0.0, None, 900.0) is False
     assert lock_is_stale(0.0, 1000.0, None) is False
+
+
+# --- [UndatedEnded]: a clock time with no date, and the window inferred from it ------
+
+@pytest.mark.parametrize("name, expected", [
+    ("Boxing 3 : MOSES vs HRGOVIC  4:00pm", (16, 0)),
+    ("PPV 07 - 8pm Main Card", (20, 0)),
+    ("EVENT 12 | 11:30 AM Coverage", (11, 30)),
+    ("PPV 02 - Championship Final", None),
+])
+def test_extract_time_of_day_reads_the_first_clock_time(name, expected):
+    assert ecm_parsing.extract_time_of_day(name) == expected
+
+
+def test_extract_time_of_day_uses_a_supplied_24_hour_pattern():
+    # The SE channel-name format carries a 24-hour clock and no am/pm marker.
+    name = "LIVE | GIRONA - REAL SOCIEDAD | Thu 14 May 19:55 CEST (SE)"
+    pattern = r"(?<hour>\d{1,2}):(?<minute>\d{2})"
+    assert ecm_parsing.extract_time_of_day(name, pattern) == (19, 55)
+
+
+def test_extract_time_of_day_falls_back_when_the_pattern_does_not_compile():
+    assert ecm_parsing.extract_time_of_day("PPV 07 - 8pm Main Card", "(unclosed") == (20, 0)
+
+
+def test_infer_undated_event_window_adds_duration_and_grace():
+    start, hide_after = ecm_parsing.infer_undated_event_window(
+        date(2026, 8, 30), 20, 0, "US/Eastern", 180, 1)
+    assert (start.year, start.month, start.day, start.hour) == (2026, 8, 30, 20)
+    # 20:00 plus a three hour programme plus one hour of grace is 00:00 the next day.
+    assert (hide_after.year, hide_after.month, hide_after.day, hide_after.hour) == (2026, 8, 31, 0)
+    assert start.tzinfo is not None and hide_after.tzinfo is not None
+
+
+def test_infer_undated_event_window_crosses_midnight():
+    start, hide_after = ecm_parsing.infer_undated_event_window(
+        date(2026, 8, 30), 22, 30, "US/Eastern", 240, 2)
+    assert (hide_after.month, hide_after.day, hide_after.hour, hide_after.minute) == (8, 31, 4, 30)
+
+
+def test_infer_undated_event_window_rejects_an_unknown_timezone():
+    assert ecm_parsing.infer_undated_event_window(
+        date(2026, 8, 30), 20, 0, "Mars/Olympus", 180, 1) is None
+
+
+# --- the hide decision itself, which the contract tests cannot exercise -------------
+
+def _eastern(year, month, day, hour, minute=0):
+    import pytz
+    return pytz.timezone("US/Eastern").localize(
+        datetime(year, month, day, hour, minute))
+
+
+def test_undated_event_has_not_ended_while_the_event_is_running():
+    # Event at 20:00, three hours long, one hour of grace, so it hides from 00:00.
+    _, hide_after = ecm_parsing.infer_undated_event_window(
+        date(2026, 8, 30), 20, 0, "US/Eastern", 180, 1)
+    assert ecm_parsing.undated_event_has_ended(
+        _eastern(2026, 8, 30, 21), hide_after) is False
+
+
+def test_undated_event_has_ended_once_the_window_closes():
+    _, hide_after = ecm_parsing.infer_undated_event_window(
+        date(2026, 8, 30), 20, 0, "US/Eastern", 180, 1)
+    assert ecm_parsing.undated_event_has_ended(
+        _eastern(2026, 8, 31, 1), hide_after) is True
+
+
+def test_the_grace_period_moves_the_boundary():
+    """A longer grace period must keep the channel visible at a moment a shorter one hides.
+
+    Without this, a rule that ignored the configured grace period entirely would still
+    pass every other test in this file.
+    """
+    moment = _eastern(2026, 8, 31, 3)
+    _, one_hour = ecm_parsing.infer_undated_event_window(
+        date(2026, 8, 30), 20, 0, "US/Eastern", 180, 1)
+    _, six_hours = ecm_parsing.infer_undated_event_window(
+        date(2026, 8, 30), 20, 0, "US/Eastern", 180, 6)
+    assert ecm_parsing.undated_event_has_ended(moment, one_hour) is True
+    assert ecm_parsing.undated_event_has_ended(moment, six_hours) is False
+
+
+def test_a_window_that_closed_before_the_channel_appeared_does_not_hide_it():
+    """A channel seen at 23:00 named for a 1:00am event is named for the NEXT 1:00am.
+
+    The first-seen date is today, so the inferred window is 01:00 to 05:00 THIS morning,
+    already past. Hiding on it would remove a channel two hours before its event starts.
+    """
+    _, hide_after = ecm_parsing.infer_undated_event_window(
+        date(2026, 8, 30), 1, 0, "US/Eastern", 180, 1)
+    first_seen_at = _eastern(2026, 8, 30, 23)
+    assert ecm_parsing.undated_event_has_ended(
+        _eastern(2026, 8, 30, 23), hide_after, first_seen_at) is False
+    # And it stays visible later that night, rather than only at the instant of the scan.
+    assert ecm_parsing.undated_event_has_ended(
+        _eastern(2026, 8, 31, 0, 30), hide_after, first_seen_at) is False
+
+
+def test_a_record_without_a_first_seen_moment_still_hides_a_finished_event():
+    """An entry written by an earlier version carries the date only, and must still work."""
+    _, hide_after = ecm_parsing.infer_undated_event_window(
+        date(2026, 8, 30), 20, 0, "US/Eastern", 180, 1)
+    assert ecm_parsing.undated_event_has_ended(
+        _eastern(2026, 8, 31, 1), hide_after, None) is True
+
+
+def test_undated_event_has_ended_is_false_when_there_is_no_window():
+    assert ecm_parsing.undated_event_has_ended(_eastern(2026, 8, 30, 23), None) is False
+    assert ecm_parsing.undated_event_has_ended(None, _eastern(2026, 8, 30, 23)) is False
+
+
+# --- failures must abandon the window, never shorten it -----------------------------
+
+def test_a_pattern_that_matches_nothing_means_the_name_carries_no_time():
+    """A narrowed pattern must be respected, not silently replaced by the built-in one.
+
+    The SE pattern reads a 24 hour clock. Against a name written in am/pm it matches
+    nothing, and the honest answer is that this pattern finds no time here. Falling back
+    to the built-in am/pm pattern would revert the narrowing the user configured.
+    """
+    se_pattern = r"(?<hour>\d{1,2}):(?<minute>\d{2})"
+    assert ecm_parsing.extract_time_of_day("PPV 07 - 8pm Main Card", se_pattern) is None
+
+
+def test_a_pattern_that_does_not_compile_still_falls_back_to_the_builtin():
+    """A typing mistake must not stop the name being read at all."""
+    assert ecm_parsing.extract_time_of_day("PPV 07 - 8pm Main Card", "(unclosed") == (20, 0)
+
+
+def test_time_pattern_problem_reports_only_a_pattern_that_cannot_compile():
+    assert ecm_parsing.time_pattern_problem(None) is None
+    assert ecm_parsing.time_pattern_problem("") is None
+    # The JavaScript named-group form is what Dispatcharr stores, so it is not a problem.
+    assert ecm_parsing.time_pattern_problem(r"(?<hour>\d{1,2}):(?<minute>\d{2})") is None
+    problem = ecm_parsing.time_pattern_problem("(unclosed")
+    assert isinstance(problem, str) and problem
+
+
+def test_an_unreadable_duration_abandons_the_window_rather_than_shortening_it():
+    """Collapsing to zero would hide the channel earlier than any configured value."""
+    assert ecm_parsing.infer_undated_event_window(
+        date(2026, 8, 30), 20, 0, "US/Eastern", "not a number", 1) is None
+
+
+def test_an_unreadable_grace_period_abandons_the_window():
+    assert ecm_parsing.infer_undated_event_window(
+        date(2026, 8, 30), 20, 0, "US/Eastern", 180, "not a number") is None
+
+
+def test_an_unreadable_minute_abandons_the_time_rather_than_assuming_oclock():
+    """A user pattern can capture a non-numeric minute. Assuming :00 would move the
+    inferred start up to 59 minutes earlier and the end of the window with it."""
+    pattern = r"(?<hour>\d{1,2}):(?<minute>[A-Za-z]{2})"
+    assert ecm_parsing.extract_time_of_day("Event 7:xx tonight", pattern) is None

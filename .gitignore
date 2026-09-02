@@ -83,6 +83,14 @@ bump_version.py
 message.txt
 *_dry_run_*.csv
 *_Dry_Run_*.csv
+# The two patterns above do NOT match the filenames the plugin actually writes,
+# which are event_channel_managarr_dryrun_*.csv (no underscore inside "dryrun")
+# and event_channel_managarr_applied_*.csv. Four such files sat untracked at the
+# repo root from August 2026 until this was noticed on 2026-09-02. They carry the
+# channel names of a real installation. Scanned against .publish-audit.json at the
+# time and none matched a deny rule, so nothing was leaked, but untracked is not
+# safe: one `git add -A` commits them.
+event_channel_managarr_*.csv
 
 # Internal planning / design docs are TRACKED (un-ignored 2026-07-18).
 # They cannot reach end users regardless: release zips are built from the

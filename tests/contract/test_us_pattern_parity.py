@@ -55,6 +55,64 @@ def test_plugin_literal_matches_the_us_et_profile(literal_name, profile_attr):
     )
 
 
+def test_the_parsing_fallback_time_pattern_matches_the_plugin_literal():
+    """A THIRD copy of the time pattern lives in ecm_parsing.py.
+
+    plugin.py's us_time_pattern is written onto the managed EPG source, so it is what
+    [UndatedEnded] uses for a channel bound to that source. ecm_parsing._DEFAULT_TIME_OF_DAY
+    is what the same rule uses for a channel bound to nothing. If the two drift, the rule
+    reads a different time depending on whether the channel happens to be bound yet, and
+    nothing else would report it.
+
+    The plugin literal is in the JavaScript named-group form because Dispatcharr's frontend
+    validator rejects the Python one (issue 21), so it is converted before comparing.
+    """
+    import re
+
+    import ecm_parsing
+
+    js_form = _string_literal_assigned_to("us_time_pattern")
+    python_form = re.sub(r"\(\?<(?![=!])", "(?P<", js_form)
+    assert python_form == ecm_parsing._DEFAULT_TIME_OF_DAY, (
+        "plugin.py's us_time_pattern and ecm_parsing._DEFAULT_TIME_OF_DAY have drifted "
+        "apart. A channel bound to the managed EPG source and a channel bound to nothing "
+        "would then have their event times read by different patterns."
+    )
+
+
+def test_the_time_pattern_does_not_read_a_word_as_a_meridiem():
+    """The am or pm marker must not match the opening letters of an ordinary word.
+
+    Without a trailing boundary "PPV 12 AMERICAN LEGENDS" parses as midnight, and
+    [UndatedEnded] then hides that channel on a time that is not in its name. This
+    asserts the behaviour rather than the presence of the guard, so any future rewrite
+    of the pattern that reintroduces the fault fails here.
+    """
+    import ecm_parsing
+
+    assert ecm_parsing.extract_time_of_day("PPV 12 AMERICAN LEGENDS") is None
+    assert ecm_parsing.extract_time_of_day("Boxing 3 : ALI vs 8 AMATEUR BOUTS") is None
+    assert ecm_parsing.extract_time_of_day("Fight 5 : 9 Ammo vs X") is None
+    # A real clock time in the same shape of name must still be read.
+    assert ecm_parsing.extract_time_of_day(
+        "Boxing 3 : MOSES vs HRGOVIC  4:00pm") == (16, 0)
+
+
+def test_the_superseded_time_pattern_is_still_listed_as_a_stock_default():
+    """An installation carries the OLD time pattern on its EPG source row.
+
+    Same mechanism as the title pattern below: plugin.py only re-applies its default to
+    a pattern it recognises as one of its own, so an unlisted superseded default is kept
+    for ever and that installation never receives the word-boundary guard.
+    """
+    source = PLUGIN_PY.read_text(encoding="utf-8")
+    superseded = r"(?<hour>\d{1,2})(?::(?<minute>\d{2}))?\s*(?<ampm>[AaPp][Mm])"
+    assert f'r"{superseded}"' in source, (
+        "the unbounded US time pattern is no longer listed among the stock defaults, so "
+        "installations still carrying it keep reading a word as a clock time"
+    )
+
+
 def test_the_superseded_pattern_is_still_listed_as_a_stock_default():
     """An existing installation carries the OLD pattern on its EPG source row.
 

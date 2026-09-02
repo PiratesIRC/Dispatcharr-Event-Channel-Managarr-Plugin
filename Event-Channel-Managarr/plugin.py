@@ -56,7 +56,7 @@ _scheduler_lock = threading.Lock()  # Prevent concurrent scheduler starts
 class PluginConfig:
     """Centralized configuration constants for Event Channel Managarr."""
 
-    PLUGIN_VERSION = "1.26.2420322"
+    PLUGIN_VERSION = "1.26.2450117"
 
     # Fallback timezone when Dispatcharr's global time zone is unset/invalid.
     DEFAULT_TIMEZONE = "UTC"
@@ -65,13 +65,18 @@ class PluginConfig:
     DEFAULT_NAME_SOURCE = "Channel_Name"  # Options: "Channel_Name" or "Stream_Name"
 
     # Default hide rules priority (comma-separated)
-    DEFAULT_HIDE_RULES = "[InactiveRegex],[BlankName],[WrongDayOfWeek],[NoEventPattern],[EmptyPlaceholder],[PastDate:0],[FutureDate:2],[UndatedAge:2],[ShortDescription],[ShortChannelName]"
+    DEFAULT_HIDE_RULES = "[InactiveRegex],[BlankName],[WrongDayOfWeek],[NoEventPattern],[EmptyPlaceholder],[PastDate:0],[FutureDate:2],[UndatedEnded],[UndatedAge:2],[ShortDescription],[ShortChannelName]"
 
     # Default duplicate handling strategy
     DEFAULT_DUPLICATE_STRATEGY = "lowest_number"  # Options: "lowest_number", "highest_number", "longest_name"
 
     # Default grace period for past date rule (in hours)
     DEFAULT_PAST_DATE_GRACE_HOURS = "4"
+
+    # Default grace period after an undated event's inferred end, in hours. Events
+    # overrun, so the channel stays visible for this long past the computed end
+    # before [UndatedEnded] hides it.
+    DEFAULT_UNDATED_EVENT_GRACE_HOURS = "1"
 
     # Default automatic EPG removal on hide
     DEFAULT_AUTO_REMOVE_EPG = True
@@ -251,6 +256,7 @@ class Plugin:
     DEFAULT_HIDE_RULES = PluginConfig.DEFAULT_HIDE_RULES
     DEFAULT_DUPLICATE_STRATEGY = PluginConfig.DEFAULT_DUPLICATE_STRATEGY
     DEFAULT_PAST_DATE_GRACE_HOURS = PluginConfig.DEFAULT_PAST_DATE_GRACE_HOURS
+    DEFAULT_UNDATED_EVENT_GRACE_HOURS = PluginConfig.DEFAULT_UNDATED_EVENT_GRACE_HOURS
     DEFAULT_AUTO_REMOVE_EPG = PluginConfig.DEFAULT_AUTO_REMOVE_EPG
     DEFAULT_SCHEDULED_CSV_EXPORT = PluginConfig.DEFAULT_SCHEDULED_CSV_EXPORT
     DEFAULT_AUTO_RESCAN_ON_M3U_REFRESH = PluginConfig.DEFAULT_AUTO_RESCAN_ON_M3U_REFRESH
@@ -370,7 +376,7 @@ class Plugin:
                 "type": "text",
                 "default": self.DEFAULT_HIDE_RULES,
                 "placeholder": "[BlankName],[NoEventPattern],[EmptyPlaceholder],[PastDate:0],[FutureDate:2],[UndatedAge:2],[ShortDescription],[ShortChannelName]",
-                "help_text": "The rules that hide a channel, written as comma-separated tags. They are read left to right and the first tag that matches hides the channel, so put the rules you trust most first. A tag left out of this list is never applied. Some tags take a number after a colon, for example [PastDate:0] or [UndatedAge:2]. Available tags: [NoEPG], [BlankName], [WrongDayOfWeek], [NoEventPattern], [EmptyPlaceholder], [ShortDescription], [ShortDescription:chars], [ShortChannelName], [ShortChannelName:chars], [NumberOnly], [PastDate:days], [PastDate:days:Xh], [FutureDate:days], [UndatedAge:days], [InactiveRegex]. [ShortDescription] uses 15 characters and [ShortChannelName] 25 unless you give them a number.",
+                "help_text": "The rules that hide a channel, written as comma-separated tags. They are read left to right and the first tag that matches hides the channel, so put the rules you trust most first. A tag left out of this list is never applied. Some tags take a number after a colon, for example [PastDate:0] or [UndatedAge:2]. Available tags: [NoEPG], [BlankName], [WrongDayOfWeek], [NoEventPattern], [EmptyPlaceholder], [ShortDescription], [ShortDescription:chars], [ShortChannelName], [ShortChannelName:chars], [NumberOnly], [PastDate:days], [PastDate:days:Xh], [FutureDate:days], [UndatedAge:days], [UndatedEnded], [UndatedEnded:hours], [InactiveRegex]. [UndatedEnded] applies to a name that carries a clock time but no date: it hides the channel once the first-seen date plus that time plus the event duration plus the grace period has passed, and uses the Undated Event Grace Period setting unless you give it a number of hours. [ShortDescription] uses 15 characters and [ShortChannelName] 25 unless you give them a number.",
             },
             {
                 "id": "regex_channels_to_ignore",
@@ -402,6 +408,13 @@ class Plugin:
                 "type": "number",
                 "default": int(self.DEFAULT_PAST_DATE_GRACE_HOURS),
                 "help_text": "How many whole hours after midnight a channel dated for an earlier day stays visible before the [PastDate] rule hides it. Raise it for events that run past midnight.",
+            },
+            {
+                "id": "undated_event_grace_hours",
+                "label": "🕒 Undated Event Grace Period (Hours)",
+                "type": "number",
+                "default": int(self.DEFAULT_UNDATED_EVENT_GRACE_HOURS),
+                "help_text": "How many whole hours past an undated event's inferred end a channel stays visible before the [UndatedEnded] rule hides it. The inferred end is the date the channel was first seen, plus the time read from its name, plus the event duration. Raise it for events that overrun.",
             },
             {
                 "id": "_section_duplicates",
@@ -939,12 +952,21 @@ class Plugin:
             logger.error(f"{LOG_PREFIX} Failed to save undated tracker: {e}")
             return False
 
-    def _record_undated_channel(self, tracker, channel_id, channel_name, today_str):
-        """Record/refresh a channel in the undated tracker. Returns the entry."""
+    def _record_undated_channel(self, tracker, channel_id, channel_name, today_str,
+                                now_iso=None):
+        """Record/refresh a channel in the undated tracker. Returns the entry.
+
+        `now_iso` stamps the entry with the moment it was created, which [UndatedEnded]
+        needs in order to reject an inferred event window that closed before the channel
+        was ever seen. It is optional so an entry written by an older version, which
+        carries the date only, still loads and is still usable by [UndatedAge:N].
+        """
         key = str(channel_id)
         entry = tracker.get(key)
         if not entry or entry.get("name") != channel_name:
             entry = {"first_seen": today_str, "name": channel_name}
+            if now_iso:
+                entry["first_seen_at"] = now_iso
             tracker[key] = entry
         return entry
 
@@ -1143,6 +1165,105 @@ class Plugin:
         return ecm_parsing.extract_date_from_channel_name(
             channel_name, date_format=date_format, prefer=prefer, logger=logger
         )
+
+
+    def _warn_undated_once(self, logger, key, message):
+        """Report a configuration problem once per scan instead of once per channel.
+
+        A scan evaluates every channel in scope, over 1400 on the installation this was
+        measured on, so an unguarded warning would repeat a single mistyped setting once
+        per channel and bury the log. `key` identifies the problem, not the channel, so
+        the same mistake on the same EPG source is reported once however many channels
+        it affects.
+
+        The set is created on demand rather than read with a default, so an entry path
+        that never primed it still warns. A missing set must not turn into silence: the
+        whole point of these messages is that the substitution they describe is otherwise
+        invisible (bug-139 is the same shape, where settings-derived instance state read
+        with getattr failed silently on an unprimed path).
+        """
+        seen = getattr(self, '_undated_warned', None)
+        if seen is None:
+            seen = set()
+            self._undated_warned = seen
+        if key in seen:
+            return
+        seen.add(key)
+        logger.warning(f"{LOG_PREFIX} {message}")
+
+    def _undated_event_properties(self, channel, settings, logger=None):
+        """The time pattern, timezone and duration to use for one undated channel.
+
+        A channel bound to a dummy EPG source is rendered from that source's own
+        properties, so an installation running more than one managed source (one per
+        provider timezone, for example) must infer the event window from the source the
+        channel actually sits on. Anything the source does not supply falls back to the
+        plugin settings, which is also the whole answer for a channel that is bound to
+        nothing yet.
+
+        Never raises: a missing relation, a missing property or a property of the wrong
+        shape falls back rather than failing, because the caller must be able to leave
+        the channel visible instead of hiding it on a bad read.
+
+        `logger` is optional only so an existing caller without one keeps working. When
+        it is given, every substitution this method makes for a property that IS present
+        but unreadable is reported once per scan. An ABSENT property is not reported:
+        that is the ordinary case and says nothing about a mistake.
+        """
+        tz_name = str(settings.get("dummy_epg_event_timezone",
+                                   self.DEFAULT_DUMMY_EPG_TIMEZONE)).strip()
+        try:
+            duration_hours = int(str(settings.get(
+                "dummy_epg_event_duration_hours", self.DEFAULT_EVENT_DURATION_HOURS)).strip())
+        except (ValueError, TypeError):
+            duration_hours = int(self.DEFAULT_EVENT_DURATION_HOURS)
+        if duration_hours <= 0:
+            duration_hours = int(self.DEFAULT_EVENT_DURATION_HOURS)
+        duration_minutes = duration_hours * 60
+        time_pattern = None
+
+        try:
+            source = channel.epg_data.epg_source
+        except AttributeError:
+            source = None
+        if source is not None and getattr(source, "source_type", None) == "dummy":
+            props = source.custom_properties
+            if isinstance(props, dict):
+                if props.get("time_pattern"):
+                    time_pattern = props["time_pattern"]
+                    problem = ecm_parsing.time_pattern_problem(time_pattern)
+                    if problem and logger is not None:
+                        self._warn_undated_once(
+                            logger, f"time_pattern:{source.id}",
+                            f"[UndatedEnded] EPG source {source.id} "
+                            f"({getattr(source, 'name', '?')}) has a time pattern that "
+                            f"cannot be compiled ({problem}), so the built-in pattern is "
+                            f"being used instead of yours. Fix the Time Pattern on that "
+                            f"source in Dispatcharr, or this rule reads event times with "
+                            f"a pattern you did not choose.")
+                if props.get("timezone"):
+                    tz_name = str(props["timezone"]).strip()
+                raw_duration = props.get("program_duration")
+                if raw_duration is not None:
+                    try:
+                        from_source = int(raw_duration)
+                    except (TypeError, ValueError):
+                        # Present but unreadable is a typing mistake, not the ordinary
+                        # absent case, and the substituted value is reported in the hide
+                        # reason as though it were configured. Say so.
+                        if logger is not None:
+                            self._warn_undated_once(
+                                logger, f"program_duration:{source.id}",
+                                f"[UndatedEnded] EPG source {source.id} "
+                                f"({getattr(source, 'name', '?')}) has a program duration "
+                                f"of {raw_duration!r}, which is not a whole number of "
+                                f"minutes. Falling back to the Event Duration setting "
+                                f"({duration_minutes // 60}h), which may hide channels "
+                                f"earlier than you intended.")
+                    else:
+                        if from_source > 0:
+                            duration_minutes = from_source
+        return time_pattern, tz_name, duration_minutes
 
 
     def _check_hide_rule(self, rule_name, rule_param, channel, channel_name, logger, settings):
@@ -1451,6 +1572,97 @@ class Plugin:
             age_days = (today - first_seen).days
             if age_days > threshold:
                 return True, f"[UndatedAge:{threshold}] No date in name; first seen {first_seen.isoformat()} ({age_days} days ago, threshold: {threshold})"
+            return False, None
+
+        elif rule_name == "UndatedEnded":
+            # A name with a clock time but no date. [UndatedAge:N] can only count whole
+            # calendar days, so it hides a late event at midnight or keeps a finished one
+            # until tomorrow. This builds the real window instead: the date the channel
+            # was first seen, plus the time in the name, plus the programme duration and
+            # the configured grace period.
+            #
+            # Fails open at every step. A channel with no record, no parseable time or an
+            # unusable timezone returns no match, which leaves it visible and lets
+            # [UndatedAge:N] later in the rule list make the decision it makes today.
+            tracker = getattr(self, '_undated_tracker', None) or {}
+            entry = tracker.get(str(channel.id))
+            if not entry:
+                return False, None
+            try:
+                first_seen = datetime.strptime(entry['first_seen'], '%Y-%m-%d').date()
+            except (KeyError, ValueError, TypeError):
+                return False, None
+
+            time_pattern, tz_name, duration_minutes = self._undated_event_properties(
+                channel, settings, logger)
+            parsed_time = ecm_parsing.extract_time_of_day(channel_name, time_pattern)
+            if parsed_time is None:
+                return False, None
+
+            # The tag may carry its own hour count, as [UndatedEnded:2]. Without one the
+            # rule reads the setting, which is what the requester asked for in issue 28.
+            if isinstance(rule_param, tuple):
+                grace_hours = rule_param[0]
+            elif rule_param is not None:
+                grace_hours = rule_param
+            else:
+                raw_grace = settings.get("undated_event_grace_hours",
+                                         self.DEFAULT_UNDATED_EVENT_GRACE_HOURS)
+                try:
+                    # Read through float first. The field is declared as a number, so a
+                    # value like 12.5 can be stored, and int() on that string raises. It
+                    # used to fall back to the shipped default of 1 hour, turning a
+                    # deliberate 12 hour grace period into an 11.5 hour early hide.
+                    grace_hours = int(float(str(raw_grace).strip()))
+                except (ValueError, TypeError):
+                    grace_hours = int(self.DEFAULT_UNDATED_EVENT_GRACE_HOURS)
+                    self._warn_undated_once(
+                        logger, "grace_setting",
+                        f"[UndatedEnded] Undated Event Grace Period is {raw_grace!r}, "
+                        f"which is not a number of hours. Using the default of "
+                        f"{grace_hours}h instead, which may hide channels earlier than "
+                        f"you intended.")
+
+            window = ecm_parsing.infer_undated_event_window(
+                first_seen, parsed_time[0], parsed_time[1], tz_name,
+                duration_minutes, grace_hours)
+            if window is None:
+                # The timezone is the input most likely to be wrong, and it is the one a
+                # person types. A mistyped zone also gives Dispatcharr's own renderer the
+                # wrong programme times, so this rule may be the only thing that notices.
+                self._warn_undated_once(
+                    logger, f"window:{tz_name}",
+                    f"[UndatedEnded] Cannot build an event window using timezone "
+                    f"{tz_name!r}. Channels with an undated event time are being left "
+                    f"visible for this rule to avoid hiding them wrongly. Check the "
+                    f"Timezone on the dummy EPG source, or the Channel Name Event "
+                    f"Timezone setting.")
+                return False, None
+            start, hide_after = window
+
+            tz_str = self._get_system_timezone(settings)
+            try:
+                local_tz = pytz.timezone(tz_str)
+            except pytz.exceptions.UnknownTimeZoneError:
+                local_tz = pytz.timezone(self.DEFAULT_TIMEZONE)
+
+            # The moment this channel was first recorded, when the record carries one.
+            # A record written before this stamp existed carries the date only and
+            # applies no such check, which keeps the rule working for it.
+            first_seen_at = None
+            raw_first_seen_at = entry.get('first_seen_at')
+            if raw_first_seen_at:
+                try:
+                    first_seen_at = datetime.fromisoformat(raw_first_seen_at)
+                except (TypeError, ValueError):
+                    first_seen_at = None
+
+            if ecm_parsing.undated_event_has_ended(
+                    datetime.now(local_tz), hide_after, first_seen_at):
+                return True, (
+                    f"[UndatedEnded] No date in name; first seen {first_seen.isoformat()}, "
+                    f"inferred start {start.strftime('%m/%d %I:%M %p %Z')} "
+                    f"(+{duration_minutes // 60}h duration, {grace_hours}h grace)")
             return False, None
 
         elif rule_name == "InactiveRegex":
@@ -2476,7 +2688,13 @@ class Plugin:
             r"(?=\s*\(|\s+\d{1,2}(?::\d{2})?\s*[AaPp][Mm]|"
             r"\s+(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)\s+\d+|$)"
         )
-        us_time_pattern = r"(?<hour>\d{1,2})(?::(?<minute>\d{2}))?\s*(?<ampm>[AaPp][Mm])"
+        # The trailing (?![A-Za-z]) is load-bearing: without it the am/pm marker matches the
+        # first two letters of an ordinary word, so "PPV 12 AMERICAN LEGENDS" reads as
+        # midnight and "ALI vs 8 AMATEUR BOUTS" as 8 o'clock. That was harmless while the
+        # pattern only titled a guide entry, but [UndatedEnded] hides a channel on the time
+        # it returns. The leading (?<![\d:]) stops a match beginning inside a longer number
+        # or inside a clock time, the same hazard bug-146 fixed for the title pattern.
+        us_time_pattern = r"(?<![\d:])(?<hour>\d{1,2})(?::(?<minute>\d{2}))?\s*(?<ampm>[AaPp][Mm])(?![A-Za-z])"
         us_date_pattern = r"\b(?<month>\d{1,2})[./](?<day>\d{1,2})(?:[./](?<year>\d{2,4}))?\b"
 
         # Format: "SE" (pipe-delimited, 24h time, named month):
@@ -2555,7 +2773,12 @@ class Plugin:
         PATTERN_KEYS = ("title_pattern", "time_pattern", "date_pattern")
 
         def _py_named(p):
-            return p.replace("(?<", "(?P<")
+            # Rewrites a JavaScript named group (?<name> into the Python (?P<name> form
+            # while leaving a lookbehind (?<= or (?<! alone. A blunt string replace would
+            # turn (?<! into (?P<! and put a pattern in stock_patterns that could never
+            # match a real stored value, which would silently stop that value being
+            # recognised as a plugin default and therefore stop it being upgraded.
+            return re.sub(r"\(\?<(?![=!])", "(?P<", p)
 
         # Original shipped defaults (commit b1ef257-era): mandatory ":minute" leading time
         # and optional am/pm. Carried by ~22 early releases' source rows.
@@ -2567,6 +2790,10 @@ class Plugin:
             r"\s+(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)\s+\d+|$)"
         )
         _orig_time = r"(?P<hour>\d{1,2}):(?P<minute>\d{2})\s*(?P<ampm>[AaPp][Mm])?"
+
+        # Previous default, shipped through 1.26.2422156: no boundary either side of the
+        # clock time, so the am/pm marker could match the opening letters of a word.
+        _prev_us_time_unbounded = r"(?<hour>\d{1,2})(?::(?<minute>\d{2}))?\s*(?<ampm>[AaPp][Mm])"
 
         # Previous default (pre bug-051, JS form as stored on live sources): required a
         # PPV/LIVE prefix, so bare "EVENT N:" names fell to the renderer fallback. Listed
@@ -2616,6 +2843,7 @@ class Plugin:
                               _py_named(_prev_us_title_unguarded_clock_time),
                               se_title_pattern, _py_named(se_title_pattern)},
             "time_pattern": {us_time_pattern, _py_named(us_time_pattern), _orig_time,
+                             _prev_us_time_unbounded, _py_named(_prev_us_time_unbounded),
                              se_time_pattern, _py_named(se_time_pattern)},
             "date_pattern": {us_date_pattern, _py_named(us_date_pattern),
                              se_date_pattern, _py_named(se_date_pattern)},
@@ -3176,6 +3404,9 @@ class Plugin:
             # Load undated-channel first-seen tracker (used by [UndatedAge:N] rule)
             self._undated_tracker = self._load_undated_tracker(logger)
             tracker_before = len(self._undated_tracker)
+            # Cleared per scan so a configuration problem is reported once on every run
+            # rather than once ever, which would hide it from every later run's log.
+            self._undated_warned = set()
             tz_str = self._get_system_timezone(settings)
             try:
                 local_tz = pytz.timezone(tz_str)
@@ -3183,8 +3414,13 @@ class Plugin:
                 local_tz = pytz.timezone(self.DEFAULT_TIMEZONE)
             # Capture once per scan so records and rule evaluations agree even if
             # the scan crosses local midnight.
-            self._undated_today_str = datetime.now(local_tz).date().isoformat()
+            scan_started_at = datetime.now(local_tz)
+            self._undated_today_str = scan_started_at.date().isoformat()
             today_str = self._undated_today_str
+            # The moment a first-seen record is stamped with, kept beside the date so
+            # [UndatedEnded] can tell that an inferred event window closed before the
+            # channel was ever visible. A date alone cannot express that.
+            self._undated_now_iso = scan_started_at.isoformat()
             tracked_this_scan = set()
 
             results = []
@@ -3263,7 +3499,8 @@ class Plugin:
                 # Update undated-channel tracker: record channels with no extractable date,
                 # drop those that now have a date.
                 if self._extract_date_from_channel_name(channel_name, logger, settings) is None:
-                    self._record_undated_channel(self._undated_tracker, channel.id, channel_name, today_str)
+                    self._record_undated_channel(self._undated_tracker, channel.id, channel_name, today_str,
+                                                 now_iso=getattr(self, '_undated_now_iso', None))
                     tracked_this_scan.add(str(channel.id))
                 else:
                     self._undated_tracker.pop(str(channel.id), None)
@@ -3530,6 +3767,7 @@ class Plugin:
                     "regex_mark_inactive",
                     "regex_force_visible",
                     "past_date_grace_hours",
+                    "undated_event_grace_hours",
                     "duplicate_strategy",
                     "keep_duplicates",
                     "auto_set_dummy_epg_on_hide",

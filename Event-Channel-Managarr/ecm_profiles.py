@@ -230,7 +230,7 @@ US_ET = Profile(
         r"\s+(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)\s+\d+|$)"
     ),
     date_pattern=r"\b(?<month>\d{1,2})[./](?<day>\d{1,2})(?:[./](?<year>\d{2,4}))?\b",
-    time_pattern=r"(?<hour>\d{1,2})(?::(?<minute>\d{2}))?\s*(?<ampm>[AaPp][Mm])",
+    time_pattern=r"(?<![\d:])(?<hour>\d{1,2})(?::(?<minute>\d{2}))?\s*(?<ampm>[AaPp][Mm])(?![A-Za-z])",
     timezone="America/New_York",
     output_timezone="America/Chicago",
     program_duration_minutes=240,

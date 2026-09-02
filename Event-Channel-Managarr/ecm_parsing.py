@@ -16,7 +16,7 @@ from __future__ import annotations
 
 import logging
 import re
-from datetime import datetime
+from datetime import datetime, time, timedelta
 
 LOG = logging.getLogger("event_channel_managarr.parsing")
 
@@ -340,3 +340,182 @@ def short_channel_name_match(channel_name, threshold=SHORT_CHANNEL_NAME_DEFAULT)
     if len(normalized) < threshold:
         return len(normalized)
     return None
+
+
+# --- undated event windows ------------------------------------------------------
+#
+# A channel name carrying a clock time but no date, such as
+# "Boxing 3 : MOSES vs HRGOVIC  4:00pm". [UndatedAge:N] can only count whole
+# calendar days for such a name, so it hides a late event at midnight and keeps a
+# finished one until the next day. These two helpers build the real window instead:
+# the date the channel was first seen, the time read from the name, the programme
+# duration, and a grace period for an event that overruns (issue 28).
+
+# The way a US event channel name writes a clock time: an hour, an optional
+# :minute, and an am or pm marker. The marker is REQUIRED here so a bare slot
+# number, such as the 07 in "PPV 07 - Main Card", is not read as 7 o'clock.
+#
+# Both guards are load-bearing. Without the trailing (?![A-Za-z]) the marker matches
+# the opening letters of an ordinary word, so "PPV 12 AMERICAN LEGENDS" reads as
+# midnight and "ALI vs 8 AMATEUR BOUTS" as 8 o'clock, and [UndatedEnded] would hide
+# such a channel on a time that is not in its name at all. The leading (?<![\d:])
+# stops a match beginning inside a longer number or inside a clock time.
+#
+# This must stay equal to `us_time_pattern` in plugin.py, which is the copy written
+# onto the managed EPG source and therefore the one used for any channel bound to it.
+# tests/contract/test_us_pattern_parity.py holds the two together.
+_DEFAULT_TIME_OF_DAY = (
+    r"(?<![\d:])(?P<hour>\d{1,2})(?::(?P<minute>\d{2}))?\s*(?P<ampm>[AaPp][Mm])(?![A-Za-z])")
+
+# Rewrites a JavaScript named group (?<name> into the Python (?P<name> form while
+# leaving a lookbehind (?<= or (?<! alone. Dispatcharr stores its patterns in the
+# JavaScript form because its frontend validator rejects the Python one (issue 21).
+_JS_NAMED_GROUP_RE = re.compile(r"\(\?<(?![=!])([^>]+)>")
+
+
+def _compile_time_pattern(time_pattern):
+    """Compile a stored time pattern, or return the built-in default. Never raises."""
+    if time_pattern:
+        for candidate in (time_pattern,
+                          _JS_NAMED_GROUP_RE.sub(r"(?P<\1>", time_pattern)):
+            try:
+                return re.compile(candidate)
+            except re.error:
+                continue
+    return re.compile(_DEFAULT_TIME_OF_DAY)
+
+
+def time_pattern_problem(time_pattern):
+    """Describe why a stored time pattern cannot be used, or return None when it can.
+
+    A pattern that does not compile is silently replaced by the built-in default, which
+    is the right thing to do at the point of use because a channel must not go unread
+    over a typing mistake. It is the wrong thing to do QUIETLY: the person who typed the
+    pattern gets the built-in behaviour instead of theirs with nothing to tell them so.
+    The caller has a logger and this gives it something to say.
+
+    Trying the JavaScript to Python conversion is routine rather than a problem, because
+    Dispatcharr stores its patterns in the JavaScript form (issue 21), so only a pattern
+    that fails BOTH forms is reported.
+    """
+    if not time_pattern:
+        return None
+    reason = None
+    for candidate in (time_pattern,
+                      _JS_NAMED_GROUP_RE.sub(r"(?P<\1>", time_pattern)):
+        try:
+            re.compile(candidate)
+            return None
+        except re.error as exc:
+            reason = str(exc)
+    return reason or "the pattern could not be compiled"
+
+
+def extract_time_of_day(channel_name, time_pattern=None):
+    """Return (hour, minute) on a 24 hour clock for the first clock time in the name.
+
+    Returns None when the name carries no time the pattern can read. The pattern may
+    use either the JavaScript (?<name>) or the Python (?P<name>) named-group form and
+    is expected to provide an `hour` group plus optional `minute` and `ampm` groups.
+
+    A supplied pattern that does not COMPILE falls back to the built-in default rather
+    than raising, because the pattern comes from an EPG source property the user is free
+    to edit and a typing mistake must not stop the name being read at all. Call
+    `time_pattern_problem` to report that substitution rather than making it silently.
+
+    A supplied pattern that compiles and MATCHES NOTHING is respected: the answer is
+    that this name carries no time. It used to fall back to the built-in default here,
+    which silently reverted a deliberate narrowing. Narrowing a time pattern so that a
+    slot number is not read as an hour is exactly what this plugin had to do to its own
+    title pattern (bug-146), so it is a thing users do on purpose.
+    """
+    if not channel_name:
+        return None
+    match = _compile_time_pattern(time_pattern).search(channel_name)
+    if match is None:
+        return None
+    groups = match.groupdict()
+    try:
+        hour = int(groups.get("hour"))
+    except (TypeError, ValueError):
+        return None
+    try:
+        minute = int(groups.get("minute") or 0)
+    except (TypeError, ValueError):
+        # Give up rather than assume o'clock. A minute this function cannot read means
+        # it does not know when the event starts, and quietly moving the start up to
+        # 59 minutes earlier would move the end of the window with it.
+        return None
+    hour = apply_meridiem(hour, groups.get("ampm"))
+    if not 0 <= hour <= 23 or not 0 <= minute <= 59:
+        return None
+    return hour, minute
+
+
+def infer_undated_event_window(first_seen_date, hour, minute, tz_name,
+                               duration_minutes, grace_hours):
+    """Build (start, hide_after) for an event whose name carries a time but no date.
+
+    `start` is the first-seen date at the parsed time, read in `tz_name`. `hide_after`
+    is that start plus the programme duration plus the grace period, so a caller hides
+    the channel once the current time passes it.
+
+    Returns None when any input cannot be read: an unknown timezone, an hour and minute
+    that do not make a real time, or a duration or grace period that is not a number.
+    The caller then has no window, makes no hide decision, and the channel stays visible.
+
+    Every failure gives up rather than substituting a smaller number. An unreadable
+    duration used to become zero minutes and an unreadable grace period zero hours,
+    which did not abandon the calculation but SHORTENED it, so the channel was hidden
+    earlier than any configured value asked for. A shorter window is not a safe
+    degradation for a rule whose effect is to remove a channel from the lineup.
+    """
+    # Imported inside the function, matching coerce_timezone, so the module stays
+    # importable on a machine without pytz. The import is inside the try because an
+    # ImportError here must produce the same "no window" answer as a bad timezone
+    # rather than escaping into the caller, which has no try around its rule loop.
+    try:
+        import pytz
+        event_tz = pytz.timezone(str(tz_name).strip())
+    except ImportError:
+        return None
+    except (pytz.exceptions.UnknownTimeZoneError, AttributeError, TypeError, ValueError):
+        return None
+    try:
+        naive_start = datetime.combine(
+            first_seen_date, time(hour=int(hour), minute=int(minute)))
+    except (TypeError, ValueError):
+        return None
+    try:
+        duration = max(int(duration_minutes), 0)
+        grace = max(int(grace_hours), 0)
+    except (TypeError, ValueError):
+        return None
+    start = event_tz.localize(naive_start)
+    return start, start + timedelta(minutes=duration, hours=grace)
+
+
+def undated_event_has_ended(now, hide_after, first_seen_at=None):
+    """Decide whether an undated event channel should be hidden.
+
+    True only when `now` is past `hide_after`. Split out of the rule in plugin.py so the
+    decision itself is unit-testable: plugin.py imports Django at module scope and cannot
+    be imported outside the container, so anything left in it can only be tested by
+    reading its source, which cannot tell a working comparison from a broken one.
+
+    `first_seen_at` is the moment the channel was first recorded. When the inferred window
+    closes at or before that moment, the window is not describing an event this channel can
+    have been carrying: a channel that appears at 23:00 named for a 1:00am event is named
+    for the NEXT 1:00am, not the one seventeen hours before anybody saw it. Hiding on such
+    a window would remove a channel whose event has not started. This returns False in that
+    case, leaving the channel visible and the decision to [UndatedAge:N].
+
+    A missing `first_seen_at`, which is what a record written by an earlier version carries,
+    applies no such check. That preserves the older behaviour for those records rather than
+    disabling the rule for them, and each one gains the stamp as soon as its name changes.
+    """
+    if now is None or hide_after is None:
+        return False
+    if first_seen_at is not None and hide_after <= first_seen_at:
+        return False
+    return now > hide_after
