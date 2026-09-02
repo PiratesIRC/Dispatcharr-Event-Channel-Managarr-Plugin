@@ -52,6 +52,7 @@ Settings are grouped into six sections in the UI.
 | **📡 Channel Name Format** | `select` | `US` | How channel names are structured for the dummy EPG parser. `US` = `PPV/LIVE EVENT ##: Title (MM.DD HH:MM AM/PM TZ)`, bare `EVENT ##: Title (…)` (no `PPV`/`LIVE` prefix required, as of v1.26.1711623), and a bare slot number followed by a date or a time such as `07 - 8/14 7pm Broncos at Falcons` (v1.26.2261346). `SE` = pipe-delimited `PREFIX \| Title \| DDD DD Mon HH:MM TZ \| extras \| channel name` (24-hour time, textual month); the last pipe segment (e.g. `SE: VIAPLAY PPV 20`) is stored as the EPG display name so the guide's channel list shows the broadcaster instead of the full stream name. |
 | **⏱️ Event Duration (hours)** | `number` | `3` | How long each scheduled event appears in the guide. Before this window the guide shows `Upcoming at <start-time>: <title>`; after, `Ended at <end-time>: <title>`. |
 | **📺 Channel Name Event Timezone** | `select` | `US/Eastern` | Timezone encoded in event times within channel names (e.g., `US/Eastern` for channels like `(4.17 8:30 PM ET)`). Independent of Dispatcharr's global time zone. |
+| **🗂️ Per-Group EPG Sources** | `text` | *(empty)* | Gives a channel group its own dummy EPG source, one mapping per line as `Group Name = Source Name`. A group you do not list keeps the shared source, so leaving this blank changes nothing. See [Per-Group EPG Sources](#per-group-epg-sources) below. (new in v1.26.2451734) |
 
 ### ⏰ Scheduling & Export
 
@@ -240,6 +241,100 @@ When **`Event Timezone`** (`dummy_epg_event_timezone`) and **Dispatcharr's globa
 
 **Numeric-offset zones** (e.g., `Etc/GMT+5`) suppress the abbreviation suffix — ECM still converts the time but writes no trailing label, since `+0500` would look wrong in a title.
 
+## Per-Group EPG Sources
+
+*New in v1.26.2451734. Requested in [issue 29](https://github.com/PiratesIRC/Dispatcharr-Event-Channel-Managarr-Plugin/issues/29).*
+
+By default every channel this plugin manages shares one dummy EPG source, `ECM Managed
+Dummy`, so they all share one timezone, one event duration and one set of title patterns.
+That breaks down when groups differ: one provider labels its times in Eastern and another
+in Central, college football wants a four hour event and volleyball wants two, and one
+group's titles carry a suffix the others do not.
+
+**Per-Group EPG Sources** gives a group its own source. Write one mapping per line in the
+setting:
+
+```
+NFL Sunday Ticket = ECM - NFL
+NCAAF = ECM - NCAAF
+SEC+/ACC Extra = ECM - SEC ACC
+Big Ten+ = ECM - Big Ten
+```
+
+Capitalisation of the group does not have to match. Two groups may point at the same
+source. A group you do not list keeps the shared source, so **leaving this blank changes
+nothing** and no existing installation is affected.
+
+### The source is yours after the plugin creates it
+
+The plugin creates a listed source and seeds it from your global settings above. **After
+that it never writes to that source again.** Its timezone, event duration, title, date and
+time patterns, templates, categories and artwork are yours to edit in Dispatcharr's own EPG
+source editor, and the plugin will not overwrite them. That is the whole point: the shared
+source keeps being maintained by the plugin, and a mapped source does not.
+
+Two consequences follow from that:
+
+- The seeded patterns are the US ones. If your global **Channel Name Format** is `SE`, a
+  newly created mapped source still starts with the US patterns, so set them yourself. The
+  seed is a starting point, not a promise.
+- A source that already existed before you mapped it is **adopted, not created**. The
+  plugin will route channels onto it, but because it did not create it, it will never move
+  channels back off it. Validate Configuration tells you when that has happened.
+
+### Six things that will otherwise look like a bug
+
+1. **Nothing happens unless Manage Dummy EPG is on.** Routing is part of the managed EPG
+   pass. With that setting off, a perfect mapping does nothing at all.
+2. **A mapped group must also be in scan scope.** If **Channel Groups** above lists any
+   groups, a mapped group missing from that list is never scanned, so it routes nothing,
+   for ever. Either add it there or clear that field to scan every group. Validate
+   Configuration reports this specifically, because a mapping that routes nothing looks
+   exactly like a mapping that is working.
+3. **Only channels that end a scan visible are moved.** This plugin hides event channels
+   that have no event, so at any moment most of a group may be hidden and therefore not
+   moved.
+4. **Changes take effect on the next applied run, not when you press Save.** Scheduled runs
+   read settings from a file that only an action button writes, so after editing the
+   mapping press **Validate Configuration** (or Update Schedule, Run Now or Dry Run) or an
+   unattended run will keep using the previous mapping.
+5. **An M3U refresh can trigger an applied run.** With **Auto-Rescan on M3U Refresh** on,
+   source creation and channel moves can happen without you pressing anything.
+6. **Clearing the box may not appear to work.** Dispatcharr does not reliably send a field
+   you have emptied, and the plugin falls back to the value it has saved rather than
+   guessing that you meant to clear it. Validate Configuration prints the mapping the
+   plugin actually read, which is how you check.
+
+### Undoing a mapping
+
+Remove the line and run an applied run. Those channels return to the shared source
+`ECM Managed Dummy` on the next scan.
+
+Three limits on that:
+
+- **The plugin only takes a channel back off a source it created itself.** A channel you
+  had put on your own dummy source is never moved back, which is deliberate: this plugin
+  must not rearrange sources it does not own.
+- **A channel taken from `DAZN PPV Dummy (GMT)` does not automatically return there.** It
+  goes back to the shared source unless its name still matches that source's own pattern,
+  in which case the plugin reclaims it on the same run.
+- **If the mapping has any error in it, no channel is moved back at all that run.** A
+  missing equals sign looks identical to "this group is no longer mapped", so rather than
+  risk moving a whole group because of a typo, the plugin does nothing in that direction
+  and says so. Fix the error and run again.
+
+### Sources are never deleted
+
+Nothing in this plugin deletes an EPG source, because deleting one also deletes the guide
+entries attached to it. A source created from a typo is therefore permanent until you
+remove it yourself. To remove one safely: change the mapping and run applied so its
+channels move away, confirm nothing is bound to it, then delete it in Dispatcharr's EPG
+source editor.
+
+Run **Validate Configuration** after editing the mapping. It reports lines it could not
+read, groups that match nothing, groups outside your scan scope, and a source name that
+clashes with a non-dummy source, and prints the mapping in use.
+
 ## Action Reference
 
 | Action | Style | Description |
@@ -260,6 +355,7 @@ When **`Event Timezone`** (`dummy_epg_event_timezone`) and **Dispatcharr's globa
 * **Last Run Tracker** (scheduled run history, cross-worker safe): `/data/event_channel_managarr_last_run.json`
 * **Scan Lock** (cross-worker mutex): `/data/event_channel_managarr_scan.lock`
 * **Undated-Channel Tracker** (for `[UndatedAge:N]` and `[UndatedEnded]`): `/data/event_channel_managarr_undated_first_seen.json`. Each entry holds the channel name, the date it was first seen, and the exact moment it was first seen. `[UndatedAge:N]` uses the date; `[UndatedEnded]` uses the moment as well, to reject an event window that closed before the channel existed.
+* **Group EPG Source Record** (which dummy EPG sources the plugin created for a group mapping): `/data/event_channel_managarr_group_sources.json`. This is what allows the plugin to move a channel back off a source later. If it is lost, channels stay where they are and nothing is moved back.
 * **Run Ledger**: `/data/event_channel_managarr_ledger.jsonl` (rotates once to `.jsonl.1` at 5 MB)
 * **CSV Exports**: `/data/exports/event_channel_managarr_[dryrun|applied]_YYYYMMDD_HHMMSS.csv`
 * **EPG Removal Reports**: `/data/exports/epg_removal_YYYYMMDD_HHMMSS.csv`
@@ -323,6 +419,7 @@ Every CSV includes a block of summary header lines (prefixed with `#`) before th
 | **reason** | The reason for the action (e.g., "Event date… is 1 days in the past", "Duplicate channel", "No date in name; first seen …"). |
 | **hide_rule** | The specific rule tag that triggered the hide action (e.g., `PastDate:0`, `UndatedAge:2`, `ShortDescription:15`). Rules with a threshold report it here, so `[ShortDescription]` and `[ShortChannelName]` now appear as `ShortDescription:15` and `ShortChannelName:25` rather than bare names. If you group or filter CSV rows by this column, expect that change. |
 | **has_epg** | Indicates whether an EPG source is *linked* to the channel (`Yes` or `No`) — note this reflects linkage, not whether that source actually has programmes. Reconciled with this run's attach/detach, so a channel attached this run reads `Yes` and one detached reads `No` (v1.26.1711623). |
+| **epg_source** | The name of the EPG source the channel is bound to, or empty when it is bound to none. Added so a reader can see which source a channel landed on when a per-group mapping moved it. (new in v1.26.2451734) |
 | **managed_epg_assigned** | `True` if this scan attached the channel to the plugin-managed dummy EPG source, else `False`. |
 | **managed_epg_detached** | `True` if this scan detached the channel from the plugin-managed dummy EPG source, else `False`. |
 

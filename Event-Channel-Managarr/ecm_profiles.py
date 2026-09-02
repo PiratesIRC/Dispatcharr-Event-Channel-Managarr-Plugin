@@ -23,6 +23,7 @@ CONSTRAINTS
 """
 
 import re
+from collections import namedtuple
 from dataclasses import dataclass, replace
 
 try:  # Dispatcharr ships `regex`; dev machines generally do not.
@@ -60,6 +61,20 @@ class Profile:
     fallback_title_template: str
     fallback_description_template: str
     is_default: bool
+    # Added for issue 29. Both carry defaults so every existing construction of
+    # this frozen dataclass, and every dataclasses.replace call, keeps working.
+    #
+    # user_managed True means the plugin seeds the source once when it CREATES it
+    # and never writes to it again, so the operator owns its timezone, duration,
+    # patterns and templates from that moment on. That is the whole point of the
+    # per-group feature, and it is why such a source cannot carry plugin state in
+    # its custom_properties: Dispatcharr's own EPG source editor rebuilds that
+    # object from a fixed key list and drops anything it does not know, and there
+    # is no longer a rewrite on each run to repair it.
+    user_managed: bool = False
+    # Casefolded channel group names routed to this profile. Empty on the two
+    # profiles defined in code, which select by a regex on the channel NAME.
+    group_names: tuple = ()
 
 
 def to_python_named(pattern):
@@ -343,3 +358,286 @@ def claimed_targets(names, profiles):
                 claims[name] = profile.key
                 break
     return claims
+
+
+# --- per-group managed sources (issue 29) -------------------------------------
+#
+# The operator maps a channel GROUP to its own dummy EPGSource, one mapping per
+# line, so that groups needing different timezones, durations or title patterns
+# stop competing for the single shared source.
+#
+# These two names cannot be group targets. The first is the shared source every
+# unmapped group lives on, so seeding it and then abandoning its properties (the
+# lifecycle a mapped source gets) would strand every group that is NOT mapped.
+# The second is owned by the code profile above and is selected by a channel-name
+# regex, so pointing a group at it would give one source two different owners.
+RESERVED_SOURCE_NAMES = ("ECM Managed Dummy", "DAZN PPV Dummy (GMT)")
+
+
+def parse_group_source_map(raw):
+    """Parse the group-to-source setting. Returns (mapping, problems).
+
+    `mapping` is an ordered dict of casefolded group name -> source name EXACTLY
+    as typed. The group side is casefolded because group names are matched
+    case-insensitively everywhere else in this plugin; the source side is not,
+    because EPGSource.name is unique and case-SENSITIVE in Postgres, so altering
+    it would create a differently cased duplicate row.
+
+    `problems` is a list of plain-language strings, one per rejected line.
+
+    THIS FUNCTION NEVER RAISES. It runs on the scan path, and a malformed line in
+    a settings box must not be able to stop a scan. It is also the gate on the
+    reverse move: a non-empty `problems` list suppresses that move for the whole
+    run, so that one typo cannot rebind a whole channel group.
+    """
+    mapping = {}
+    problems = []
+    if not raw:
+        return mapping, problems
+
+    try:
+        text = str(raw)
+    except Exception:
+        return mapping, ["the group to source mapping could not be read as text"]
+
+    # Local, not module level: a module-level mutable is a purity violation per
+    # tests/contract/test_module_purity.py.
+    reserved = {name.casefold() for name in RESERVED_SOURCE_NAMES}
+    sources_seen = {}
+
+    for line in text.splitlines():
+        line = line.strip()
+        if not line or line.startswith("#"):
+            continue
+
+        if "=" not in line:
+            problems.append(
+                f"{line!r} has no equals sign; write it as "
+                f"Group Name = Source Name")
+            continue
+
+        group_part, _, source_part = line.partition("=")
+        group = group_part.strip()
+        source = source_part.strip()
+
+        if not group or not source:
+            problems.append(
+                f"{line!r} is missing the group name or the source name; "
+                f"write it as Group Name = Source Name")
+            continue
+
+        group_key = group.casefold()
+        if group_key in mapping:
+            problems.append(
+                f"the group {group!r} is mapped more than once; keeping "
+                f"{mapping[group_key]!r} and ignoring {source!r}")
+            continue
+
+        source_key = source.casefold()
+        if source_key in reserved:
+            problems.append(
+                f"{source!r} is managed by the plugin itself and cannot be a "
+                f"group target; choose another source name for {group!r}")
+            continue
+
+        first_spelling = sources_seen.get(source_key)
+        if first_spelling is not None and first_spelling != source:
+            problems.append(
+                f"{source!r} differs from {first_spelling!r} only in "
+                f"capitalisation; EPG source names are case sensitive, so this "
+                f"would create two sources. Ignoring the mapping for {group!r}")
+            continue
+
+        sources_seen[source_key] = source
+        mapping[group_key] = source
+
+    return mapping, problems
+
+
+# Prefix on every group profile key. It contains a colon, which no key defined in
+# code uses and which cannot appear in the UNCLAIMED sentinel, so a mapped source
+# named "us_et" or "__unclaimed__" still produces a distinct key. That matters:
+# route() RAISES on a duplicate key or a sentinel collision, and an unhandled
+# raise on the scan path is an outage rather than a fail-safe.
+GROUP_PROFILE_KEY_PREFIX = "group:"
+
+
+def group_profile_key(source_name):
+    """The routing key for the profile serving `source_name`. Pure."""
+    return GROUP_PROFILE_KEY_PREFIX + str(source_name).casefold()
+
+
+def build_group_profiles(settings):
+    """Build one profile per mapped EPG source. Returns (profiles, problems).
+
+    Each profile is a copy of the RESOLVED default profile, so a mapped source is
+    seeded with the operator's global timezone and duration plus the shipped US
+    patterns, and is then theirs to edit. The global US or SE format choice is not
+    carried into the seed; the operator edits patterns in Dispatcharr's own EPG
+    source editor anyway, so a seeded pattern is a starting point.
+
+    The selector is empty. compile_pattern returns None for it and both route()
+    and claimed_targets() skip a None selector, so a group profile can never claim
+    a channel by its NAME. Selection by group happens in routing_destinations.
+
+    `problems` is passed straight through from the parser, because the caller
+    gates the reverse move on it: if anything failed to parse, no channel is moved
+    back, so one typo cannot rebind a whole group.
+    """
+    settings = settings or {}
+    mapping, problems = parse_group_source_map(settings.get("group_epg_source_map"))
+    if not mapping:
+        return (), problems
+
+    default = next((p for p in build_profiles(settings) if p.is_default), None)
+    if default is None:                                   # pragma: no cover
+        return (), problems + ["no default profile to seed a group source from"]
+
+    # Group several groups mapping to one source into a single profile: the unit
+    # is the SOURCE, not the group, or two groups sharing a source would produce
+    # two profiles with the same key and route() would raise.
+    groups_by_source = {}
+    for group_key, source_name in mapping.items():
+        groups_by_source.setdefault(source_name, []).append(group_key)
+
+    profiles = []
+    keys_used = set()
+    for source_name, group_keys in groups_by_source.items():
+        key = group_profile_key(source_name)
+        if key in keys_used:                              # defensive
+            problems.append(
+                f"two mapped sources produced the same routing key for "
+                f"{source_name!r}; ignoring the second")
+            continue
+        keys_used.add(key)
+        profiles.append(replace(
+            default,
+            key=key,
+            source_name=source_name,
+            selector="",
+            is_default=False,
+            user_managed=True,
+            group_names=tuple(group_keys)))
+    return tuple(profiles), problems
+
+
+# The three pattern keys are never overwritten once they differ from a default the
+# plugin has shipped. That is the issue 21 behaviour and it predates this feature.
+PATTERN_PROPERTY_KEYS = ("title_pattern", "time_pattern", "date_pattern")
+
+
+def source_props_to_write(profile, current_props, desired_props):
+    """The properties to store on this source, or None meaning write nothing. Pure.
+
+    THE OWNERSHIP RULE: a `user_managed` source is seeded once when the plugin
+    creates it and is never written again, so the operator owns its timezone,
+    duration, templates and patterns from that moment on. That is the entire point
+    of the per-group feature. Every other profile keeps the existing behaviour, in
+    which the plugin restores the properties it owns on each applied run.
+
+    This is a separate pure function rather than a branch inside the database code
+    because an inverted comparison here would freeze the SHARED source and rewrite
+    every MAPPED one, which is the exact opposite of the feature, and no test that
+    reads the source text could tell the two apart.
+
+    Keys the plugin does not own, such as `category`, `channel_logo_url` and the
+    description templates, are carried through untouched: it never writes them, so
+    they belong to the operator on every source.
+    """
+    if getattr(profile, "user_managed", False):
+        return None
+
+    merged = dict(current_props or {})
+    changed = False
+    for key, value in (desired_props or {}).items():
+        if key in PATTERN_PROPERTY_KEYS:
+            continue
+        if merged.get(key) != value:
+            merged[key] = value
+            changed = True
+    return merged if changed else None
+
+
+# What routing needs to know about one channel. Plain data, so this module stays
+# free of Django and the decision below stays unit-testable outside the container.
+ChannelBinding = namedtuple(
+    "ChannelBinding", "id name group_name source_name source_is_plugin_created")
+
+
+def normalize_group_name(name):
+    """Casefolded, edge-stripped group name, or the empty string. Pure.
+
+    Matches the comparison the scan already performs on the data side. NOTE that
+    the scan's DATABASE filter uses Django's iexact, which is not identical: the
+    two diverge on characters where casefold expands, such as the German sharp s.
+    A group can therefore be in scope by the query and unmatched here. Prefer
+    plain ASCII group names until one comparison serves all three call sites.
+    """
+    return str(name or "").strip().casefold()
+
+
+def routing_destinations(bindings, group_profiles, code_profiles,
+                         default_source_name, mapping_is_clean):
+    """Decide the EPG source every channel belongs on. Returns {id: source name}.
+
+    A channel appears in the result ONLY when it must move, so every entry is a
+    database write and an empty result is a clean run. Absence is the safety
+    property, exactly as it is for claimed_targets.
+
+    ONE function serves both directions. A move is "desired is not current",
+    whether that carries a channel onto a mapped source or back off one. Computing
+    the two separately is how a design ends up moving a channel forward and then
+    immediately back, writing twice per channel on every run.
+
+    Precedence: a GROUP mapping the operator typed beats a channel-NAME selector
+    shipped in code. Implemented by consulting group profiles first rather than by
+    relying on the order of either sequence, because route()'s own docstring
+    records that an ordering invariant resting on list order shipped as a silent
+    no-op twice.
+
+    Two rules keep the reverse move safe, and both are load bearing:
+
+    - `mapping_is_clean` is False whenever the mapping failed to parse cleanly, and
+      no reverse move is produced at all. "This group maps nowhere" is exactly what
+      a typo produces, so without this a single malformed line would rebind every
+      visible channel of a group and shift its rendered guide times by hours.
+    - `source_is_plugin_created` must be True. The plugin only takes a channel back
+      off a source it recorded creating. Measured on the live installation: three
+      hand-made dummy sources hold five channels between them, and the existing
+      reroutability guard returns True for ANY dummy source with no ownership
+      check, so this is the only thing standing between this feature and those
+      channels.
+
+    A missing `default_source_name` suppresses every reverse move, because moving
+    a channel to a source that does not exist would unbind it.
+    """
+    group_lookup = {}
+    for profile in group_profiles or ():
+        for group_key in profile.group_names:
+            group_lookup.setdefault(group_key, profile.source_name)
+
+    named = [(p, compile_pattern(p.selector))
+             for p in (code_profiles or ()) if not p.is_default]
+
+    destinations = {}
+    for binding in bindings:
+        desired = group_lookup.get(normalize_group_name(binding.group_name))
+
+        if desired is None:
+            for profile, selector in named:
+                if selector is not None and selector.search(str(binding.name or "")):
+                    desired = profile.source_name
+                    break
+
+        if desired is None:
+            # Nothing claims it. It returns to the shared source only if the plugin
+            # put it where it is, and only if the mapping can be trusted this run.
+            if (mapping_is_clean and binding.source_is_plugin_created
+                    and default_source_name):
+                desired = default_source_name
+            else:
+                continue
+
+        if desired != binding.source_name:
+            destinations[binding.id] = desired
+    return destinations

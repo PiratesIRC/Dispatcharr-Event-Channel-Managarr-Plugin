@@ -56,7 +56,7 @@ _scheduler_lock = threading.Lock()  # Prevent concurrent scheduler starts
 class PluginConfig:
     """Centralized configuration constants for Event Channel Managarr."""
 
-    PLUGIN_VERSION = "1.26.2450117"
+    PLUGIN_VERSION = "1.26.2451734"
 
     # Fallback timezone when Dispatcharr's global time zone is unset/invalid.
     DEFAULT_TIMEZONE = "UTC"
@@ -120,6 +120,20 @@ class PluginConfig:
     SETTINGS_FILE = "/data/event_channel_managarr_settings.json"
     RESULTS_FILE = "/data/event_channel_managarr_results.json"
     UNDATED_FIRST_SEEN_FILE = "/data/event_channel_managarr_undated_first_seen.json"
+    # Which dummy EPG sources this plugin created for a group mapping (issue 29).
+    #
+    # THIS CANNOT LIVE IN EPGSource.custom_properties. Dispatcharr's own EPG source
+    # editor rebuilds that object from a FIXED key list and submits it whole, and
+    # EPGSourceSerializer.update assigns it with setattr rather than merging, so any
+    # key the frontend does not know is DELETED on save. Measured 2026-09-02:
+    # managed_by appears in no frontend bundle and survives only because the plugin
+    # rewrites it on every applied run. A mapped source is deliberately never
+    # rewritten, so it would have nothing to repair a marker, and the operator
+    # editing its timezone -- the whole point of the feature -- would erase it.
+    #
+    # A missing or unreadable file means no channel is eligible to move back, so
+    # losing it strands channels where they are rather than moving them wrongly.
+    GROUP_SOURCE_RECORD_FILE = "/data/event_channel_managarr_group_sources.json"
     EXPORTS_DIR = "/data/exports"
     # An append-only record of what applied runs actually CHANGED, one JSON line
     # each. It exists so a running total can be reported without re-deriving it
@@ -495,6 +509,14 @@ class Plugin:
                 "options": self._load_timezones_from_file()
             },
             {
+                "id": "group_epg_source_map",
+                "label": "🗂️ Per-Group EPG Sources (one per line)",
+                "type": "text",
+                "default": "",
+                "placeholder": "NFL Sunday Ticket = ECM - NFL",
+                "help_text": "Gives a channel group its own dummy EPG source, so groups needing different timezones, durations or title patterns do not have to share one. Write one mapping per line as Group Name = Source Name, for example: NFL Sunday Ticket = ECM - NFL. Capitalisation of the group does not have to match. A group you do not list keeps the shared source, so leaving this blank changes nothing. The plugin creates a listed source and seeds it from the settings above, then never writes to it again: from that point its timezone, duration, patterns and templates are yours to edit in Dispatcharr's own EPG source editor. The group must also be in scan scope, meaning it appears in Channel Groups above or that field is blank, or the mapping creates a source and moves nothing. Removing a line moves those channels back to the shared source on the next applied run. Run Validate Configuration after editing this.",
+            },
+            {
                 "id": "_section_scheduling",
                 "label": "⏰ Scheduling & Export",
                 "type": "info",
@@ -857,6 +879,84 @@ class Plugin:
         else:
             validation_results.append("ℹ️ Groups: Not set (optional)")
 
+        # 5b. Validate the per-group EPG source mapping.
+        #
+        # Every check here catches a SILENT no-op: a mapping can look configured,
+        # create a source, and route nothing for ever. The toast shows roughly 280
+        # characters clipped from the middle, and this action already returns 9 to
+        # 12 lines, so only a headline and the FIRST problem go into the message.
+        # The full list goes to the log, and the effective mapping goes into the
+        # CSV header on the next run, which is a file surface that is not clipped.
+        raw_map = settings.get("group_epg_source_map", "")
+        if str(raw_map or "").strip():
+            group_map, map_problems = ecm_profiles.parse_group_source_map(raw_map)
+            for problem in map_problems:
+                logger.warning(f"{LOG_PREFIX} Group mapping problem: {problem}")
+
+            # Bound locally rather than relying on the names the channel-group
+            # block above happens to leave behind: that block only runs when
+            # Channel Groups is set, so both ChannelGroup and group_names are
+            # UNBOUND when it is blank, and the mapping checks would then be
+            # skipped with a misleading "could not be checked".
+            scoped_group_names = [g.strip() for g
+                                  in channel_groups_str.split(',') if g.strip()]
+            notes = []
+            if group_map and db_ok:
+                try:
+                    from apps.channels.models import ChannelGroup as _ChannelGroup
+                    from apps.epg.models import EPGSource
+                    existing_groups = {
+                        (name or "").strip().casefold()
+                        for name in _ChannelGroup.objects.values_list("name", flat=True)}
+                    unknown = [g for g in group_map if g not in existing_groups]
+                    if unknown:
+                        notes.append(f"{len(unknown)} group(s) match no channel group")
+
+                    # In scan scope? A group absent from the Channel Groups narrowing
+                    # setting never enters the scan, so its mapping moves nothing.
+                    if scoped_group_names:
+                        scoped = {g.strip().casefold() for g in scoped_group_names}
+                        out_of_scope = [g for g in group_map if g not in scoped]
+                        if out_of_scope:
+                            notes.append(
+                                f"{len(out_of_scope)} group(s) are not in Channel "
+                                f"Groups above, so they will move nothing")
+                            for g in out_of_scope:
+                                logger.warning(
+                                    f"{LOG_PREFIX} Group mapping problem: {g!r} is "
+                                    f"mapped but is not listed in Channel Groups, so "
+                                    f"it is never scanned and routes no channels")
+
+                    # A name already used by a non-dummy source can never be created.
+                    for source_name in set(group_map.values()):
+                        clash = EPGSource.objects.filter(
+                            name=source_name).exclude(source_type="dummy").first()
+                        if clash is not None:
+                            notes.append(f"{source_name!r} is not a dummy source")
+                            logger.warning(
+                                f"{LOG_PREFIX} Group mapping problem: {source_name!r} "
+                                f"already exists as a {clash.source_type!r} source and "
+                                f"cannot be used for a channel group")
+                except Exception as e:
+                    notes.append(f"could not be checked ({e})")
+
+            # Print what the plugin ACTUALLY read. An omitted form field keeps the
+            # value cached on disk, so clearing the box may not appear to take
+            # effect, and this line is how the operator sees which value won.
+            effective = ", ".join(f"{g} -> {s}" for g, s in group_map.items()) or "none"
+            if map_problems or notes:
+                first = (map_problems[0] if map_problems else notes[0])
+                extra = len(map_problems) + len(notes) - 1
+                validation_results.append(
+                    f"⚠️ Group EPG map ({len(group_map)} in use): {first}"
+                    + (f" (+{extra} more, see the log)" if extra > 0 else ""))
+                has_errors = True
+            else:
+                validation_results.append(f"✅ Group EPG map: {effective}")
+            logger.info(f"{LOG_PREFIX} Group EPG map in use: {effective}")
+        else:
+            validation_results.append("ℹ️ Group EPG map: Not set (optional)")
+
         # 6. Validate schedule
         scheduled_times = settings.get("scheduled_times", "").strip()
         if scheduled_times:
@@ -951,6 +1051,65 @@ class Plugin:
         except OSError as e:
             logger.error(f"{LOG_PREFIX} Failed to save undated tracker: {e}")
             return False
+
+    def _load_group_source_record(self, logger):
+        """Load the record of dummy EPG sources this plugin created for a mapping.
+
+        Returns a dict keyed by the exact EPGSource.name. Any failure returns an
+        EMPTY dict, which makes every channel ineligible for the reverse move, so
+        a lost or corrupt file leaves channels where they are rather than moving
+        them somewhere they do not belong.
+        """
+        path = PluginConfig.GROUP_SOURCE_RECORD_FILE
+        try:
+            with open(path, 'r') as f:
+                data = json.load(f)
+            if not isinstance(data, dict):
+                logger.warning(f"{LOG_PREFIX} Group source record at {path} is not a "
+                               f"dict; treating as empty, so no channel returns to "
+                               f"the shared source this run.")
+                return {}
+            return data
+        except FileNotFoundError:
+            return {}
+        except (json.JSONDecodeError, OSError) as e:
+            logger.warning(f"{LOG_PREFIX} Could not load group source record ({e}); "
+                           f"treating as empty, so no channel returns to the shared "
+                           f"source this run.")
+            return {}
+
+    def _save_group_source_record(self, record, logger):
+        """Atomically save the group source record. Returns True on success."""
+        path = PluginConfig.GROUP_SOURCE_RECORD_FILE
+        tmp_path = f"{path}.tmp"
+        try:
+            with open(tmp_path, 'w') as f:
+                json.dump(record, f, indent=2, sort_keys=True)
+            os.replace(tmp_path, path)
+            return True
+        except OSError as e:
+            logger.error(f"{LOG_PREFIX} Failed to save group source record: {e}")
+            return False
+
+    def _record_group_source(self, source, group_names, logger):
+        """Record that this plugin created `source` for a group mapping.
+
+        Written at CREATION only. A source that already existed is not recorded,
+        because the plugin did not create it and must not later take channels off
+        it; that case is reported by Validate Configuration instead.
+        """
+        record = self._load_group_source_record(logger)
+        if source.name in record:
+            return record
+        record[source.name] = {
+            "created": datetime.now().strftime('%Y-%m-%d'),
+            "created_for_groups": sorted(group_names or ()),
+            "source_id": source.id,
+        }
+        self._save_group_source_record(record, logger)
+        logger.info(f"{LOG_PREFIX} Recorded {source.name!r} as plugin-created for "
+                    f"group(s): {', '.join(sorted(group_names or ())) or 'none'}")
+        return record
 
     def _record_undated_channel(self, tracker, channel_id, channel_name, today_str,
                                 now_iso=None):
@@ -2471,9 +2630,21 @@ class Plugin:
     def _ensure_profile_source(self, profile, settings, logger):
         """Get or create the dummy EPGSource for ONE non-default profile.
 
-        Called only when a channel actually claims this profile, so a source is
-        never created speculatively. Returns None on failure -- the caller then
-        leaves those channels alone, which is the pre-S2 behavior.
+        Returns None on failure -- the caller then leaves those channels alone,
+        which is the pre-S2 behavior.
+
+        A `user_managed` profile (one built from the operator's group mapping) is
+        SEEDED once here and never written again, so its timezone, duration,
+        templates and patterns belong to the operator from that moment on. The
+        decision itself is ecm_profiles.source_props_to_write, deliberately a pure
+        function: an inverted comparison would freeze the shared source and rewrite
+        every mapped one, and no test that reads this source text could tell the
+        two apart.
+
+        One consequence worth stating: `managed_by` also stops being repaired on a
+        mapped source, because the plugin no longer writes that source at all. The
+        record of what the plugin created lives in GROUP_SOURCE_RECORD_FILE instead,
+        which Dispatcharr's EPG source editor cannot reach.
         """
         from apps.epg.models import EPGSource
 
@@ -2490,32 +2661,26 @@ class Plugin:
 
         if created:
             logger.info(f"{LOG_PREFIX} Created EPG source {profile.source_name!r}")
+            if getattr(profile, "user_managed", False):
+                self._record_group_source(source, profile.group_names, logger)
             return source
 
-        # Refresh non-pattern keys only. Pattern keys are left alone: this slice
-        # does not own the user-customization question for an adopted source, and
-        # overwriting a UI-edited pattern is the issue-21 regression.
-        current = dict(source.custom_properties or {})
-        changed = False
-        for key, value in desired.items():
-            if key in ("title_pattern", "time_pattern", "date_pattern"):
-                continue
-            if current.get(key) != value:
-                current[key] = value
-                changed = True
-        if changed:
-            source.custom_properties = current
-            try:
-                source.save(update_fields=["custom_properties"])
-                logger.info(f"{LOG_PREFIX} Refreshed EPG source {profile.source_name!r}")
-            except Exception as exc:
-                logger.warning(f"{LOG_PREFIX} Could not refresh EPG source "
-                               f"{profile.source_name!r}: {exc}")
-                return None
+        to_write = ecm_profiles.source_props_to_write(
+            profile, source.custom_properties or {}, desired)
+        if to_write is None:
+            return source
+        source.custom_properties = to_write
+        try:
+            source.save(update_fields=["custom_properties"])
+            logger.info(f"{LOG_PREFIX} Refreshed EPG source {profile.source_name!r}")
+        except Exception as exc:
+            logger.warning(f"{LOG_PREFIX} Could not refresh EPG source "
+                           f"{profile.source_name!r}: {exc}")
+            return None
         return source
 
     def _reroute_claimed_channels(self, settings, logger, dry_run, enabled_channel_ids):
-        """Move claimed, safe-to-move channels onto their profile's own EPGSource.
+        """Move every channel that is on the wrong EPG source onto the right one.
 
         Runs at the TOP of BOTH of _run_managed_epg_pass's branches, before that
         branch's own attach and detach -- not after, despite how this might read
@@ -2537,52 +2702,123 @@ class Plugin:
         reclaimed channel, every cycle. Going first, the channel is written
         exactly once.
 
-        Safety:
-          - only names in claimed_targets() are considered; unclaimed and
-            default-family names are absent from that mapping entirely
+        THE DESTINATION DECISION IS NOT HERE. It is
+        ecm_profiles.routing_destinations, a pure function, because this method
+        cannot be imported outside the container and a test that reads its source
+        text cannot tell a correct comparison from an inverted one. This method
+        gathers the inputs, performs the writes, and nothing else.
+
+        One direction of movement is new (issue 29): a channel whose group no
+        longer maps anywhere returns to the shared source. Three things keep that
+        safe, and all three are decided by the pure function above:
+          - the mapping must have parsed with NO problems, or no channel returns
+            at all, because "maps nowhere" is exactly what a typo produces
+          - the channel must be on a source the plugin RECORDED creating, so the
+            five channels sitting on hand-made dummy sources on this installation
+            cannot be taken
+          - the shared source must exist, or the channel would be unbound
+
+        Safety here:
           - _epg_binding_is_reroutable vetoes any channel holding a populated real
-            EPG, so a name collision cannot destroy a working guide
+            EPG, so a claim cannot destroy a working guide. Note it returns True
+            for ANY dummy source with no ownership check, which is why the
+            plugin-created record above is a separate and necessary guard.
           - it never detaches; a channel is only ever re-pointed
-          - an uncreatable profile source leaves those channels where they are
+          - an uncreatable destination source leaves those channels where they are
+          - LOAD BEARING, and previously an accident: a rerouted channel cannot be
+            detached in the same pass because the detach keeps every id in
+            enabled_channel_ids and every channel considered here comes from that
+            same set. Do not narrow one without narrowing the other.
 
         Returns the ids moved, or under dry_run the ids that WOULD move.
         """
         from apps.epg.models import EPGData, EPGSource
 
+        if not enabled_channel_ids:
+            return []
+
         profiles = ecm_profiles.build_profiles(settings)
-        if not any(not p.is_default for p in profiles) or not enabled_channel_ids:
+        group_profiles, mapping_problems = ecm_profiles.build_group_profiles(settings)
+        if not group_profiles and not any(not p.is_default for p in profiles):
+            return []
+        if mapping_problems:
+            logger.warning(
+                f"{LOG_PREFIX} The group to source mapping has "
+                f"{len(mapping_problems)} problem(s), so no channel will return to "
+                f"the shared source this run. First: {mapping_problems[0]}")
+
+        candidates = list(
+            Channel.objects.filter(id__in=enabled_channel_ids)
+            .select_related("channel_group", "epg_data", "epg_data__epg_source"))
+        if not candidates:
             return []
 
-        candidates = list(Channel.objects.filter(id__in=enabled_channel_ids)
-                          .select_related("epg_data", "epg_data__epg_source"))
-        claims = ecm_profiles.claimed_targets([c.name for c in candidates], profiles)
-        if not claims:
+        created_record = self._load_group_source_record(logger)
+        # Derived from the default profile rather than written as a fourth copy of
+        # the literal "ECM Managed Dummy". One of the three existing copies sits in
+        # a method whose body is hash-pinned by tests/contract/test_s2_wiring.py, so
+        # introducing a shared constant would move that pin for no behaviour change.
+        default_source_name = next(
+            (p.source_name for p in profiles if p.is_default), None)
+
+        bindings = []
+        for channel in candidates:
+            epg_source = getattr(channel.epg_data, "epg_source", None)
+            source_name = getattr(epg_source, "name", None)
+            bindings.append(ecm_profiles.ChannelBinding(
+                id=channel.id,
+                name=channel.name,
+                group_name=(channel.channel_group.name
+                            if channel.channel_group else None),
+                source_name=source_name,
+                source_is_plugin_created=bool(
+                    source_name and source_name in created_record)))
+
+        destinations = ecm_profiles.routing_destinations(
+            bindings, group_profiles, profiles, default_source_name,
+            not mapping_problems)
+        if not destinations:
             return []
 
-        by_key = {p.key: p for p in profiles}
+        # One profile per destination source name, so the ensure step below knows
+        # which properties to seed. The shared source has no entry here on purpose:
+        # it is created and refreshed by _get_or_create_managed_epg_source, which
+        # honours the US or SE format setting. Calling _ensure_profile_source for it
+        # would write US properties unconditionally and the two would fight on every
+        # run of an installation using the SE format.
+        profile_by_source = {p.source_name: p
+                             for p in tuple(group_profiles) + tuple(profiles)
+                             if not p.is_default}
+        by_id = {c.id: c for c in candidates}
+
         moved = []
-        for key in sorted(set(claims.values())):
-            profile = by_key.get(key)
-            if profile is None:
-                continue
-            group = [c for c in candidates
-                     if claims.get(c.name) == key and self._epg_binding_is_reroutable(c, logger=logger)]
+        for source_name in sorted(set(destinations.values())):
+            group = [by_id[cid] for cid, dest in destinations.items()
+                     if dest == source_name and cid in by_id]
+            group = [c for c in group
+                     if self._epg_binding_is_reroutable(c, logger=logger)]
             if not group:
                 continue
 
+            profile = profile_by_source.get(source_name)
+
             if dry_run:
                 existing = EPGSource.objects.filter(
-                    name=profile.source_name, source_type="dummy").first()
-                # Sentinel, not None: a never-bound channel has epg_source_id None,
-                # and None == None would silently under-report it as "no move".
-                target_id = existing.id if existing else object()
-                moved.extend(c.id for c in group
-                             if getattr(c.epg_data, "epg_source_id", None) != target_id)
+                    name=source_name, source_type="dummy").first()
+                if existing is None and profile is None:
+                    # The shared source does not exist yet and this step will not
+                    # create it, so an applied run would not move these either.
+                    continue
+                moved.extend(c.id for c in group)
                 continue
 
-            source = self._ensure_profile_source(profile, settings, logger)
+            if profile is not None:
+                source = self._ensure_profile_source(profile, settings, logger)
+            else:
+                source = EPGSource.objects.filter(
+                    name=source_name, source_type="dummy").first()
             if source is None:
-                logger.warning(f"{LOG_PREFIX} No source for profile {key!r}; "
+                logger.warning(f"{LOG_PREFIX} No source named {source_name!r}; "
                                f"leaving {len(group)} channel(s) in place")
                 continue
 
@@ -2605,11 +2841,11 @@ class Plugin:
                 Channel.objects.bulk_update(to_move, ["epg_data"])
             moved.extend(c.id for c in to_move)
             logger.info(f"{LOG_PREFIX} Rerouted {len(to_move)} channel(s) to "
-                        f"{profile.source_name!r}")
+                        f"{source_name!r}")
 
             # Rows left behind on the source(s) we moved off are orphaned NOW; the
             # existing reaper is scoped to the default source and already ran this
-            # pass, so reap them here.
+            # pass, so reap them here. This covers BOTH directions of movement.
             for vacated_source in vacated | {source}:
                 self._reap_orphaned_epg_data(vacated_source, logger)
         return moved
@@ -3058,6 +3294,66 @@ class Plugin:
             logger.warning(f"{LOG_PREFIX} override_existing_epg check skipped: {e}")
             return []
 
+    @staticmethod
+    def _epg_source_name(channel):
+        """The name of the EPG source this channel is bound to, or an empty string.
+
+        Reported per channel in the CSV. Without it the export can show that a
+        channel HAS a guide but not which source serves it, which is the one thing
+        a reader needs when a per-group mapping moved something unexpectedly.
+        """
+        epg_data = getattr(channel, "epg_data", None)
+        source = getattr(epg_data, "epg_source", None)
+        return getattr(source, "name", "") or ""
+
+    def _precreate_mapped_sources(self, settings, logger):
+        """Create a dummy EPGSource for every mapped group, channels or not.
+
+        The operator needs to configure a source BEFORE its event channels appear,
+        which they cannot do if the source is only created once a channel claims it.
+
+        Creating a source is NOT evidence that the mapping will move anything: a
+        group mapped here but absent from the `channel_groups` narrowing setting
+        never enters the scan, so it routes nothing for ever. Validate Configuration
+        reports that case; this method deliberately does not claim success.
+
+        Returns the number of sources created. Never raises.
+        """
+        from apps.epg.models import EPGSource
+
+        group_profiles, problems = ecm_profiles.build_group_profiles(settings)
+        if not group_profiles:
+            return 0
+
+        created = 0
+        for profile in group_profiles:
+            # A name already taken by a NON-dummy source cannot be created: the name
+            # column is unique, so get_or_create would raise an integrity error that
+            # _ensure_profile_source catches and swallows, leaving the mapping broken
+            # on every run for ever with only a log line to show for it.
+            clash = EPGSource.objects.filter(
+                name=profile.source_name).exclude(source_type="dummy").first()
+            if clash is not None:
+                logger.warning(
+                    f"{LOG_PREFIX} {profile.source_name!r} is already an EPG source "
+                    f"of type {clash.source_type!r}, so it cannot be used for a "
+                    f"channel group. Choose another name in the group mapping.")
+                continue
+
+            existed = EPGSource.objects.filter(
+                name=profile.source_name, source_type="dummy").exists()
+            source = self._ensure_profile_source(profile, settings, logger)
+            if source is not None and not existed:
+                created += 1
+        if created:
+            logger.info(f"{LOG_PREFIX} Created {created} mapped EPG source(s). A "
+                        f"source is created so it can be configured; it moves "
+                        f"channels only once its group is in scan scope.")
+        if problems:
+            logger.warning(f"{LOG_PREFIX} {len(problems)} group mapping problem(s); "
+                           f"run Validate Configuration to see them all.")
+        return created
+
     def _run_managed_epg_pass(self, settings, logger, dry_run, enabled_channel_ids, scanned_channel_ids=None):
         """Attach/detach the plugin's managed dummy EPG based on current settings.
 
@@ -3117,6 +3413,11 @@ class Plugin:
         # Same reasoning as the dry-run call above: runs before the managed_source
         # lookup so it still fires even on the applied branch's own early
         # "managed_source is None" exit a few lines down.
+        if toggle_on:
+            # Inside the toggle deliberately: an operator with the managed dummy EPG
+            # feature switched off must not have EPG sources created for them. And
+            # after the dry-run return above, because a dry run never writes a row.
+            self._precreate_mapped_sources(settings, logger)
         rerouted_ids = self._reroute_claimed_channels(
             settings, logger, False, enabled_channel_ids if toggle_on else [])
         if rerouted_ids:
@@ -3467,6 +3768,7 @@ class Plugin:
                         "reason": "Matches ignore regex",
                         "hide_rule": "",
                         "has_epg": "Yes" if channel.epg_data else "No",
+                        "epg_source": self._epg_source_name(channel),
                         "managed_epg_assigned": False,
                         "managed_epg_detached": False,
                     })
@@ -3490,6 +3792,7 @@ class Plugin:
                         "reason": "Matches force visible regex",
                         "hide_rule": "[ForceVisible]",
                         "has_epg": "Yes" if channel.epg_data else "No",
+                        "epg_source": self._epg_source_name(channel),
                         "managed_epg_assigned": False,
                         "managed_epg_detached": False,
                     })
@@ -3532,7 +3835,8 @@ class Plugin:
                     'reason': reason,
                     'current_visible': current_visible,
                     'channel_group': channel.channel_group.name if channel.channel_group else "No Group",
-                    'has_epg': "Yes" if channel.epg_data else "No"
+                    'has_epg': "Yes" if channel.epg_data else "No",
+                    'epg_source': self._epg_source_name(channel),
                 })
                 
                 # Determine initial action (will be refined by duplicate handling)
@@ -3659,6 +3963,7 @@ class Plugin:
                     "reason": reason,
                     "hide_rule": hide_rule,
                     "has_epg": "Yes" if post_has_epg else "No",
+                    "epg_source": channel_info.get("epg_source", ""),
                     "managed_epg_assigned": channel_id in managed_attached_set,
                     "managed_epg_detached": channel_id in managed_detached_set,
                 })
@@ -3775,6 +4080,7 @@ class Plugin:
                     "dummy_epg_event_duration_hours",
                     "dummy_epg_event_timezone",
                     "dummy_epg_channel_format",
+                    "group_epg_source_map",
                     "scheduled_times",
                     "enable_scheduled_csv_export",
                 ]
@@ -3794,7 +4100,7 @@ class Plugin:
 
                 fieldnames = ['channel_id', 'channel_name', 'channel_number', 'channel_group',
                             'current_visibility', 'action', 'reason', 'hide_rule', 'has_epg',
-                            'managed_epg_assigned', 'managed_epg_detached']
+                            'epg_source', 'managed_epg_assigned', 'managed_epg_detached']
                 csv_filepath = self._export_csv(csv_filename, results, fieldnames, logger, header_lines)
             
             # Apply changes if not dry run

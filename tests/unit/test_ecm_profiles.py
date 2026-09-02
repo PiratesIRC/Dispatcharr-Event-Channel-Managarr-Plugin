@@ -442,3 +442,332 @@ def test_the_clock_time_guard_leaves_real_event_names_alone(name, expected):
     m = rx.search(name)
     assert m, f"no match for {name!r}"
     assert m.group("title") == expected
+
+
+# --- parse_group_source_map (issue 29, Task 1) --------------------------------
+#
+# The mapping setting is free text typed by an operator into a Mantine textarea,
+# so every shape below has been seen or is one keystroke away from one that has.
+# The parser returns (mapping, problems) and NEVER raises: a malformed line must
+# not be able to stop a scan.
+
+
+def _parse(raw):
+    return ecm_profiles.parse_group_source_map(raw)
+
+
+def test_a_plain_mapping_line_is_accepted():
+    mapping, problems = _parse("NFL Sunday Ticket = ECM - NFL")
+    assert mapping == {"nfl sunday ticket": "ECM - NFL"}
+    assert problems == []
+
+
+def test_the_group_key_is_casefolded_and_the_source_name_is_kept_verbatim():
+    """Group names are matched case-insensitively; a source name is an identity.
+
+    EPGSource.name is unique and case-SENSITIVE in Postgres, so the source side
+    must survive exactly as typed or the plugin would create a differently cased
+    duplicate row.
+    """
+    mapping, problems = _parse("  NFL Sunday TICKET  =   ECM - NFL  ")
+    assert mapping == {"nfl sunday ticket": "ECM - NFL"}
+    assert problems == []
+
+
+def test_carriage_returns_are_stripped():
+    """The value is whatever the browser posts, so CRLF reaches the parser."""
+    mapping, problems = _parse("NFL = ECM - NFL\r\nNCAAF = ECM - NCAAF\r\n")
+    assert mapping == {"nfl": "ECM - NFL", "ncaaf": "ECM - NCAAF"}
+    assert problems == []
+
+
+def test_blank_lines_and_comments_are_ignored_silently():
+    mapping, problems = _parse("\n# a comment\nNFL = ECM - NFL\n   \n#another\n")
+    assert mapping == {"nfl": "ECM - NFL"}
+    assert problems == [], "a comment or a blank line is not a problem to report"
+
+
+@pytest.mark.parametrize("raw", ["", "   ", "\n\n", None])
+def test_an_empty_setting_is_silent(raw):
+    """This is the default state of the setting on every existing installation.
+
+    It must produce no mapping and, importantly, no problem: a problem string
+    suppresses the reverse move for the whole run (plan Decision 3), so a noisy
+    parser on an unused setting would disable a feature nobody enabled.
+    """
+    mapping, problems = _parse(raw)
+    assert mapping == {}
+    assert problems == []
+
+
+def test_a_line_with_no_equals_sign_is_rejected_and_named():
+    mapping, problems = _parse("NFL Sunday Ticket ECM - NFL")
+    assert mapping == {}
+    assert len(problems) == 1
+    assert "NFL Sunday Ticket ECM - NFL" in problems[0]
+
+
+@pytest.mark.parametrize("raw", ["= ECM - NFL", "NFL =", "  =  "])
+def test_an_empty_side_is_rejected(raw):
+    mapping, problems = _parse(raw)
+    assert mapping == {}
+    assert len(problems) == 1
+
+
+def test_a_duplicate_group_keeps_the_first_and_reports_the_second():
+    mapping, problems = _parse("NFL = ECM - A\nnfl = ECM - B")
+    assert mapping == {"nfl": "ECM - A"}, "the first mapping for a group wins"
+    assert len(problems) == 1
+    assert "ECM - B" in problems[0] or "nfl" in problems[0].casefold()
+
+
+def test_two_groups_may_share_one_source():
+    """A deliberate configuration, not an error: two groups, one set of settings."""
+    mapping, problems = _parse("NFL = ECM - Football\nNCAAF = ECM - Football")
+    assert mapping == {"nfl": "ECM - Football", "ncaaf": "ECM - Football"}
+    assert problems == []
+
+
+def test_two_source_names_differing_only_in_case_are_rejected():
+    """EPGSource.name is unique and case-sensitive, so both would be created.
+
+    Accepting these produces two sources the operator believes are one, each
+    holding half the channels and each needing its properties edited separately.
+    """
+    mapping, problems = _parse("NFL = ECM - NFL\nNCAAF = ecm - nfl")
+    assert len(problems) == 1
+    assert list(mapping.values()) == ["ECM - NFL"], (
+        "the first spelling wins and the colliding one is dropped")
+
+
+@pytest.mark.parametrize("reserved", [
+    "ECM Managed Dummy", "ecm managed dummy", "DAZN PPV Dummy (GMT)"])
+def test_a_reserved_source_name_is_rejected(reserved):
+    """The shared source and the code-owned source cannot be group targets.
+
+    Seeding and then abandoning the shared source would strand every group that
+    is NOT mapped, since that source is where they all live.
+    """
+    mapping, problems = _parse(f"NFL = {reserved}")
+    assert mapping == {}
+    assert len(problems) == 1
+    assert reserved.split()[0].casefold() in problems[0].casefold()
+
+
+def test_reserved_names_are_declared_as_a_constant():
+    """Both the parser and the validation action must read one list."""
+    assert ecm_profiles.RESERVED_SOURCE_NAMES
+    lowered = {n.casefold() for n in ecm_profiles.RESERVED_SOURCE_NAMES}
+    assert "ecm managed dummy" in lowered
+    assert "dazn ppv dummy (gmt)" in lowered
+
+
+def test_the_parser_never_raises_on_hostile_input():
+    """A scan must not be stoppable by a typo in a settings box."""
+    hostile = "=\n==\n\x00\nNFL = = ECM\n" + ("x" * 5000) + " = y\n__unclaimed__ = z"
+    mapping, problems = _parse(hostile)
+    assert isinstance(mapping, dict)
+    assert isinstance(problems, list)
+
+
+def test_the_first_equals_sign_separates_and_later_ones_stay_in_the_name():
+    """A source name may legitimately contain an equals sign."""
+    mapping, _ = _parse("NFL = ECM = NFL")
+    assert mapping == {"nfl": "ECM = NFL"}
+
+
+def test_mapping_order_is_preserved():
+    """Routing evaluates group profiles in declaration order, so order matters."""
+    mapping, _ = _parse("B = ECM - B\nA = ECM - A\nC = ECM - C")
+    assert list(mapping) == ["b", "a", "c"]
+
+
+# --- build_group_profiles (issue 29, Task 2) ----------------------------------
+
+
+def _build(raw, **settings):
+    settings.setdefault("group_epg_source_map", raw)
+    return ecm_profiles.build_group_profiles(settings)
+
+
+def test_profile_props_returns_exactly_the_stored_property_keys():
+    """Pin the key set BEFORE new dataclass fields exist.
+
+    profile_props builds an EPGSource.custom_properties payload. A new field on
+    the Profile dataclass must not leak into a source's stored properties, and a
+    leaked key would be written to the live database rather than caught by a
+    type error.
+    """
+    props = ecm_profiles.profile_props(ecm_profiles.US_ET)
+    assert set(props) == {
+        "timezone", "output_timezone", "title_pattern", "date_pattern",
+        "time_pattern", "title_template", "upcoming_title_template",
+        "ended_title_template", "program_duration", "include_date",
+        "fallback_title_template", "fallback_description_template",
+    }
+
+
+def test_the_new_profile_fields_default_so_existing_constructions_keep_working():
+    assert ecm_profiles.US_ET.user_managed is False
+    assert ecm_profiles.US_ET.group_names == ()
+    assert ecm_profiles.DAZN_GMT.user_managed is False
+
+
+def test_an_empty_mapping_builds_no_group_profiles():
+    profiles, problems = _build("")
+    assert profiles == ()
+    assert problems == []
+
+
+def test_one_mapping_builds_one_user_managed_profile():
+    profiles, problems = _build("NFL Sunday Ticket = ECM - NFL")
+    assert problems == []
+    assert len(profiles) == 1
+    p = profiles[0]
+    assert p.source_name == "ECM - NFL"
+    assert p.group_names == ("nfl sunday ticket",)
+    assert p.user_managed is True
+    assert p.is_default is False
+
+
+def test_a_group_profile_cannot_claim_a_channel_by_name():
+    """Its selector must compile to None, which route() and claimed_targets skip.
+
+    Asserted as behaviour rather than by reading the selector string, because it
+    is the skip that matters, not the empty value that causes it.
+    """
+    profiles, _ = _build("NFL = ECM - NFL")
+    assert ecm_profiles.compile_pattern(profiles[0].selector) is None
+    claims = ecm_profiles.claimed_targets(
+        ["NFL Sunday Ticket week 1", "anything at all"], profiles)
+    assert claims == {}
+
+
+def test_two_groups_sharing_a_source_build_one_profile_with_both_groups():
+    profiles, problems = _build("NFL = ECM - Football\nNCAAF = ECM - Football")
+    assert problems == []
+    assert len(profiles) == 1, "one source name is one profile, not one per group"
+    assert set(profiles[0].group_names) == {"nfl", "ncaaf"}
+
+
+def test_group_profile_keys_are_unique_and_do_not_collide_with_the_code_profiles():
+    profiles, _ = _build("A = ECM - A\nB = ECM - B\nC = ECM - C")
+    keys = [p.key for p in profiles]
+    assert len(keys) == len(set(keys))
+    assert not set(keys) & {"us_et", "dazn_gmt", ecm_profiles.UNCLAIMED}
+
+
+def test_a_source_named_like_the_unclaimed_sentinel_does_not_collide():
+    """route() raises if a profile key equals the sentinel, which is an outage."""
+    profiles, _ = _build(f"NFL = {ecm_profiles.UNCLAIMED}")
+    assert profiles
+    assert profiles[0].key != ecm_profiles.UNCLAIMED
+
+
+@pytest.mark.parametrize("raw", [
+    "NFL = __unclaimed__",
+    "A = ECM - A\nB = ecm - a",
+    "= =\nNFL = ECM - NFL",
+    "NFL = us_et",
+    "NFL = dazn_gmt",
+])
+def test_route_never_raises_on_a_profile_set_built_from_a_hostile_mapping(raw):
+    """route() raises ValueError on duplicate keys or a sentinel collision.
+
+    An unhandled raise here is an outage on the scan path, not a fail-safe, so
+    the builder must never hand route() a set it will reject.
+    """
+    group_profiles, _ = _build(raw)
+    combined = tuple(group_profiles) + ecm_profiles.build_profiles({})
+    buckets = ecm_profiles.route(["some channel name"], combined)
+    assert ecm_profiles.UNCLAIMED in buckets
+
+
+def test_a_group_profile_inherits_the_global_timezone_and_duration():
+    profiles, _ = _build(
+        "NFL = ECM - NFL",
+        dummy_epg_event_timezone="America/Denver",
+        dummy_epg_event_duration_hours=2)
+    assert profiles[0].timezone == "America/Denver"
+    assert profiles[0].program_duration_minutes == 120
+
+
+def test_parser_problems_are_returned_by_the_builder():
+    """The caller gates the reverse move on this list, so it must not be dropped."""
+    profiles, problems = _build("this line has no equals sign")
+    assert profiles == ()
+    assert len(problems) == 1
+
+
+def test_a_missing_setting_key_is_treated_as_no_mapping():
+    profiles, problems = ecm_profiles.build_group_profiles({})
+    assert profiles == ()
+    assert problems == []
+
+
+# --- source_props_to_write (issue 29, Task 4) ---------------------------------
+#
+# The ownership guard decides whether the plugin may rewrite an EPG source's
+# stored properties. A structural test cannot tell `if profile.user_managed` from
+# `if not profile.user_managed`, and the inverted form is not a mild bug: it would
+# freeze the SHARED source and rewrite every MAPPED one, the exact opposite of the
+# feature. So the decision lives here, where an inversion swaps two answers for
+# identical inputs and fails loudly.
+
+PATTERN_KEYS = ("title_pattern", "time_pattern", "date_pattern")
+
+
+def _mapped():
+    profiles, _ = ecm_profiles.build_group_profiles(
+        {"group_epg_source_map": "NFL = ECM - NFL"})
+    return profiles[0]
+
+
+def test_a_user_managed_source_is_never_rewritten_even_when_it_has_drifted():
+    drifted = {"timezone": "America/Denver", "program_duration": 90}
+    desired = {"timezone": "America/New_York", "program_duration": 240}
+    assert ecm_profiles.source_props_to_write(_mapped(), drifted, desired) is None
+
+
+def test_a_plugin_owned_source_is_restored_when_it_has_drifted():
+    drifted = {"timezone": "America/Denver", "program_duration": 90}
+    desired = {"timezone": "America/New_York", "program_duration": 240}
+    out = ecm_profiles.source_props_to_write(ecm_profiles.US_ET, drifted, desired)
+    assert out is not None
+    assert out["timezone"] == "America/New_York"
+    assert out["program_duration"] == 240
+
+
+def test_a_plugin_owned_source_with_no_drift_needs_no_write():
+    same = {"timezone": "America/New_York"}
+    assert ecm_profiles.source_props_to_write(
+        ecm_profiles.US_ET, same, dict(same)) is None
+
+
+@pytest.mark.parametrize("key", PATTERN_KEYS)
+def test_a_pattern_the_operator_edited_is_never_overwritten(key):
+    """Issue 21: the plugin only replaces a pattern it recognises as its own default."""
+    current = {key: "a pattern the operator wrote", "timezone": "America/Denver"}
+    desired = {key: "the shipped default", "timezone": "America/New_York"}
+    out = ecm_profiles.source_props_to_write(ecm_profiles.US_ET, current, desired)
+    assert out is not None, "the timezone still needs restoring"
+    assert out[key] == "a pattern the operator wrote"
+
+
+def test_keys_the_plugin_does_not_own_are_carried_through_untouched():
+    """Categories and artwork are the operator's and must survive a refresh."""
+    current = {"category": "Sports", "channel_logo_url": "http://example.test/x.png",
+               "timezone": "America/Denver"}
+    desired = {"timezone": "America/New_York"}
+    out = ecm_profiles.source_props_to_write(ecm_profiles.US_ET, current, desired)
+    assert out["category"] == "Sports"
+    assert out["channel_logo_url"] == "http://example.test/x.png"
+
+
+def test_the_two_answers_differ_for_identical_inputs():
+    """The inversion guard: same drift, opposite verdicts, decided only by ownership."""
+    current = {"timezone": "America/Denver"}
+    desired = {"timezone": "America/New_York"}
+    owned = ecm_profiles.source_props_to_write(ecm_profiles.US_ET, current, desired)
+    mapped = ecm_profiles.source_props_to_write(_mapped(), current, desired)
+    assert owned is not None and mapped is None

@@ -105,3 +105,23 @@ def test_template_covers_the_epg_critical_settings():
                "dummy_epg_event_duration_hours", "channel_groups",
                "channel_profile_name", "scheduled_times"} - set(_template())
     assert not missing, f"template missing required settings: {sorted(missing)}"
+
+
+def test_the_group_epg_source_map_ships_empty_rather_than_as_a_placeholder():
+    """A deliberate exception to the placeholder rule, and the reason it is one.
+
+    The mapping IS environment-specific, which is normally what puts a key in
+    MUST_BE_PLACEHOLDER above. But bootstrap refuses to write a placeholder, and an
+    empty mapping is the correct, complete configuration for every installation that
+    does not use per-group EPG sources: it means the feature is off and every group
+    keeps the shared source. Shipping a placeholder would make bootstrap decline to
+    restore a setting whose right value is already known.
+
+    Shipping a real value here would be the actual hazard, since it would create EPG
+    sources named after somebody else's channel groups.
+    """
+    t = _template()
+    assert "group_epg_source_map" in t, "the template must cover every real setting"
+    assert t["group_epg_source_map"] == "", (
+        "ship it empty: a real value would create sources named after another "
+        "installation's channel groups")
