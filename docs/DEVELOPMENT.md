@@ -35,7 +35,7 @@ git ls-tree --name-only HEAD:Event-Channel-Managarr
 |---|---|---|
 | `Event-Channel-Managarr/plugin.py` | Yes | All plugin logic (about 4,250 lines) |
 | `Event-Channel-Managarr/ecm_parsing.py` | Yes | Django-free date, time and event-window logic |
-| `Event-Channel-Managarr/ecm_profiles.py` | Yes | Channel-name format profiles used to route a channel to the right managed EPG source |
+| `Event-Channel-Managarr/ecm_profiles.py` | Yes | Django-free. The channel-name format profiles, and every routing and ownership decision: `parse_group_source_map`, `build_group_profiles`, `routing_destinations` and `source_props_to_write` |
 | `Event-Channel-Managarr/plugin.json` | Yes | Manifest: `fields` + `actions` arrays |
 | `Event-Channel-Managarr/__init__.py` | Yes | Package marker; must export only `Plugin` |
 | `Event-Channel-Managarr/README.txt` | Yes | In-container readme |
@@ -302,9 +302,26 @@ and cannot be imported outside the container. Verifies, among other things:
 **Know what a static test cannot do.** It reads structure, so it cannot tell a correct
 comparison from an inverted one. Six contract tests written for the `[UndatedEnded]` rule
 all passed against a version of that rule deliberately mutated to hide every channel. Where
-a decision matters, move it into `ecm_parsing.py` and unit-test the behaviour, and leave the
-contract test to hold the wiring in place. After writing a guard, break it on purpose and
-watch it fail.
+a decision matters, move it into `ecm_parsing.py` or `ecm_profiles.py` and unit-test the
+behaviour, and leave the contract test to hold the wiring in place. After writing a guard,
+break it on purpose and watch it fail.
+
+**A second trap, and it is easy to walk into.** Several existing contract tests are string
+searches over a whole method, such as `assert "_epg_binding_is_reroutable" in src` over
+`_reroute_claimed_channels`. Adding a SECOND code path to that same method cannot be tested
+that way: the method already contains the name, so the new assertion passes against code
+that does not implement the new path at all. Assert instead on the CALLS a method makes and
+on the ORDER of its statements, and put the behaviour in a pure function. The per-group EPG
+source work put three decisions in `ecm_profiles.py` for this reason:
+`routing_destinations` (where each channel belongs, in both directions),
+`source_props_to_write` (whether the plugin may rewrite a source) and
+`parse_group_source_map`.
+
+**Mutation-test a new guard, and let the harness apply several substitutions at once.** A
+behaviour can be provided at more than one point, and mutating one of them then proves
+nothing. Carriage-return handling in the mapping parser is provided independently by
+`str.splitlines()`, by the per-line strip and by the strip on each side of the equals sign,
+which produced two false "this test is vacuous" reports before the harness was changed.
 
 ---
 
