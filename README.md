@@ -44,6 +44,12 @@ back and forth. Two channel-name layouts are understood: the US form
 (`PPV EVENT 12: Title (MM.DD HH:MM AM/PM TZ)`, and bare numbered slots such as
 `07 - 8/14 7pm Broncos at Falcons`) and the Swedish pipe-delimited form.
 
+**Gives a channel group its own guide source.** Groups whose events are labelled in
+different timezones, or that need different durations or title patterns, can each be
+mapped to their own dummy EPG source. The plugin creates the source and seeds it from
+your settings, then leaves it alone so you can edit it in Dispatcharr. A group you do
+not map keeps the shared source.
+
 **Hides duplicates of the same event**, keeping the lowest number, the highest
 number or the longest name, whichever you choose.
 
