@@ -23,6 +23,7 @@ CONSTRAINTS
 """
 
 import re
+from collections import namedtuple
 from dataclasses import dataclass, replace
 
 try:  # Dispatcharr ships `regex`; dev machines generally do not.
@@ -518,3 +519,125 @@ def build_group_profiles(settings):
             user_managed=True,
             group_names=tuple(group_keys)))
     return tuple(profiles), problems
+
+
+# The three pattern keys are never overwritten once they differ from a default the
+# plugin has shipped. That is the issue 21 behaviour and it predates this feature.
+PATTERN_PROPERTY_KEYS = ("title_pattern", "time_pattern", "date_pattern")
+
+
+def source_props_to_write(profile, current_props, desired_props):
+    """The properties to store on this source, or None meaning write nothing. Pure.
+
+    THE OWNERSHIP RULE: a `user_managed` source is seeded once when the plugin
+    creates it and is never written again, so the operator owns its timezone,
+    duration, templates and patterns from that moment on. That is the entire point
+    of the per-group feature. Every other profile keeps the existing behaviour, in
+    which the plugin restores the properties it owns on each applied run.
+
+    This is a separate pure function rather than a branch inside the database code
+    because an inverted comparison here would freeze the SHARED source and rewrite
+    every MAPPED one, which is the exact opposite of the feature, and no test that
+    reads the source text could tell the two apart.
+
+    Keys the plugin does not own, such as `category`, `channel_logo_url` and the
+    description templates, are carried through untouched: it never writes them, so
+    they belong to the operator on every source.
+    """
+    if getattr(profile, "user_managed", False):
+        return None
+
+    merged = dict(current_props or {})
+    changed = False
+    for key, value in (desired_props or {}).items():
+        if key in PATTERN_PROPERTY_KEYS:
+            continue
+        if merged.get(key) != value:
+            merged[key] = value
+            changed = True
+    return merged if changed else None
+
+
+# What routing needs to know about one channel. Plain data, so this module stays
+# free of Django and the decision below stays unit-testable outside the container.
+ChannelBinding = namedtuple(
+    "ChannelBinding", "id name group_name source_name source_is_plugin_created")
+
+
+def normalize_group_name(name):
+    """Casefolded, edge-stripped group name, or the empty string. Pure.
+
+    Matches the comparison the scan already performs on the data side. NOTE that
+    the scan's DATABASE filter uses Django's iexact, which is not identical: the
+    two diverge on characters where casefold expands, such as the German sharp s.
+    A group can therefore be in scope by the query and unmatched here. Prefer
+    plain ASCII group names until one comparison serves all three call sites.
+    """
+    return str(name or "").strip().casefold()
+
+
+def routing_destinations(bindings, group_profiles, code_profiles,
+                         default_source_name, mapping_is_clean):
+    """Decide the EPG source every channel belongs on. Returns {id: source name}.
+
+    A channel appears in the result ONLY when it must move, so every entry is a
+    database write and an empty result is a clean run. Absence is the safety
+    property, exactly as it is for claimed_targets.
+
+    ONE function serves both directions. A move is "desired is not current",
+    whether that carries a channel onto a mapped source or back off one. Computing
+    the two separately is how a design ends up moving a channel forward and then
+    immediately back, writing twice per channel on every run.
+
+    Precedence: a GROUP mapping the operator typed beats a channel-NAME selector
+    shipped in code. Implemented by consulting group profiles first rather than by
+    relying on the order of either sequence, because route()'s own docstring
+    records that an ordering invariant resting on list order shipped as a silent
+    no-op twice.
+
+    Two rules keep the reverse move safe, and both are load bearing:
+
+    - `mapping_is_clean` is False whenever the mapping failed to parse cleanly, and
+      no reverse move is produced at all. "This group maps nowhere" is exactly what
+      a typo produces, so without this a single malformed line would rebind every
+      visible channel of a group and shift its rendered guide times by hours.
+    - `source_is_plugin_created` must be True. The plugin only takes a channel back
+      off a source it recorded creating. Measured on the live installation: three
+      hand-made dummy sources hold five channels between them, and the existing
+      reroutability guard returns True for ANY dummy source with no ownership
+      check, so this is the only thing standing between this feature and those
+      channels.
+
+    A missing `default_source_name` suppresses every reverse move, because moving
+    a channel to a source that does not exist would unbind it.
+    """
+    group_lookup = {}
+    for profile in group_profiles or ():
+        for group_key in profile.group_names:
+            group_lookup.setdefault(group_key, profile.source_name)
+
+    named = [(p, compile_pattern(p.selector))
+             for p in (code_profiles or ()) if not p.is_default]
+
+    destinations = {}
+    for binding in bindings:
+        desired = group_lookup.get(normalize_group_name(binding.group_name))
+
+        if desired is None:
+            for profile, selector in named:
+                if selector is not None and selector.search(str(binding.name or "")):
+                    desired = profile.source_name
+                    break
+
+        if desired is None:
+            # Nothing claims it. It returns to the shared source only if the plugin
+            # put it where it is, and only if the mapping can be trusted this run.
+            if (mapping_is_clean and binding.source_is_plugin_created
+                    and default_source_name):
+                desired = default_source_name
+            else:
+                continue
+
+        if desired != binding.source_name:
+            destinations[binding.id] = desired
+    return destinations

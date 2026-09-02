@@ -703,3 +703,71 @@ def test_a_missing_setting_key_is_treated_as_no_mapping():
     profiles, problems = ecm_profiles.build_group_profiles({})
     assert profiles == ()
     assert problems == []
+
+
+# --- source_props_to_write (issue 29, Task 4) ---------------------------------
+#
+# The ownership guard decides whether the plugin may rewrite an EPG source's
+# stored properties. A structural test cannot tell `if profile.user_managed` from
+# `if not profile.user_managed`, and the inverted form is not a mild bug: it would
+# freeze the SHARED source and rewrite every MAPPED one, the exact opposite of the
+# feature. So the decision lives here, where an inversion swaps two answers for
+# identical inputs and fails loudly.
+
+PATTERN_KEYS = ("title_pattern", "time_pattern", "date_pattern")
+
+
+def _mapped():
+    profiles, _ = ecm_profiles.build_group_profiles(
+        {"group_epg_source_map": "NFL = ECM - NFL"})
+    return profiles[0]
+
+
+def test_a_user_managed_source_is_never_rewritten_even_when_it_has_drifted():
+    drifted = {"timezone": "America/Denver", "program_duration": 90}
+    desired = {"timezone": "America/New_York", "program_duration": 240}
+    assert ecm_profiles.source_props_to_write(_mapped(), drifted, desired) is None
+
+
+def test_a_plugin_owned_source_is_restored_when_it_has_drifted():
+    drifted = {"timezone": "America/Denver", "program_duration": 90}
+    desired = {"timezone": "America/New_York", "program_duration": 240}
+    out = ecm_profiles.source_props_to_write(ecm_profiles.US_ET, drifted, desired)
+    assert out is not None
+    assert out["timezone"] == "America/New_York"
+    assert out["program_duration"] == 240
+
+
+def test_a_plugin_owned_source_with_no_drift_needs_no_write():
+    same = {"timezone": "America/New_York"}
+    assert ecm_profiles.source_props_to_write(
+        ecm_profiles.US_ET, same, dict(same)) is None
+
+
+@pytest.mark.parametrize("key", PATTERN_KEYS)
+def test_a_pattern_the_operator_edited_is_never_overwritten(key):
+    """Issue 21: the plugin only replaces a pattern it recognises as its own default."""
+    current = {key: "a pattern the operator wrote", "timezone": "America/Denver"}
+    desired = {key: "the shipped default", "timezone": "America/New_York"}
+    out = ecm_profiles.source_props_to_write(ecm_profiles.US_ET, current, desired)
+    assert out is not None, "the timezone still needs restoring"
+    assert out[key] == "a pattern the operator wrote"
+
+
+def test_keys_the_plugin_does_not_own_are_carried_through_untouched():
+    """Categories and artwork are the operator's and must survive a refresh."""
+    current = {"category": "Sports", "channel_logo_url": "http://example.test/x.png",
+               "timezone": "America/Denver"}
+    desired = {"timezone": "America/New_York"}
+    out = ecm_profiles.source_props_to_write(ecm_profiles.US_ET, current, desired)
+    assert out["category"] == "Sports"
+    assert out["channel_logo_url"] == "http://example.test/x.png"
+
+
+def test_the_two_answers_differ_for_identical_inputs():
+    """The inversion guard: same drift, opposite verdicts, decided only by ownership."""
+    current = {"timezone": "America/Denver"}
+    desired = {"timezone": "America/New_York"}
+    owned = ecm_profiles.source_props_to_write(ecm_profiles.US_ET, current, desired)
+    mapped = ecm_profiles.source_props_to_write(_mapped(), current, desired)
+    assert owned is not None and mapped is None
