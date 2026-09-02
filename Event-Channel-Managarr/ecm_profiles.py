@@ -343,3 +343,97 @@ def claimed_targets(names, profiles):
                 claims[name] = profile.key
                 break
     return claims
+
+
+# --- per-group managed sources (issue 29) -------------------------------------
+#
+# The operator maps a channel GROUP to its own dummy EPGSource, one mapping per
+# line, so that groups needing different timezones, durations or title patterns
+# stop competing for the single shared source.
+#
+# These two names cannot be group targets. The first is the shared source every
+# unmapped group lives on, so seeding it and then abandoning its properties (the
+# lifecycle a mapped source gets) would strand every group that is NOT mapped.
+# The second is owned by the code profile above and is selected by a channel-name
+# regex, so pointing a group at it would give one source two different owners.
+RESERVED_SOURCE_NAMES = ("ECM Managed Dummy", "DAZN PPV Dummy (GMT)")
+
+
+def parse_group_source_map(raw):
+    """Parse the group-to-source setting. Returns (mapping, problems).
+
+    `mapping` is an ordered dict of casefolded group name -> source name EXACTLY
+    as typed. The group side is casefolded because group names are matched
+    case-insensitively everywhere else in this plugin; the source side is not,
+    because EPGSource.name is unique and case-SENSITIVE in Postgres, so altering
+    it would create a differently cased duplicate row.
+
+    `problems` is a list of plain-language strings, one per rejected line.
+
+    THIS FUNCTION NEVER RAISES. It runs on the scan path, and a malformed line in
+    a settings box must not be able to stop a scan. It is also the gate on the
+    reverse move: a non-empty `problems` list suppresses that move for the whole
+    run, so that one typo cannot rebind a whole channel group.
+    """
+    mapping = {}
+    problems = []
+    if not raw:
+        return mapping, problems
+
+    try:
+        text = str(raw)
+    except Exception:
+        return mapping, ["the group to source mapping could not be read as text"]
+
+    # Local, not module level: a module-level mutable is a purity violation per
+    # tests/contract/test_module_purity.py.
+    reserved = {name.casefold() for name in RESERVED_SOURCE_NAMES}
+    sources_seen = {}
+
+    for line in text.splitlines():
+        line = line.strip()
+        if not line or line.startswith("#"):
+            continue
+
+        if "=" not in line:
+            problems.append(
+                f"{line!r} has no equals sign; write it as "
+                f"Group Name = Source Name")
+            continue
+
+        group_part, _, source_part = line.partition("=")
+        group = group_part.strip()
+        source = source_part.strip()
+
+        if not group or not source:
+            problems.append(
+                f"{line!r} is missing the group name or the source name; "
+                f"write it as Group Name = Source Name")
+            continue
+
+        group_key = group.casefold()
+        if group_key in mapping:
+            problems.append(
+                f"the group {group!r} is mapped more than once; keeping "
+                f"{mapping[group_key]!r} and ignoring {source!r}")
+            continue
+
+        source_key = source.casefold()
+        if source_key in reserved:
+            problems.append(
+                f"{source!r} is managed by the plugin itself and cannot be a "
+                f"group target; choose another source name for {group!r}")
+            continue
+
+        first_spelling = sources_seen.get(source_key)
+        if first_spelling is not None and first_spelling != source:
+            problems.append(
+                f"{source!r} differs from {first_spelling!r} only in "
+                f"capitalisation; EPG source names are case sensitive, so this "
+                f"would create two sources. Ignoring the mapping for {group!r}")
+            continue
+
+        sources_seen[source_key] = source
+        mapping[group_key] = source
+
+    return mapping, problems

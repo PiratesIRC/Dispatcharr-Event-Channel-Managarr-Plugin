@@ -442,3 +442,141 @@ def test_the_clock_time_guard_leaves_real_event_names_alone(name, expected):
     m = rx.search(name)
     assert m, f"no match for {name!r}"
     assert m.group("title") == expected
+
+
+# --- parse_group_source_map (issue 29, Task 1) --------------------------------
+#
+# The mapping setting is free text typed by an operator into a Mantine textarea,
+# so every shape below has been seen or is one keystroke away from one that has.
+# The parser returns (mapping, problems) and NEVER raises: a malformed line must
+# not be able to stop a scan.
+
+
+def _parse(raw):
+    return ecm_profiles.parse_group_source_map(raw)
+
+
+def test_a_plain_mapping_line_is_accepted():
+    mapping, problems = _parse("NFL Sunday Ticket = ECM - NFL")
+    assert mapping == {"nfl sunday ticket": "ECM - NFL"}
+    assert problems == []
+
+
+def test_the_group_key_is_casefolded_and_the_source_name_is_kept_verbatim():
+    """Group names are matched case-insensitively; a source name is an identity.
+
+    EPGSource.name is unique and case-SENSITIVE in Postgres, so the source side
+    must survive exactly as typed or the plugin would create a differently cased
+    duplicate row.
+    """
+    mapping, problems = _parse("  NFL Sunday TICKET  =   ECM - NFL  ")
+    assert mapping == {"nfl sunday ticket": "ECM - NFL"}
+    assert problems == []
+
+
+def test_carriage_returns_are_stripped():
+    """The value is whatever the browser posts, so CRLF reaches the parser."""
+    mapping, problems = _parse("NFL = ECM - NFL\r\nNCAAF = ECM - NCAAF\r\n")
+    assert mapping == {"nfl": "ECM - NFL", "ncaaf": "ECM - NCAAF"}
+    assert problems == []
+
+
+def test_blank_lines_and_comments_are_ignored_silently():
+    mapping, problems = _parse("\n# a comment\nNFL = ECM - NFL\n   \n#another\n")
+    assert mapping == {"nfl": "ECM - NFL"}
+    assert problems == [], "a comment or a blank line is not a problem to report"
+
+
+@pytest.mark.parametrize("raw", ["", "   ", "\n\n", None])
+def test_an_empty_setting_is_silent(raw):
+    """This is the default state of the setting on every existing installation.
+
+    It must produce no mapping and, importantly, no problem: a problem string
+    suppresses the reverse move for the whole run (plan Decision 3), so a noisy
+    parser on an unused setting would disable a feature nobody enabled.
+    """
+    mapping, problems = _parse(raw)
+    assert mapping == {}
+    assert problems == []
+
+
+def test_a_line_with_no_equals_sign_is_rejected_and_named():
+    mapping, problems = _parse("NFL Sunday Ticket ECM - NFL")
+    assert mapping == {}
+    assert len(problems) == 1
+    assert "NFL Sunday Ticket ECM - NFL" in problems[0]
+
+
+@pytest.mark.parametrize("raw", ["= ECM - NFL", "NFL =", "  =  "])
+def test_an_empty_side_is_rejected(raw):
+    mapping, problems = _parse(raw)
+    assert mapping == {}
+    assert len(problems) == 1
+
+
+def test_a_duplicate_group_keeps_the_first_and_reports_the_second():
+    mapping, problems = _parse("NFL = ECM - A\nnfl = ECM - B")
+    assert mapping == {"nfl": "ECM - A"}, "the first mapping for a group wins"
+    assert len(problems) == 1
+    assert "ECM - B" in problems[0] or "nfl" in problems[0].casefold()
+
+
+def test_two_groups_may_share_one_source():
+    """A deliberate configuration, not an error: two groups, one set of settings."""
+    mapping, problems = _parse("NFL = ECM - Football\nNCAAF = ECM - Football")
+    assert mapping == {"nfl": "ECM - Football", "ncaaf": "ECM - Football"}
+    assert problems == []
+
+
+def test_two_source_names_differing_only_in_case_are_rejected():
+    """EPGSource.name is unique and case-sensitive, so both would be created.
+
+    Accepting these produces two sources the operator believes are one, each
+    holding half the channels and each needing its properties edited separately.
+    """
+    mapping, problems = _parse("NFL = ECM - NFL\nNCAAF = ecm - nfl")
+    assert len(problems) == 1
+    assert list(mapping.values()) == ["ECM - NFL"], (
+        "the first spelling wins and the colliding one is dropped")
+
+
+@pytest.mark.parametrize("reserved", [
+    "ECM Managed Dummy", "ecm managed dummy", "DAZN PPV Dummy (GMT)"])
+def test_a_reserved_source_name_is_rejected(reserved):
+    """The shared source and the code-owned source cannot be group targets.
+
+    Seeding and then abandoning the shared source would strand every group that
+    is NOT mapped, since that source is where they all live.
+    """
+    mapping, problems = _parse(f"NFL = {reserved}")
+    assert mapping == {}
+    assert len(problems) == 1
+    assert reserved.split()[0].casefold() in problems[0].casefold()
+
+
+def test_reserved_names_are_declared_as_a_constant():
+    """Both the parser and the validation action must read one list."""
+    assert ecm_profiles.RESERVED_SOURCE_NAMES
+    lowered = {n.casefold() for n in ecm_profiles.RESERVED_SOURCE_NAMES}
+    assert "ecm managed dummy" in lowered
+    assert "dazn ppv dummy (gmt)" in lowered
+
+
+def test_the_parser_never_raises_on_hostile_input():
+    """A scan must not be stoppable by a typo in a settings box."""
+    hostile = "=\n==\n\x00\nNFL = = ECM\n" + ("x" * 5000) + " = y\n__unclaimed__ = z"
+    mapping, problems = _parse(hostile)
+    assert isinstance(mapping, dict)
+    assert isinstance(problems, list)
+
+
+def test_the_first_equals_sign_separates_and_later_ones_stay_in_the_name():
+    """A source name may legitimately contain an equals sign."""
+    mapping, _ = _parse("NFL = ECM = NFL")
+    assert mapping == {"nfl": "ECM = NFL"}
+
+
+def test_mapping_order_is_preserved():
+    """Routing evaluates group profiles in declaration order, so order matters."""
+    mapping, _ = _parse("B = ECM - B\nA = ECM - A\nC = ECM - C")
+    assert list(mapping) == ["b", "a", "c"]
