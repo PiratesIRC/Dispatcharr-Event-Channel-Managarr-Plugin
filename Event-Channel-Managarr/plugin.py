@@ -3729,6 +3729,11 @@ class Plugin:
             channels_to_show = []
             channels_ignored = []
             channels_for_duplicate_check = []
+            # Channels claimed by the force-visible regex. Recorded separately
+            # because that branch returns to the top of the loop without adding
+            # anything to channels_for_duplicate_check, which is how they used to
+            # fall out of the managed-EPG enabled set entirely (bug-175).
+            force_visible_channel_ids = []
 
             # Track channel info for enhanced logging
             channel_info_map = {}
@@ -3779,6 +3784,7 @@ class Plugin:
                 if regex_force_visible and regex_force_visible.search(channel_name):
                     if not current_visible:
                         channels_to_show.append(channel.id)
+                    force_visible_channel_ids.append(channel.id)
 
                     # Preserve any existing undated-tracker entry — same reason as above.
                     tracked_this_scan.add(str(channel.id))
@@ -3881,13 +3887,18 @@ class Plugin:
             # dry-run and applied-run paths produce identical attach/detach counts.
             managed_attached_set = set()
             managed_detached_set = set()
-            enabled_channel_ids = [
-                ch["channel_id"] for ch in channels_for_duplicate_check
-                if (
-                    (ch["current_visible"] and ch["channel_id"] not in channels_to_hide)
-                    or ch["channel_id"] in channels_to_show
-                ) and ch["channel_id"] not in duplicate_hide_list
-            ]
+            # The decision itself is ecm_profiles.managed_epg_enabled_ids, a pure
+            # function, so it can be unit-tested without a container and so a new
+            # early branch in this loop cannot silently drop channels out of the
+            # attach set and the detach keep-set at the same time (bug-175).
+            enabled_channel_ids = ecm_profiles.managed_epg_enabled_ids(
+                [(ch["channel_id"], ch["current_visible"])
+                 for ch in channels_for_duplicate_check],
+                force_visible_channel_ids,
+                channels_to_hide,
+                channels_to_show,
+                duplicate_hide_list,
+            )
             # The full in-scope universe this scan considered (profile + group filtered,
             # visible AND hidden). The managed-EPG detach is scoped to this so narrowing
             # channel_groups can't strip the dummy off channels in other groups (bug-045).
