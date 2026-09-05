@@ -766,7 +766,22 @@ class Plugin:
                 pattern = settings.get(setting_key, "").strip()
                 if pattern:
                     re.compile(pattern, re.IGNORECASE)
-                    validation_results.append(f"✅ {label}: Valid")
+                    # Compiling is not the same as meaning what the operator
+                    # intended. The decision is a pair of pure functions in
+                    # ecm_parsing, so it is unit-tested without a container.
+                    #
+                    # Only the SUMMARY goes in the readout. Dispatcharr clips an
+                    # action toast at roughly 280 characters from the middle with
+                    # no marker that anything was cut, so a full paragraph per
+                    # alternative would push the rest of the validation out of
+                    # view. The detail goes to the log.
+                    summary = ecm_parsing.regex_alternative_summary(pattern)
+                    if summary:
+                        validation_results.append(f"⚠️ {label}: {summary}")
+                        for detail in ecm_parsing.regex_alternative_problems(pattern):
+                            logger.warning(f"{LOG_PREFIX} {label} regex: {detail}")
+                    else:
+                        validation_results.append(f"✅ {label}: Valid")
                 else:
                     validation_results.append(f"ℹ️ {label}: Not set")
             except re.error as e:

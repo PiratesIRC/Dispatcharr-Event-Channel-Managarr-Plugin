@@ -519,3 +519,188 @@ def undated_event_has_ended(now, hide_after, first_seen_at=None):
     if first_seen_at is not None and hide_after <= first_seen_at:
         return False
     return now > hide_after
+
+
+# --- regex settings fields: alternatives that do not mean what they look like ----
+
+_MAX_REGEX_ALTERNATIVE_PROBLEMS = 10
+
+
+def _split_top_level_alternatives(pattern):
+    """Yield the alternative lists of every level of the pattern that alternates.
+
+    A level is the top of the pattern or the inside of one group. Only a level
+    that actually contains an unescaped pipe is yielded, so an ordinary pattern
+    with no alternation produces nothing to check.
+
+    The pipe is not special inside a character class and is a literal when it is
+    escaped, so both are skipped. Group construct prefixes such as (?:, (?i:,
+    (?=, (?<! and (?P<name> are consumed with the opener rather than becoming
+    the first characters of an alternative.
+    """
+    levels = []
+    stack = [{"start": 0, "alts": [], "has_pipe": False}]
+    index = 0
+    length = len(pattern)
+    while index < length:
+        char = pattern[index]
+        if char == "\\":
+            index += 2
+            continue
+        if char == "[":
+            index += 1
+            if index < length and pattern[index] == "^":
+                index += 1
+            if index < length and pattern[index] == "]":
+                index += 1
+            while index < length and pattern[index] != "]":
+                index += 2 if pattern[index] == "\\" else 1
+            index += 1
+            continue
+        if char == "(":
+            index += 1
+            index = _skip_group_prefix(pattern, index)
+            stack.append({"start": index, "alts": [], "has_pipe": False})
+            continue
+        if char == ")" and len(stack) > 1:
+            level = stack.pop()
+            level["alts"].append(pattern[level["start"]:index])
+            if level["has_pipe"]:
+                levels.append(level["alts"])
+            index += 1
+            continue
+        if char == "|":
+            level = stack[-1]
+            level["alts"].append(pattern[level["start"]:index])
+            level["has_pipe"] = True
+            level["start"] = index + 1
+            index += 1
+            continue
+        index += 1
+
+    root = stack[0]
+    root["alts"].append(pattern[root["start"]:length])
+    if root["has_pipe"]:
+        levels.append(root["alts"])
+    return levels
+
+
+def _skip_group_prefix(pattern, index):
+    """Return the index just past a group construct prefix, if there is one."""
+    if index >= len(pattern) or pattern[index] != "?":
+        return index
+    rest = pattern[index:]
+    if rest.startswith("?P<") or rest.startswith("?P="):
+        closer = pattern.find(">" if rest.startswith("?P<") else ")", index)
+        return index + 3 if closer == -1 else closer + 1
+    if rest.startswith("?<=") or rest.startswith("?<!"):
+        return index + 3
+    if rest.startswith("?<"):
+        closer = pattern.find(">", index)
+        return index + 2 if closer == -1 else closer + 1
+    if len(rest) > 1 and rest[1] in ":=!>":
+        return index + 2
+    # An inline flag group, either (?i) or (?i:...). Consume up to the colon when
+    # one comes before the closing parenthesis, otherwise leave the index alone.
+    colon = pattern.find(":", index)
+    closer = pattern.find(")", index)
+    if colon != -1 and (closer == -1 or colon < closer):
+        return colon + 1
+    return index
+
+
+def regex_alternative_problems(pattern):
+    """Describe alternatives in a regex settings field that will surprise the operator.
+
+    Returns a list of plain descriptions, empty when there is nothing to say.
+    Compilation is checked separately by the caller, and a pattern that does not
+    compile returns nothing here so the same field is not reported twice.
+
+    Two shapes are reported, and neither is a syntax error, which is the whole
+    point: the pattern compiles and does the wrong thing silently.
+
+    An alternative that begins or ends with a space almost always means a name
+    containing a pipe was pasted into the field. A user typed four channel GROUP
+    names into Regex: Channel Names to Ignore, separated by pipes, but each group
+    name already contained a pipe with spaces around it, so the alternatives the
+    engine saw included a bare "USA " and every channel name containing that text
+    was skipped.
+
+    LENGTH IS DELIBERATELY NOT A SIGNAL. Flagging a short alternative would
+    report "NFL|NHL|NBA", where three-character alternatives are exactly what the
+    operator meant. Every alternative in the pasted pattern above carries a
+    leading or trailing space, so the whitespace catches the real mistake without
+    the false positives.
+
+    An empty alternative is reported because it makes the whole pattern match
+    every name, which for the ignore field means nothing is ever scanned.
+    """
+    if not pattern:
+        return []
+    try:
+        re.compile(pattern)
+    except re.error:
+        return []
+
+    found = []
+    for kind, alternative in _regex_alternative_findings(pattern):
+        if kind == "empty":
+            found.append(
+                "one alternative is empty, so this pattern matches every "
+                "name. Remove the stray pipe character.")
+        else:
+            found.append(
+                f"the alternative {alternative!r} begins or ends with a "
+                "space. The pipe character separates alternatives, so this "
+                "matches any name containing that text on its own. This "
+                "usually means a name that already contained a pipe was "
+                "pasted into this field.")
+        if len(found) >= _MAX_REGEX_ALTERNATIVE_PROBLEMS:
+            break
+    return found
+
+
+def _regex_alternative_findings(pattern):
+    """Return (kind, alternative) for every alternative worth reporting.
+
+    kind is "empty" or "space". Shared by the two public functions so the
+    classification exists once. Not capped: the caller decides how much to show.
+    """
+    if not pattern:
+        return []
+    try:
+        re.compile(pattern)
+    except re.error:
+        return []
+    findings = []
+    for alternatives in _split_top_level_alternatives(pattern):
+        for alternative in alternatives:
+            if not alternative.strip():
+                findings.append(("empty", alternative))
+            elif alternative != alternative.strip():
+                findings.append(("space", alternative))
+    return findings
+
+
+def regex_alternative_summary(pattern):
+    """One short line naming the problem, or None when there is nothing to say.
+
+    Dispatcharr clips an action toast at roughly 280 characters, from the MIDDLE,
+    with no visual marker that anything was cut, and it collapses newlines into
+    one paragraph. The full descriptions from regex_alternative_problems belong in
+    the log; this is the line the operator actually reads. It is deliberately
+    capped well under the clip so the rest of the validation readout survives.
+    """
+    findings = _regex_alternative_findings(pattern)
+    if not findings:
+        return None
+    count = len(findings)
+    noun = "alternative" if count == 1 else "alternatives"
+    verb = "looks" if count == 1 else "look"
+    kind, alternative = findings[0]
+    if kind == "empty":
+        return (f"{count} {noun} in this pattern {verb} wrong, the first is "
+                "empty so the pattern matches every name")
+    shown = alternative if len(alternative) <= 20 else alternative[:20] + "..."
+    return (f"{count} {noun} in this pattern {verb} wrong, the first is "
+            f"{shown!r} which begins or ends with a space")
