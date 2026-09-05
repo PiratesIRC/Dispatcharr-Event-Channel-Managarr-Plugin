@@ -176,7 +176,7 @@ def route(names, profiles=None):
 # silently re-creating the very no-op this design exists to fix. SE remains the
 # existing global dummy_epg_channel_format behavior, outside the profile chain.
 
-_FALLBACK_DESCRIPTION = "Live event — guide information is currently unavailable."
+_FALLBACK_DESCRIPTION = "Live event. Guide information is currently unavailable."
 
 DAZN_GMT = Profile(
     key="dazn_gmt",
@@ -540,9 +540,18 @@ def source_props_to_write(profile, current_props, desired_props):
     every MAPPED one, which is the exact opposite of the feature, and no test that
     reads the source text could tell the two apart.
 
-    Keys the plugin does not own, such as `category`, `channel_logo_url` and the
-    description templates, are carried through untouched: it never writes them, so
-    they belong to the operator on every source.
+    Keys the plugin does not own, such as `category` and `channel_logo_url`, are
+    carried through untouched, so they belong to the operator on every source.
+
+    THE TITLE AND DESCRIPTION TEMPLATES ARE NOT IN THAT GROUP. An earlier version
+    of this docstring said the description templates were never written, and that
+    was measured wrong on 2026-09-05: `profile_props` includes
+    `fallback_title_template` and `fallback_description_template`, and only
+    PATTERN_PROPERTY_KEYS is skipped below, so both templates ARE rewritten on
+    every applied run of a source that is not user_managed. The practical effect
+    is that changing the shipped default propagates to every installation by
+    itself, and equally that an operator's own wording in those two fields is
+    replaced on the next run unless the source is user_managed.
     """
     if getattr(profile, "user_managed", False):
         return None

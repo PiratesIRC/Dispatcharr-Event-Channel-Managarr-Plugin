@@ -72,7 +72,7 @@ DAZN_PROPS = {
     "include_date": False,
     "program_duration": 240,
     "fallback_title_template": "",
-    "fallback_description_template": "Live event — guide information is currently unavailable.",
+    "fallback_description_template": "Live event. Guide information is currently unavailable.",
 }
 
 

@@ -86,14 +86,27 @@ import ecm_profiles  # noqa: E402
 # fallback, a word is no longer read as a meridiem, and the superseded pattern is
 # still listed as a stock default).
 #
+# _get_or_create_managed_epg_source was re-recorded a FIFTH time on 2026-09-05.
+# Its fallback_description_template literal changed from
+# "Live event <em dash> guide information is currently unavailable." to
+# "Live event. Guide information is currently unavailable." That string is
+# rendered into the guide for any managed channel whose name does not match the
+# event title pattern, so it is copy people read, and the workspace rule forbids
+# an em dash there. Operator instruction. The change is covered by
+# tests/contract/test_fallback_description_parity.py, which holds the plugin.py
+# literal equal to ecm_profiles._FALLBACK_DESCRIPTION and fails on an em dash or
+# en dash in either; the third copy, in scripts/bootstrap_ecm.py, is held by
+# tests/unit/test_bootstrap_merge.py, which caught the drift on this very change.
+# Nothing else in the method moved.
+#
 # The other three remain at their original S2 baseline values and must not be
 # touched without the same argument.
 FROZEN_BODIES = {
     "_attach_managed_epg": "b0126debd9231deb49625ca0404952679197b862bff6cd86c618eb46fe3b335e",
     "_detach_managed_epg": "9e8d367e7d0789715e04249dab786a494b7f6919a60d6f9c755029e8261b98ca",
     "_managed_override_ids": "5d41e55a7146863609792f31f20134469c090b51938c1ab67d0f34399c526d6c",
-    # re-recorded 2026-08-12, 2026-08-14, 2026-08-29 and 2026-08-30, see the notes above
-    "_get_or_create_managed_epg_source": "0bd2e478445ec189406b1924cf24972d057a769cd1980499be5dd57d88552656",
+    # re-recorded 2026-08-12, 2026-08-14, 2026-08-29, 2026-08-30 and 2026-09-05, see the notes above
+    "_get_or_create_managed_epg_source": "6d9cf0e97ecf13b45f16e048c088c7de713f592116a7e000be6bad3f61a5ef43",
     # re-recorded 2026-08-12, see the note above
     "_localized_template_props": "8daf6f68b33352690f255dc6d7185546c0ea70596743e633b0403861c62e75dd",
 }

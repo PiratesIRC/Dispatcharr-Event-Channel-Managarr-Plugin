@@ -207,7 +207,7 @@ This catches out anyone whose provider puts the event details in the **stream** 
 Setting **Name Source** to `Stream_Name` changes what **this plugin's hide rules read**, and nothing else. Dispatcharr renders dummy guide entries itself, from the channel's own name, and a stream name is never available to it. So in that setup:
 
 * **Hiding and showing work correctly.** The rules see the game, the date and the time.
-* **The guide entry cannot show the game.** The channel name does not match the event title pattern, so the renderer falls back to the channel name plus the static description `Live event — guide information is currently unavailable.`
+* **The guide entry cannot show the game.** The channel name does not match the event title pattern, so the renderer falls back to the channel name plus the static description `Live event. Guide information is currently unavailable.`
 
 This is a limit of dummy guide data, not a fault, and re-running a scan will not change it. To get event titles into the guide, the **channel** names have to carry the event text, which is a Dispatcharr channel-naming matter rather than a plugin setting.
 

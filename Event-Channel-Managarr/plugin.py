@@ -1516,7 +1516,7 @@ class Plugin:
             if extracted_day != today_day:
                 logger.debug(
                     f"[WrongDayOfWeek] allowing '{channel_name}': named day {extracted_day_name} "
-                    f"is within ±1 of today ({today_day_name}) in {tz_str} — cross-TZ rollover tolerance"
+                    f"is within ±1 of today ({today_day_name}) in {tz_str}, cross-TZ rollover tolerance"
                 )
             return False, None
 
@@ -3001,7 +3001,7 @@ class Plugin:
             # `if fallback_title or fallback_description`. So: empty title (-> real
             # name) + static description.
             "fallback_title_template": "",
-            "fallback_description_template": "Live event — guide information is currently unavailable.",
+            "fallback_description_template": "Live event. Guide information is currently unavailable.",
             "program_duration": duration_hours * 60,
             "timezone": tz_value,
             "include_date": False,
@@ -3674,7 +3674,7 @@ class Plugin:
                     logger.warning(
                         f"{LOG_PREFIX} Configured channel group(s) matched no channels in "
                         f"profile(s) '{', '.join(found_profile_names)}': "
-                        f"{', '.join(unmatched_groups)} — check spelling/case/unicode.")
+                        f"{', '.join(unmatched_groups)}. Check spelling, case and unicode.")
 
             # A group entry containing "|" is a user carrying the alternation character
             # over from the three regex fields into this comma-separated one. It glues
