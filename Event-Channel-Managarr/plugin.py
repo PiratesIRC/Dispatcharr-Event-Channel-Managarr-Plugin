@@ -135,6 +135,9 @@ class PluginConfig:
     # losing it strands channels where they are rather than moving them wrongly.
     GROUP_SOURCE_RECORD_FILE = "/data/event_channel_managarr_group_sources.json"
     EXPORTS_DIR = "/data/exports"
+    # Age-based cleanup of this plugin's own exports, in days. ZERO MEANS KEEP
+    # EVERYTHING and is the default, so upgrading never deletes anybody's files.
+    DEFAULT_CSV_RETENTION_DAYS = 0
     # An append-only record of what applied runs actually CHANGED, one JSON line
     # each. It exists so a running total can be reported without re-deriving it
     # from the CSV exports, which a plugin action deletes and which scheduled runs
@@ -273,6 +276,7 @@ class Plugin:
     DEFAULT_UNDATED_EVENT_GRACE_HOURS = PluginConfig.DEFAULT_UNDATED_EVENT_GRACE_HOURS
     DEFAULT_AUTO_REMOVE_EPG = PluginConfig.DEFAULT_AUTO_REMOVE_EPG
     DEFAULT_SCHEDULED_CSV_EXPORT = PluginConfig.DEFAULT_SCHEDULED_CSV_EXPORT
+    DEFAULT_CSV_RETENTION_DAYS = PluginConfig.DEFAULT_CSV_RETENTION_DAYS
     DEFAULT_AUTO_RESCAN_ON_M3U_REFRESH = PluginConfig.DEFAULT_AUTO_RESCAN_ON_M3U_REFRESH
     DEFAULT_KEEP_DUPLICATES = PluginConfig.DEFAULT_KEEP_DUPLICATES
     DEFAULT_MANAGE_DUMMY_EPG = PluginConfig.DEFAULT_MANAGE_DUMMY_EPG
@@ -536,6 +540,13 @@ class Plugin:
                 "type": "boolean",
                 "default": self.DEFAULT_SCHEDULED_CSV_EXPORT,
                 "help_text": "Writes a CSV of the results to /data/exports every time a SCHEDULED run finishes. This controls scheduled runs only: Run Now and Dry Run always write a CSV whatever it is set to.",
+            },
+            {
+                "id": "csv_retention_days",
+                "label": "🧹 Delete CSV Exports Older Than (Days)",
+                "type": "number",
+                "default": self.DEFAULT_CSV_RETENTION_DAYS,
+                "help_text": "Housekeeping for the CSV files this plugin writes to /data/exports. After each export, its own exports older than this many days are deleted. 0 keeps every file, which is the default, so nothing is removed unless you ask for it. The file just written is never deleted and at least one file always survives. Only files this plugin wrote are touched, because that directory is shared with other plugins. The Clear CSV Exports button ignores this setting and still clears everything.",
             },
             {
                 "id": "auto_rescan_on_m3u_refresh",
@@ -1977,8 +1988,11 @@ class Plugin:
             deleted_count = 0
             
             for filename in os.listdir(export_dir):
-                if ((filename.startswith("event_channel_managarr_") or filename.startswith("epg_removal_")) 
-                    and filename.endswith(".csv")):
+                # Deliberately ignores csv_retention_days: someone pressing this
+                # expects everything cleared. It shares the prefix constants with the
+                # age-based cleanup so the two cannot disagree about what is ours.
+                if (filename.startswith(ecm_parsing.CSV_EXPORT_PREFIXES)
+                        and filename.endswith(ecm_parsing.CSV_EXPORT_SUFFIX)):
                     filepath = os.path.join(export_dir, filename)
                     try:
                         os.remove(filepath)
@@ -2328,7 +2342,8 @@ class Plugin:
 
             _stop_event.clear()
 
-    def _export_csv(self, filename, rows, fieldnames, logger, header_lines=None):
+    def _export_csv(self, filename, rows, fieldnames, logger, header_lines=None,
+                    retention_days=None):
         """Export data to a CSV file in the exports directory.
         Args:
             filename: CSV filename (will be placed in exports dir)
@@ -2336,6 +2351,8 @@ class Plugin:
             fieldnames: Column names for the CSV
             logger: Logger instance
             header_lines: Optional list of comment lines to prepend (without '#' prefix)
+            retention_days: Delete this plugin's older exports afterwards. None or 0
+                keeps everything, so a caller that does not pass it deletes nothing.
         Returns:
             Full filepath of the written CSV, or None on error.
         """
@@ -2355,6 +2372,20 @@ class Plugin:
                     writer.writerow(row)
 
             logger.info(f"{LOG_PREFIX} CSV exported: {filepath} ({len(rows)} rows)")
+
+            # Housekeeping runs HERE, at the one point a CSV is written, so it covers
+            # the manual buttons and any scheduled export without a second schedule
+            # of its own: files only accumulate when one is written, so pruning here
+            # keeps the directory bounded at all times. It never raises and never
+            # deletes the file just written, so it cannot turn a good export into a
+            # reported failure. /data/exports is shared with five other plugins and
+            # only this plugin's own files are considered.
+            pruned = ecm_parsing.prune_csv_exports(
+                PluginConfig.EXPORTS_DIR, retention_days,
+                protect=filename, logger=logger)
+            if pruned:
+                logger.info(f"{LOG_PREFIX} Deleted {pruned} CSV export(s) older than "
+                            f"{retention_days} days")
             return filepath
         except Exception as e:
             logger.error(f"{LOG_PREFIX} CSV export error: {e}")
@@ -4134,7 +4165,8 @@ class Plugin:
                 fieldnames = ['channel_id', 'channel_name', 'channel_number', 'channel_group',
                             'current_visibility', 'action', 'reason', 'hide_rule', 'has_epg',
                             'epg_source', 'managed_epg_assigned', 'managed_epg_detached']
-                csv_filepath = self._export_csv(csv_filename, results, fieldnames, logger, header_lines)
+                csv_filepath = self._export_csv(csv_filename, results, fieldnames, logger, header_lines,
+                                            retention_days=settings.get("csv_retention_days"))
             
             # Apply changes if not dry run
             if not dry_run and (channels_to_hide or channels_to_show):
@@ -4536,7 +4568,8 @@ class Plugin:
             timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
             csv_filename = f"epg_removal_{timestamp}.csv"
             fieldnames = ['channel_id', 'channel_name', 'channel_number', 'epg_entries_removed', 'status']
-            csv_filepath = self._export_csv(csv_filename, results, fieldnames, logger)
+            csv_filepath = self._export_csv(csv_filename, results, fieldnames, logger,
+                                            retention_days=settings.get("csv_retention_days"))
             
             # Trigger frontend refresh
             self._trigger_frontend_refresh(settings, logger)

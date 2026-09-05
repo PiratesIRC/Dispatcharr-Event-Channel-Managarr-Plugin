@@ -62,7 +62,27 @@ Settings are grouped into six sections in the UI.
 | :--- | :--- | :--- | :--- |
 | **⏰ Scheduled Run Times (24-hour, comma-separated)** | `text` | - | Comma-separated times (24-hour HHMM format) to run daily. Leave blank to disable. |
 | **📄 Enable Scheduled CSV Export** | `boolean` | `False` | If enabled, a CSV report will be created when the plugin runs on a schedule. |
+| **🧹 Delete CSV Exports Older Than (Days)** | `number` | `0` | Housekeeping for the CSV files this plugin writes to `/data/exports`. After each export, its own exports older than this many days are deleted. `0` keeps every file and is the default, so nothing is removed unless you ask for it. Exactly this many days old does not count as older. The file just written is never deleted and at least one file always survives, so a small number cannot empty the directory. **Only files this plugin wrote are touched.** See [CSV housekeeping](#csv-housekeeping) below. |
 | **🔄 Auto-rescan after M3U refresh** | `boolean` | `False` | If enabled, the plugin re-runs its visibility scan automatically after each M3U account refresh. Dispatcharr's Auto Channel Sync re-enables (un-hides) channels in synced groups on every refresh; this re-hides them right after. Leave off if you do not use Auto Channel Sync. |
+
+
+### CSV housekeeping
+
+`/data/exports` is shared. Measured on one live installation it held 126 files written by six
+different plugins, of which 14 belonged to this one. That is why the cleanup selects files by this
+plugin's own filename prefixes as well as the `.csv` ending, and never by a wildcard: a rule that
+matched on the ending alone would delete other plugins' reports.
+
+The cleanup runs immediately after each export, which is the only moment the directory grows, so
+there is no separate scheduled job to configure or to go wrong. It never interrupts an export: if a
+file cannot be deleted it is logged and the run carries on.
+
+**The Clear CSV Exports button ignores this setting** and still deletes every CSV this plugin has
+written, which is what pressing it implies.
+
+Two exports are covered, because the plugin writes two kinds: the scan reports named
+`event_channel_managarr_*.csv` and the removal report named `epg_removal_*.csv` that the
+**Remove EPG from Hidden Channels** action writes.
 
 ### ⚙️ Advanced
 

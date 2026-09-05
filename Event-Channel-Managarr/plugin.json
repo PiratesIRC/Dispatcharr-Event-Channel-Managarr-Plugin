@@ -170,6 +170,12 @@
       "default": false
     },
     {
+      "id": "csv_retention_days",
+      "label": "🧹 Delete CSV Exports Older Than (Days)",
+      "type": "number",
+      "default": 0
+    },
+    {
       "id": "auto_rescan_on_m3u_refresh",
       "label": "🔄 Auto-rescan after M3U refresh",
       "type": "boolean",

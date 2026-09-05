@@ -758,3 +758,133 @@ def rule_effectiveness(results):
         label = (result.get("hide_rule") or "").strip() or UNTAGGED_RULE_LABEL
         counts[label] = counts.get(label, 0) + 1
     return sorted(counts.items(), key=lambda item: (-item[1], item[0]))
+
+
+# --- age-based cleanup of this plugin's CSV exports ------------------------------
+#
+# /data/exports IS SHARED. Measured on the live installation, six plugins write
+# there: stream_mapparr, epg_janitor, event_channel_managarr, lineuparr,
+# iptv_checker and channel_mapparr, 90 files between them. Selecting on the .csv
+# suffix alone, or globbing *.csv, deletes other projects' data, and with a seven
+# day rule that is most of the directory on the first run. Both the prefix AND the
+# suffix must match.
+#
+# THIS PLUGIN OWNS TWO PREFIXES. plugin.py writes event_channel_managarr_* for the
+# scan exports and epg_removal_* for the "Remove EPG from Hidden Channels" export.
+# Checked against every sibling project on 2026-09-05: none writes either prefix,
+# and EPG-Janitor's own removal export is epg_janitor_removal_, which does not
+# start with epg_removal_. plugin.py's Clear CSV Exports action reads these same
+# two constants so the two cannot come to disagree about what "ours" means.
+CSV_EXPORT_PREFIXES = ("event_channel_managarr_", "epg_removal_")
+CSV_EXPORT_SUFFIX = ".csv"
+
+SECONDS_PER_DAY = 86400.0
+
+
+def _is_our_export(name):
+    """True when this filename is one of this plugin's CSV exports."""
+    return (isinstance(name, str)
+            and name.startswith(CSV_EXPORT_PREFIXES)
+            and name.endswith(CSV_EXPORT_SUFFIX))
+
+
+def csv_exports_to_delete(entries, retention_days, now, protect=None):
+    """Which of this plugin's CSV exports are old enough to remove. Pure.
+
+    `entries` is a sequence of (filename, modification time) pairs, normally the
+    whole shared export directory. Returns the names to delete, sorted.
+
+    Four rules, each of which exists because of a way this can go wrong.
+
+    OFF UNLESS CONFIGURED. Anything that is not a positive whole number of days,
+    including 0, a negative, blank, None and unparseable text, deletes nothing, so
+    nobody loses files merely by upgrading.
+
+    THE FILE JUST WRITTEN IS NEVER DELETED, whatever the age arithmetic says.
+
+    ONE OF OURS ALWAYS SURVIVES, so a small number typed into the setting cannot
+    empty the directory. The file just written is the natural survivor; otherwise
+    it is the most recent.
+
+    A MODIFICATION TIME THAT IS NOT A NUMBER IS SKIPPED ENTIRELY rather than kept.
+    Keeping it looks harmless and is not: every comparison against it is false, so
+    it wins the "which is newest" test, becomes the survivor, and every readable
+    file is deleted instead of one being kept.
+
+    The age comparison is strict, so a file exactly N days old is not older than
+    N days.
+    """
+    try:
+        days = int(str(retention_days).strip())
+    except (TypeError, ValueError, AttributeError):
+        return []
+    if days <= 0:
+        return []
+
+    ours = []
+    for name, mtime in entries or ():
+        if not _is_our_export(name):
+            continue
+        try:
+            stamp = float(mtime)
+        except (TypeError, ValueError):
+            continue
+        if stamp != stamp:  # a NaN: its age cannot be compared
+            continue
+        ours.append((name, stamp))
+    if not ours:
+        return []
+
+    survivor = protect if any(name == protect for name, _ in ours) else None
+    if survivor is None:
+        survivor = max(ours, key=lambda pair: (pair[1], pair[0]))[0]
+
+    cutoff = float(now) - days * SECONDS_PER_DAY
+    return sorted(name for name, stamp in ours
+                  if stamp < cutoff and name != survivor)
+
+
+def prune_csv_exports(directory, retention_days, now=None, protect=None,
+                      logger=None, listdir=None, getmtime=None, remove=None):
+    """Delete this plugin's CSV exports in `directory` older than retention_days.
+
+    Returns how many were removed. NEVER RAISES: this runs immediately after a
+    successful export, and a failure to tidy up must not turn that export into a
+    reported error.
+
+    The three directory calls are arguments so this half is testable with no
+    filesystem, the same reason compile_pattern takes an injectable engine. The
+    decision itself is csv_exports_to_delete, which touches nothing.
+    """
+    import os
+    import time
+
+    listdir = os.listdir if listdir is None else listdir
+    getmtime = os.path.getmtime if getmtime is None else getmtime
+    remove = os.remove if remove is None else remove
+    now = time.time() if now is None else now
+
+    try:
+        names = listdir(directory)
+    except OSError:
+        return 0
+
+    entries = []
+    for name in names:
+        try:
+            entries.append((name, getmtime(os.path.join(directory, name))))
+        except OSError:
+            # It vanished between listing and asking, so there is nothing to delete.
+            continue
+
+    removed = 0
+    for name in csv_exports_to_delete(entries, retention_days, now, protect):
+        try:
+            remove(os.path.join(directory, name))
+            removed += 1
+            if logger is not None:
+                logger.info(f"Deleted CSV export older than {retention_days} days: {name}")
+        except OSError as exc:
+            if logger is not None:
+                logger.warning(f"Could not delete old CSV export {name}: {exc}")
+    return removed
