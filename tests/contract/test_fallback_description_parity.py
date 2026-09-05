@@ -18,9 +18,8 @@ container, so the literal is read with ast.
 import ast
 from pathlib import Path
 
-import pytest
-
 import ecm_profiles  # resolves via pyproject.toml pythonpath
+import pytest
 
 ROOT = Path(__file__).resolve().parents[2]
 PLUGIN_PY = ROOT / "Event-Channel-Managarr" / "plugin.py"
