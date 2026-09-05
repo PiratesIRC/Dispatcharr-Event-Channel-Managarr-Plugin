@@ -3952,7 +3952,7 @@ class Plugin:
                 # Check if this channel was marked for hiding due to duplicates
                 if channel_id in duplicate_hide_list:
                     final_action = "Hide"
-                    reason = "Duplicate channel (keeping better match)"
+                    reason = ecm_parsing.DUPLICATE_HIDE_REASON
                 elif action_needed == "hide":
                     final_action = "Hide"
                 elif action_needed == "show":
@@ -3966,13 +3966,9 @@ class Plugin:
                 
                 logger.debug(f"Decision for Channel {channel_id} ('{channel_info['channel_name']}'): Action={final_action}, Reason='{reason}'")
 
-                # Extract rule tag from reason for easier filtering
-                hide_rule = ""
-                if reason and reason.startswith("["):
-                    # Extract text between brackets, e.g., "[PastDate:0]" from "[PastDate:0] Event date..."
-                    bracket_end = reason.find("]")
-                    if bracket_end > 0:
-                        hide_rule = reason[1:bracket_end]
+                # The rule tag the CSV column and the Rule Effectiveness tally
+                # group by. ecm_parsing.hide_rule_tag is pure and unit-tested.
+                hide_rule = ecm_parsing.hide_rule_tag(reason)
                 
                 # has_epg was captured before the managed pass; reconcile it with this
                 # run's attach/detach so the CSV doesn't show e.g. has_epg=No alongside
@@ -4057,11 +4053,11 @@ class Plugin:
                 csv_filename = f"event_channel_managarr_{'dryrun' if dry_run else 'applied'}_{timestamp}.csv"
 
                 # Calculate statistics by rule
-                rule_stats = {}
-                for result in results:
-                    rule = result.get('hide_rule', 'N/A')
-                    if result.get('action') == 'Hide':
-                        rule_stats[rule] = rule_stats.get(rule, 0) + 1
+                # Pure and unit-tested. The inline version this replaced read the
+                # column with a get() default that fires only on an ABSENT key, so a
+                # duplicate hide, whose key was present and empty, was reported as
+                # "  : 10 channels" in a user's export (bug-177).
+                rule_stats = ecm_parsing.rule_effectiveness(results)
 
                 header_lines = [
                     f"Event Channel Managarr v{self.version} - {'Dry Run' if dry_run else 'Applied'} - {timestamp}",
@@ -4076,7 +4072,7 @@ class Plugin:
                 ]
                 if rule_stats:
                     header_lines.append("Rule Effectiveness:")
-                    for rule, count in sorted(rule_stats.items(), key=lambda x: x[1], reverse=True):
+                    for rule, count in rule_stats:
                         header_lines.append(f"  {rule}: {count} channels")
                 if regex_field_counts:
                     header_lines.append("Regex Field Matches:")
@@ -4140,7 +4136,7 @@ class Plugin:
                     if channel_id in channel_info_map:
                         info = channel_info_map[channel_id]
                         if channel_id in duplicate_hide_list:
-                            reason = "Duplicate channel (keeping better match)"
+                            reason = ecm_parsing.DUPLICATE_HIDE_REASON
                         else:
                             reason = info['reason']
                         logger.debug(f"Hiding channel {channel_id} (#{info['channel_number']}) '{info['channel_name']}' - Reason: {reason}")

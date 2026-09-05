@@ -704,3 +704,57 @@ def regex_alternative_summary(pattern):
     shown = alternative if len(alternative) <= 20 else alternative[:20] + "..."
     return (f"{count} {noun} in this pattern {verb} wrong, the first is "
             f"{shown!r} which begins or ends with a space")
+
+
+# --- the CSV's Rule Effectiveness tally, and the tag it groups by ---------------
+
+# The reason written on a channel hidden because another channel carries the same
+# event. It leads with a bracketed tag like every other hide reason, which is what
+# makes it appear as "Duplicate" in the hide_rule column and in the Rule
+# Effectiveness tally. Before that tag existed a duplicate hide produced no tag at
+# all, and the tally counted ten of them under an empty label, printing
+# "  : 10 channels" in a user's export (bug-177).
+DUPLICATE_HIDE_REASON = "[Duplicate] Another channel has the same event and was kept"
+
+# Printed instead of a blank label when a hidden channel carries no tag. A hide
+# path added later without one is then visible in the readout rather than silent.
+UNTAGGED_RULE_LABEL = "(hidden with no rule tag)"
+
+
+def hide_rule_tag(reason):
+    """Return the bracketed tag a hide reason leads with, or the empty string.
+
+    A reason reads "[PastDate:0] Event date ... is 6 days in the past", and the
+    tag is what the CSV's hide_rule column and the Rule Effectiveness tally group
+    by. Only a tag at the very START counts: a bracket later in the text is
+    ordinary prose, not a rule name.
+    """
+    if not reason or not reason.startswith("["):
+        return ""
+    end = reason.find("]")
+    if end <= 1:
+        return ""
+    return reason[1:end]
+
+
+def rule_effectiveness(results):
+    """Count hidden channels per rule tag. Returns [(label, count)], largest first.
+
+    Ties are broken by label so the CSV header is byte-stable between two runs
+    that hid the same channels, which matters because these files get diffed.
+
+    NO HIDDEN CHANNEL IS EVER COUNTED UNDER A BLANK LABEL. That is the whole
+    reason this is a function rather than a dict comprehension at the call site.
+    The previous version read the hide_rule column with `dict.get(key, "N/A")`,
+    whose default fires only when the key is ABSENT, and a duplicate hide had the
+    key present and empty. So ten hidden channels were reported as
+    "  : 10 channels", which reads as a broken CSV rather than as the answer it
+    actually was.
+    """
+    counts = {}
+    for result in results or ():
+        if (result.get("action") or "") != "Hide":
+            continue
+        label = (result.get("hide_rule") or "").strip() or UNTAGGED_RULE_LABEL
+        counts[label] = counts.get(label, 0) + 1
+    return sorted(counts.items(), key=lambda item: (-item[1], item[0]))
