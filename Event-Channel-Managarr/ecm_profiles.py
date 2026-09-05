@@ -641,3 +641,86 @@ def routing_destinations(bindings, group_profiles, code_profiles,
         if desired != binding.source_name:
             destinations[binding.id] = desired
     return destinations
+
+
+def managed_epg_enabled_ids(evaluated, forced_visible_ids, hide_ids, show_ids,
+                            duplicate_hide_ids):
+    """Return the channel ids that are visible once this scan's decisions apply.
+
+    This set does double duty in the managed dummy EPG pass. It is the set the
+    pass ATTACHES the managed source to, and it is the keep-set the DETACH step
+    protects. A channel missing from it therefore gets no guide data and also
+    has any managed EPG stripped from it on every single run, so an omission
+    here is not a missed improvement, it is active damage.
+
+    That is exactly what happened to channels matched by the Regex: Force
+    Visible Channels setting (bug-175). The per-channel loop handles them in an
+    early branch that returns to the top of the loop before the channel is
+    recorded anywhere, so they were absent from the caller's inline version of
+    this computation. Measured on the live installation on 2026-09-05: 17
+    visible channels with no EPG row at all, and a run reporting zero attaches
+    while the managed dummy EPG feature was switched on.
+
+    Arguments:
+      evaluated             (channel_id, currently_visible) for every channel
+                            that reached a normal visibility decision.
+      forced_visible_ids    ids the force-visible regex claimed. These are
+                            UNCONDITIONALLY enabled: the setting exists to
+                            overrule the hide rules, so no later list may take
+                            one back. They are listed separately rather than
+                            folded into `evaluated` because the caller's early
+                            branch has no visibility decision to report.
+      hide_ids              ids this scan decided to hide.
+      show_ids              ids this scan decided to show.
+      duplicate_hide_ids    ids the duplicate handler decided to hide.
+
+    Order is stable, evaluated first and then forced, and the result never
+    repeats an id. Both matter to the caller: the ids flow straight into an
+    ORM filter and into the counts the run reports.
+    """
+    hide = set(hide_ids or ())
+    show = set(show_ids or ())
+    duplicates = set(duplicate_hide_ids or ())
+    forced = list(forced_visible_ids or ())
+    forced_set = set(forced)
+
+    enabled = []
+    seen = set()
+    for channel_id, currently_visible in evaluated or ():
+        if channel_id in seen:
+            continue
+        if channel_id in forced_set:
+            # Handled below so a forced channel keeps its forced meaning even if
+            # the caller also recorded an ordinary decision for it.
+            continue
+        if channel_id in duplicates or channel_id in hide:
+            continue
+        if currently_visible or channel_id in show:
+            enabled.append(channel_id)
+            seen.add(channel_id)
+
+    for channel_id in forced:
+        if channel_id not in seen:
+            enabled.append(channel_id)
+            seen.add(channel_id)
+    return enabled
+
+
+def managed_epg_detach_scope(scanned_ids, ignored_ids):
+    """Return the channel ids the managed EPG pass may take the managed source off.
+
+    The scope exists so that narrowing the Channel Groups setting cannot strip
+    the managed source from channels in groups this run never looked at
+    (bug-045). It is a restriction, never a permission: a channel inside the
+    scope is only detached if it is also absent from the enabled set.
+
+    Channels matched by the Regex: Channels to Ignore setting are removed here.
+    The plugin makes no visibility decision for them and never attaches the
+    managed source to them, so leaving them in the scope meant it could only
+    ever take EPG AWAY from a channel the operator asked it to leave alone.
+    Removing them makes ignore mean ignore in both directions, and the failure
+    direction is the safe one: an ignored channel keeps whatever it has.
+    """
+    ignored = set(ignored_ids or ())
+    return [channel_id for channel_id in (scanned_ids or ())
+            if channel_id not in ignored]
