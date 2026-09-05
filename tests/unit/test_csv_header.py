@@ -222,3 +222,84 @@ def test_every_choice_setting_renders_its_stored_code_as_words():
 def test_an_unknown_stored_code_is_shown_as_it_is():
     """A value the plugin does not recognise must be visible, not hidden."""
     assert "something_new" in _rendered({"duplicate_strategy": "something_new"})
+
+
+# --- an unset choice must not read as "nothing is happening" ---------------------
+#
+# A user's export showed "duplicate_strategy: (empty)" while duplicate handling was
+# running normally: the code falls through to Keep Lowest Channel Number when the
+# setting is blank. The report implied no strategy was applied when one was.
+#
+# The default is NOT written down here. It is passed in from the plugin's own live
+# fields list, so the report cannot come to state a default the code no longer uses.
+
+DEFAULTS = {"duplicate_strategy": "lowest_number", "name_source": "Channel_Name",
+            "rate_limiting": "none"}
+
+
+def test_an_unset_choice_says_the_default_applies_rather_than_empty():
+    out = "\n".join(lines_for({}, DEFAULTS))
+    assert "Duplicate Handling Strategy: (empty)" not in out
+    assert "Keep Lowest Channel Number" in out
+    assert "default" in out
+
+
+def test_the_default_is_written_in_the_words_the_form_uses():
+    out = "\n".join(lines_for({}, DEFAULTS))
+    assert "lowest_number" not in out
+
+
+def test_a_value_the_operator_set_is_unaffected_by_the_defaults():
+    out = "\n".join(lines_for({"duplicate_strategy": "highest_number"}, DEFAULTS))
+    assert "Keep Highest Channel Number" in out
+    assert "default" not in out.split("Duplicate Handling Strategy")[1].split("\n")[0]
+
+
+def test_an_unset_setting_with_no_known_default_still_reads_as_empty():
+    out = "\n".join(lines_for({}, DEFAULTS))
+    assert "Regex: Force Visible Channels: (empty)" in out
+
+
+def test_the_defaults_argument_is_optional():
+    """Every existing caller kept working while this was added."""
+    assert lines_for({}) and lines_for({}, None)
+
+
+def test_a_blank_default_is_not_announced_as_a_default():
+    """An empty default is the same as no default and must not read as one."""
+    out = "\n".join(lines_for({}, {"regex_force_visible": ""}))
+    assert "Regex: Force Visible Channels: (empty)" in out
+
+
+def test_naming_a_default_never_replaces_a_units_explanation():
+    """The retention default is 0, and a bare "0" says nothing.
+
+    Found by rendering the block and reading it: the generic default branch ran
+    ahead of the units branches and turned "not set, which keeps every export"
+    into "not set, so the default applies: 0".
+    """
+    out = "\n".join(lines_for({}, {"csv_retention_days": 0, "past_date_grace_hours": 4}))
+    assert "Delete CSV Exports Older Than: not set, so the default applies: 0" not in out
+    assert "keeps every export" in out
+    # Naming a default must not strip the unit off it either.
+    assert "Past Date Grace Period: not set, so the default applies: 4 hours" in out
+
+
+def test_an_unset_number_of_hours_names_its_default_like_every_other_setting():
+    """Two phrasings for one situation in the same block is a wording defect.
+
+    The hours branch used to say only "the built-in default applies", because at
+    the time nothing supplied the value. The defaults are passed in now, so it can
+    name it, and it says it the same way the choices do.
+    """
+    out = "\n".join(lines_for({}, {"undated_event_grace_hours": 1,
+                                   "past_date_grace_hours": 4}))
+    assert "Undated Event Grace Period: not set, so the default applies: 1 hour" in out
+    assert "Past Date Grace Period: not set, so the default applies: 4 hours" in out
+    assert "built-in default" not in out
+
+
+def test_an_unset_number_of_hours_with_no_default_still_says_so():
+    out = "\n".join(lines_for({}, {}))
+    assert "Past Date Grace Period: (empty)" not in out
+    assert "not set" in out

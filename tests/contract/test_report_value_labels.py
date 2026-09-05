@@ -90,3 +90,42 @@ def test_an_unknown_stored_value_is_passed_through_unchanged():
 
 def test_a_setting_with_no_labels_is_passed_through_unchanged():
     assert ecm_parsing.value_label("channel_groups", "US: PPV") == "US: PPV"
+
+
+# --- the defaults the report names come from the plugin, not from a copy ----------
+
+def _plugin_tree():
+    with io.open(PLUGIN_PY, encoding="utf-8") as handle:
+        return ast.parse(handle.read())
+
+
+def _function(name):
+    for node in ast.walk(_plugin_tree()):
+        if isinstance(node, ast.FunctionDef) and node.name == name:
+            return node
+    pytest.fail(f"plugin.py has no function named {name}")
+
+
+def test_the_plugin_derives_its_defaults_from_the_live_fields_list():
+    """A second hand-written copy of the defaults would drift from the form."""
+    rendered = ast.unparse(_function("_field_defaults"))
+    assert "self.fields" in rendered, (
+        "the defaults must come from the fields property Dispatcharr serves")
+
+
+def test_naming_the_defaults_never_breaks_an_export():
+    """It runs while a report is being written, so it degrades rather than raises."""
+    rendered = ast.unparse(_function("_field_defaults"))
+    assert "except" in rendered and "return {}" in rendered
+
+
+def test_every_report_site_passes_the_defaults():
+    calls = [c for c in ast.walk(_plugin_tree())
+             if isinstance(c, ast.Call)
+             and ast.unparse(c.func) == "ecm_parsing.settings_report_lines"]
+    assert calls, "nothing builds the settings block"
+    for call in calls:
+        assert len(call.args) == 2, (
+            "a report site does not pass the defaults, so an unset choice there "
+            "still reads as (empty) when a default is in fact applied")
+        assert ast.unparse(call.args[1]) == "self._field_defaults()"

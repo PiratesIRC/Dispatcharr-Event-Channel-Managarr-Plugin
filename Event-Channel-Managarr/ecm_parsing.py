@@ -1007,30 +1007,58 @@ def _plural(text, unit):
     return f"{text} {unit}" if one else f"{text} {unit}s"
 
 
-def _render(setting_id, kind, value):
+def _unset_with_default(setting_id, default, unit=None):
+    """One phrasing for "nothing is stored, so this is what happens instead".
+
+    The default is passed IN from the plugin's live field list rather than written
+    down here, so this can never announce a default the plugin no longer uses.
+    """
+    if default is None or str(default).strip() == "":
+        return "not set"
+    shown = str(default).strip()
+    shown = _plural(shown, unit) if unit else str(value_label(setting_id, shown))
+    return f"not set, so the default applies: {shown}"
+
+
+def _render(setting_id, kind, value, default=None):
     if kind == "yesno":
         return yes_no(value)
     unset = value is None or str(value).strip() == ""
     if kind == "hours":
-        # The built-in default is NOT repeated here. Naming a number in two places
-        # is how a report comes to state a default the code no longer uses.
-        return "not set, the built-in default applies" if unset else _plural(str(value).strip(), "hour")
+        if unset:
+            return _unset_with_default(setting_id, default, "hour")
+        return _plural(str(value).strip(), "hour")
     if kind == "days":
         if unset or str(value).strip() in ("0", "0.0"):
             return "not set, which keeps every export"
         return _plural(str(value).strip(), "day")
     if unset:
+        # An unset CHOICE still has an effect, because the plugin falls back to its
+        # own default. Printing "(empty)" implied nothing was being applied, which a
+        # user read as duplicate handling being off while it was running normally.
+        # The default is passed IN rather than written down here, so this can never
+        # announce a default the plugin no longer uses. It comes AFTER the units
+        # branches above: naming the retention default as a bare "0" says less than
+        # "keeps every export", which is what those branches already say.
+        if default is not None and str(default).strip() != "":
+            return _unset_with_default(setting_id, default)
         return "(empty)"
     return str(value_label(setting_id, str(value).strip()))
 
 
-def settings_report_lines(settings):
+def settings_report_lines(settings, defaults=None):
     """The indented "  Label: value" lines for the report preamble. Pure.
 
     Every setting that changes what a run does is listed, including the ones that
     are off, because a reader working out why a run behaved as it did needs to see
     that a setting was off rather than find it missing and wonder.
+
+    `defaults` maps a setting id to the value the plugin falls back to when nothing
+    is stored. Pass the plugin's OWN live field defaults, never a copy: an unset
+    setting still has an effect, and a report that prints "(empty)" for it says the
+    opposite of what happens.
     """
     settings = settings or {}
-    return [f"  {label}: {_render(sid, kind, settings.get(sid))}"
+    defaults = defaults or {}
+    return [f"  {label}: {_render(sid, kind, settings.get(sid), defaults.get(sid))}"
             for sid, label, kind in SETTINGS_REPORT]

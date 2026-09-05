@@ -2342,6 +2342,17 @@ class Plugin:
 
             _stop_event.clear()
 
+    def _field_defaults(self):
+        """What each setting falls back to when nothing is stored, from the LIVE
+        fields list rather than a copy, so a report can never announce a default
+        the plugin no longer uses."""
+        try:
+            return {f["id"]: f.get("default") for f in self.fields if f.get("id")}
+        except Exception:
+            # A report that cannot name the defaults is worth far more than an
+            # export that fails, so this degrades rather than raises.
+            return {}
+
     def _export_csv(self, filename, rows, fieldnames, logger, header_lines=None,
                     retention_days=None):
         """Export data to a CSV file in the exports directory.
@@ -4137,7 +4148,7 @@ class Plugin:
                 # retention, so a report could not explain its own behaviour. The
                 # table and the rendering live in ecm_parsing and are unit-tested.
                 header_lines.append("Settings:")
-                header_lines.extend(ecm_parsing.settings_report_lines(settings))
+                header_lines.extend(ecm_parsing.settings_report_lines(settings, self._field_defaults()))
 
                 fieldnames = ['channel_id', 'channel_name', 'channel_number', 'channel_group',
                             'current_visibility', 'action', 'reason', 'hide_rule', 'has_epg',
@@ -4555,7 +4566,7 @@ class Plugin:
                 f"Guide entries deleted: {total_epg_removed}",
                 "",
                 "Settings:",
-            ] + ecm_parsing.settings_report_lines(settings)
+            ] + ecm_parsing.settings_report_lines(settings, self._field_defaults())
             csv_filepath = self._export_csv(csv_filename, results, fieldnames, logger,
                                             removal_header,
                                             retention_days=settings.get("csv_retention_days"))
