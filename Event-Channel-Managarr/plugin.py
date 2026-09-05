@@ -3128,6 +3128,13 @@ class Plugin:
                 # pattern that is unset or still on a plugin-shipped default (issue #21).
                 if cur is not None and cur not in stock_patterns[k]:
                     continue
+            # The two fallback templates get the same treatment, for the same reason:
+            # they are edited in the same Dispatcharr panel and were being overwritten
+            # on every run. The decision is ecm_profiles.template_is_plugin_owned, pure
+            # and unit-tested, and shared with the other write path in that module so
+            # the two cannot disagree about who owns a field.
+            elif not ecm_profiles.template_is_plugin_owned(k, current.get(k)):
+                continue
             if current.get(k) != v:
                 current[k] = v
                 changed = True

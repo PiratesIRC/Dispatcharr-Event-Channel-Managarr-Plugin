@@ -526,6 +526,88 @@ def build_group_profiles(settings):
 PATTERN_PROPERTY_KEYS = ("title_pattern", "time_pattern", "date_pattern")
 
 
+# --- who owns the two fallback template fields ----------------------------------
+#
+# The plugin used to rewrite both on every applied run, so an operator who edited
+# either in Dispatcharr's own EPG source editor lost their wording on the next
+# scan with nothing to tell them. That is the same defect issue #21 was filed for
+# on the three pattern fields, which have been protected ever since by a list of
+# every default this plugin has shipped.
+#
+# ONLY THESE TWO ARE PROTECTED. The other three templates the plugin writes,
+# title_template, upcoming_title_template and ended_title_template, are COMPUTED
+# from the timezone, date format and channel-name format settings rather than
+# being fixed strings, so "is this still a shipped default?" has no small reliable
+# answer for them. Getting that test wrong would freeze a template that is
+# supposed to track a timezone change, which is worse than overwriting it. Those
+# three stay plugin-maintained and docs/USER-GUIDE.md says so.
+
+
+# Every value this plugin has ever shipped for each protected key, found by
+# walking all 94 commits that touched plugin.py. BOTH superseded values are
+# load-bearing rather than historical curiosities:
+#
+#   "{channel_name}" was shipped as the fallback TITLE, and Dispatcharr's renderer
+#   uses that template verbatim, so those installations show the literal text
+#   {channel_name} in the guide. Listing it is what upgrades them to the empty
+#   string, which makes the renderer fall back to the real channel name.
+#
+#   The em-dash description was shipped until 2026-09-05. Listing it is what lets
+#   the replacement reach an installation that already has a source.
+#
+# WITHOUT AN ENTRY HERE A VALUE IS TREATED AS THE OPERATOR'S AND KEPT FOR EVER, so
+# when either default changes, append the previous one. The em dash is built with
+# chr() rather than typed, so this file stays free of a character the workspace
+# rules forbid in copy and no formatter can quietly alter what is matched.
+# A TUPLE of pairs, not a dict: tests/contract/test_module_purity.py forbids a
+# module-level dict because Dispatcharr's loader re-imports this module on nearly
+# every streaming event and wipes module globals unpredictably.
+STOCK_TEMPLATES = (
+    ("fallback_title_template", ("", "{channel_name}")),
+    ("fallback_description_template", (
+        _FALLBACK_DESCRIPTION,
+        "Live event " + chr(0x2014) + " guide information is currently unavailable.",
+    )),
+)
+
+# Derived so the two can never drift apart.
+PROTECTED_TEMPLATE_KEYS = tuple(key for key, _values in STOCK_TEMPLATES)
+
+
+def stock_templates_for(key):
+    """Every value this plugin has shipped for `key`, or an empty tuple. Pure."""
+    for candidate, values in STOCK_TEMPLATES:
+        if candidate == key:
+            return values
+    return ()
+
+
+def template_is_plugin_owned(key, stored):
+    """True when the plugin may write `key`, given what is stored there now. Pure.
+
+    True for a key this plugin does not protect, for a value that is absent, and
+    for any value this plugin has shipped, including a superseded one so that an
+    installation carrying it upgrades itself.
+
+    False for anything else, which is the operator's own wording. An emptied
+    description counts as their choice: clearing it disables the renderer's
+    fallback path, which is a thing somebody might deliberately want. An empty
+    fallback TITLE is different, because the empty string is the value the plugin
+    ships, and it is what makes the renderer fall back to the real channel name.
+
+    A stored value that is not a string cannot be one this plugin shipped, so it
+    is left alone rather than replaced.
+    """
+    shipped = stock_templates_for(key)
+    if not shipped:
+        return True
+    if stored is None:
+        return True
+    if not isinstance(stored, str):
+        return False
+    return stored in shipped
+
+
 def source_props_to_write(profile, current_props, desired_props):
     """The properties to store on this source, or None meaning write nothing. Pure.
 
@@ -560,6 +642,11 @@ def source_props_to_write(profile, current_props, desired_props):
     changed = False
     for key, value in (desired_props or {}).items():
         if key in PATTERN_PROPERTY_KEYS:
+            continue
+        # An operator's own wording in the two fallback templates is theirs. A value
+        # this plugin shipped, including a superseded one, is still the plugin's, so
+        # an installation carrying an old default upgrades itself.
+        if not template_is_plugin_owned(key, merged.get(key)):
             continue
         if merged.get(key) != value:
             merged[key] = value

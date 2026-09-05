@@ -200,6 +200,33 @@ When **🗓️ Manage Dummy EPG** is enabled:
   * **For names with no parseable time**: a 24-hour program with the channel name (fallback template).
 * Toggling **Manage Dummy EPG** off cleanly unbinds every channel the plugin attached. On the next scan, `epg_data` is set to `None` for any channel still pointing at the managed source. The source row itself is preserved for cheap re-adoption.
 
+### Which fields on the shared source are yours to edit
+
+The plugin keeps the shared `ECM Managed Dummy` source up to date on every applied run, but it
+does not own every field on it. Two of them are yours:
+
+- **Fallback title template**
+- **Fallback description template**
+
+These are the text the guide shows for a managed channel whose name does not match the event
+title pattern. Edit either in Dispatcharr's own EPG source editor and the plugin will leave your
+wording alone from then on. It recognises its own shipped defaults, so an installation still
+carrying an older default is still upgraded automatically; anything else is treated as yours.
+
+Everything else on that source is maintained by the plugin and hand edits are replaced on the
+next applied run. That includes the **title**, **upcoming title** and **ended title** templates,
+which are not fixed text: the plugin rebuilds them from your **Channel Name Event Timezone**,
+**Date Format** and **Channel Name Format** settings, so they have to change when those settings
+change. Change those settings rather than the templates.
+
+The three pattern fields, **title pattern**, **time pattern** and **date pattern**, follow the
+same rule as the two fallback templates: yours once you edit them, upgraded automatically while
+they still hold a default the plugin shipped.
+
+A per-group source created through **Per-Group EPG Sources** is different again, and every field
+on it is yours. See [The source is yours after the plugin creates it](#the-source-is-yours-after-the-plugin-creates-it) below.
+
+
 ### ⚠️ Guide titles come from the CHANNEL name, even when Name Source is Stream Name
 
 This catches out anyone whose provider puts the event details in the **stream** name while the **channel** name stays fixed, for example a channel called `NFL : 15 - [1080p]` fed by a stream called `NFL : 15 - 8/22 10pm Cowboys at Cardinals [1080p]`.

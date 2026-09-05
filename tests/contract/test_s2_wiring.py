@@ -99,14 +99,30 @@ import ecm_profiles  # noqa: E402
 # tests/unit/test_bootstrap_merge.py, which caught the drift on this very change.
 # Nothing else in the method moved.
 #
+# _get_or_create_managed_epg_source was re-recorded a SIXTH time on 2026-09-05.
+# It now applies the issue #21 treatment to the two fallback TEMPLATE keys as well
+# as the three pattern keys: it overwrites one only when the stored value is absent
+# or is a value this plugin has shipped. Until then it rewrote both on every
+# applied run, so an operator who edited either in Dispatcharr's own EPG source
+# editor lost their wording on the next scan with nothing to tell them, which is
+# the same defect issue #21 was filed for on the patterns. The decision is
+# ecm_profiles.template_is_plugin_owned, shared with the other write path in that
+# module so the two cannot disagree about who owns a field, and covered by
+# tests/unit/test_template_ownership.py. The shipped-values list deliberately
+# includes both SUPERSEDED defaults, found by walking all 94 commits that touched
+# plugin.py: "{channel_name}" as the fallback title, which the renderer showed as
+# literal text, and the em-dash description. Without them those installations
+# would keep the broken value for ever, which is why the fields are not simply
+# frozen. Nothing else in the method moved.
+#
 # The other three remain at their original S2 baseline values and must not be
 # touched without the same argument.
 FROZEN_BODIES = {
     "_attach_managed_epg": "b0126debd9231deb49625ca0404952679197b862bff6cd86c618eb46fe3b335e",
     "_detach_managed_epg": "9e8d367e7d0789715e04249dab786a494b7f6919a60d6f9c755029e8261b98ca",
     "_managed_override_ids": "5d41e55a7146863609792f31f20134469c090b51938c1ab67d0f34399c526d6c",
-    # re-recorded 2026-08-12, 2026-08-14, 2026-08-29, 2026-08-30 and 2026-09-05, see the notes above
-    "_get_or_create_managed_epg_source": "6d9cf0e97ecf13b45f16e048c088c7de713f592116a7e000be6bad3f61a5ef43",
+    # re-recorded 2026-08-12, 2026-08-14, 2026-08-29, 2026-08-30 and twice on 2026-09-05, see the notes above
+    "_get_or_create_managed_epg_source": "09fb337987711c0d28822c1608d5ec6b6ebf8e839d91afd1181410056f9768f5",
     # re-recorded 2026-08-12, see the note above
     "_localized_template_props": "8daf6f68b33352690f255dc6d7185546c0ea70596743e633b0403861c62e75dd",
 }
