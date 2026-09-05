@@ -1,5 +1,5 @@
 # Event Channel Managarr
-A Dispatcharr plugin that automatically manages channel visibility based on EPG data and channel names. It hides channels that currently have no event information and shows channels that do — with optional managed dummy EPG so the guide still shows something useful (event title during the window; "Upcoming at <time>: <title>" before; "Ended at <time>: <title>" after) for channels that never have real EPG assigned.
+A Dispatcharr plugin that automatically manages channel visibility based on EPG data and channel names. It hides channels that currently have no event information and shows channels that do. An optional managed dummy EPG so the guide still shows something useful (event title during the window; "Upcoming at <time>: <title>" before; "Ended at <time>: <title>" after) for channels that never have real EPG assigned.
 
 > [!TIP]
 > **New to Dispatcharr plugins?** Start with the **[Dispatcharr Plugin Workflow guide](https://piratesirc.github.io/Dispatcharr-Plugin-Workflow/)**.
@@ -106,14 +106,14 @@ no list of where to obtain any of those. It bundles no reference data at all: ev
 already exists in **your** Dispatcharr installation.
 
 What it reads is channel *names* and the programme data already stored against your channels. It
-parses event titles, dates and times out of those names in order to decide which channels currently
+parses event titles, dates and times out of those names to decide which channels currently
 have an event. **It never opens, reads, decodes, records, restreams or redistributes a stream**, and
 it never reads a stream URL. **It makes no outbound network request at all.** The update checker that
 once called the GitHub releases API was removed in `1.26.2251616`, along with the code behind it.
 
 What it writes is confined to your own Dispatcharr database and its data directory: channel
 visibility in the profiles you select, bindings to a dummy EPG source it manages, and CSV exports.
-The main scan has a **Dry Run** that writes nothing and exports what it *would* do to CSV — run that
+The main scan has a **Dry Run** that writes nothing and exports what it *would* do to CSV. Run that
 first. The other actions that change data (**Run Now**, **Remove EPG from Hidden Channels**, **Clear
 CSV Exports**, **Cleanup Orphaned Tasks**) each ask for confirmation before they act.
 

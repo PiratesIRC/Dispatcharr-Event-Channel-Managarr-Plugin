@@ -191,13 +191,17 @@ def test_the_setting_is_declared_in_both_the_code_and_the_manifest():
 
 
 def test_the_setting_is_recorded_in_the_csv_header():
-    """A CSV that cannot show the mapping cannot explain why a channel moved."""
-    node = next(n for n in ast.walk(TREE)
-                if isinstance(n, ast.Assign)
-                and any(isinstance(t, ast.Name) and t.id == "settings_keys"
-                        for t in n.targets))
-    keys = ast.literal_eval(node.value)
-    assert "group_epg_source_map" in keys
+    """A CSV that cannot show the mapping cannot explain why a channel moved.
+
+    The requirement is unchanged. On 2026-09-05 the mechanism moved: the report
+    preamble was built from a hand-maintained `settings_keys` list inside
+    plugin.py, which had drifted and omitted five settings, and it is now built
+    from ecm_parsing.SETTINGS_REPORT, which is unit-tested and carries the
+    interface label for each setting.
+    """
+    import ecm_parsing
+    reported = {sid for sid, _label, _kind in ecm_parsing.SETTINGS_REPORT}
+    assert "group_epg_source_map" in reported
 
 
 def test_validate_configuration_shows_the_mapping_the_plugin_actually_read():

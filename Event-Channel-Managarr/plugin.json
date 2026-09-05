@@ -217,7 +217,7 @@
       "description": "Reports which channels WOULD be hidden or shown and writes the full list to a CSV in /data/exports. Changes nothing.",
       "button_label": "👁️ Dry Run",
       "button_variant": "outline",
-      "button_color": "cyan"
+      "button_color": "blue"
     },
     {
       "id": "run_now",
@@ -225,9 +225,9 @@
       "description": "Scans now and applies the visibility changes straight away, using the settings as they are currently saved.",
       "button_label": "▶️ Run Now",
       "button_variant": "filled",
-      "button_color": "green",
+      "button_color": "red",
       "confirm": {
-        "message": "This will apply visibility changes and (if enabled) attach/detach managed EPG. Continue?"
+        "message": "This hides and shows channels straight away, which takes hidden ones out of your lineup, and it can clear or attach guide data. Continue?"
       }
     },
     {
@@ -255,9 +255,9 @@
       "description": "Deletes every CSV file this plugin has written to /data/exports. No channel or EPG data is touched.",
       "button_label": "🗑️ Clear CSV Exports",
       "button_variant": "filled",
-      "button_color": "red",
+      "button_color": "orange",
       "confirm": {
-        "message": "This will delete every CSV file in /data/exports created by this plugin. Continue?"
+        "message": "This deletes every CSV file in /data/exports that this plugin wrote. No channel or guide data is affected. Continue?"
       }
     },
     {

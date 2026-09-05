@@ -584,11 +584,11 @@ class Plugin:
     actions = [
         {"id": "validate_configuration", "label": "Validate Configuration", "description": "Saves the settings above, then checks them for problems: an invalid regular expression, a profile or channel group that does not exist, a malformed schedule. Changes no channels.", "button_label": "🔎 Validate", "button_variant": "outline", "button_color": "blue"},
         {"id": "update_schedule", "label": "Update Schedule", "description": "Saves the settings above and re-arms the background scheduler with the run times you entered. Use this after editing Scheduled Run Times.", "button_label": "💾 Save Schedule", "button_variant": "filled", "button_color": "green"},
-        {"id": "dry_run", "label": "Dry Run (Export to CSV)", "description": "Reports which channels WOULD be hidden or shown and writes the full list to a CSV in /data/exports. Changes nothing.", "button_label": "👁️ Dry Run", "button_variant": "outline", "button_color": "cyan"},
-        {"id": "run_now", "label": "Run Now", "description": "Scans now and applies the visibility changes straight away, using the settings as they are currently saved.", "button_label": "▶️ Run Now", "button_variant": "filled", "button_color": "green", "confirm": {"message": "This will apply visibility changes and (if enabled) attach/detach managed EPG. Continue?"}},
+        {"id": "dry_run", "label": "Dry Run (Export to CSV)", "description": "Reports which channels WOULD be hidden or shown and writes the full list to a CSV in /data/exports. Changes nothing.", "button_label": "👁️ Dry Run", "button_variant": "outline", "button_color": "blue"},
+        {"id": "run_now", "label": "Run Now", "description": "Scans now and applies the visibility changes straight away, using the settings as they are currently saved.", "button_label": "▶️ Run Now", "button_variant": "filled", "button_color": "red", "confirm": {"message": "This hides and shows channels straight away, which takes hidden ones out of your lineup, and it can clear or attach guide data. Continue?"}},
         {"id": "on_m3u_refresh", "label": "Auto-rescan after M3U refresh", "description": "Runs a visibility scan automatically after each M3U refresh, but only while '🔄 Auto-rescan after M3U refresh' is enabled in the settings above. There is no button: Dispatcharr triggers it.", "events": ["m3u_refresh"]},
         {"id": "remove_epg_from_hidden", "label": "Remove EPG from Hidden Channels", "description": "Clears the EPG assignment from every channel that is currently hidden in the configured profiles, in one pass. Use it to tidy up channels hidden before 'Auto-Remove EPG on Hide' was turned on.", "button_label": "🧹 Remove EPG from Hidden", "button_variant": "filled", "button_color": "red", "confirm": {"message": "This will CLEAR EPG data from every hidden channel in the selected profile. Cannot be undone by this plugin. Continue?"}},
-        {"id": "clear_csv_exports", "label": "Clear CSV Exports", "description": "Deletes every CSV file this plugin has written to /data/exports. No channel or EPG data is touched.", "button_label": "🗑️ Clear CSV Exports", "button_variant": "filled", "button_color": "red", "confirm": {"message": "This will delete every CSV file in /data/exports created by this plugin. Continue?"}},
+        {"id": "clear_csv_exports", "label": "Clear CSV Exports", "description": "Deletes every CSV file this plugin has written to /data/exports. No channel or EPG data is touched.", "button_label": "🗑️ Clear CSV Exports", "button_variant": "filled", "button_color": "orange", "confirm": {"message": "This deletes every CSV file in /data/exports that this plugin wrote. No channel or guide data is affected. Continue?"}},
         {"id": "cleanup_periodic_tasks", "label": "Cleanup Orphaned Tasks", "description": "Removes Celery periodic tasks left behind by older versions of this plugin, which scheduled runs through Celery instead of the built-in scheduler. Harmless to run when there are none.", "button_label": "🧼 Cleanup Orphaned Tasks", "button_variant": "outline", "button_color": "orange", "confirm": {"message": "This removes orphaned Celery periodic tasks left by older plugin versions. Continue?"}},
         {"id": "check_scheduler_status", "label": "Check Scheduler Status", "description": "Shows whether this worker's background scheduler thread is running, which times it is armed for, when the next one is due and when a scan last ran.", "button_label": "🩺 Check Scheduler", "button_variant": "outline", "button_color": "blue"},
     ]
@@ -4097,7 +4097,10 @@ class Plugin:
                 # "  : 10 channels" in a user's export (bug-177).
                 rule_stats = ecm_parsing.rule_effectiveness(results)
 
-                header_lines = [
+                # The file says what it IS before it says anything about itself, so a
+                # person opening it in a spreadsheet is told the # lines are a preamble
+                # to skip rather than meeting a wall of them.
+                header_lines = list(ecm_parsing.REPORT_INTRO_LINES) + [
                     f"Event Channel Managarr v{self.version} - {'Dry Run' if dry_run else 'Applied'} - {timestamp}",
                     f"Total Channels Processed: {len(results)}",
                     f"Channels to Hide: {len(channels_to_hide)}",
@@ -4127,40 +4130,14 @@ class Plugin:
                 # Full settings snapshot so a CSV is self-describing. Skip legacy keys
                 # that may hold credentials (dispatcharr_username/password from pre-ORM
                 # versions) and already-exported lines (rate_limiting, hide_rules_priority).
-                settings_keys = [
-                    "timezone",
-                    "channel_profile_name",
-                    "channel_groups",
-                    "name_source",
-                    "regex_channels_to_ignore",
-                    "regex_mark_inactive",
-                    "regex_force_visible",
-                    "past_date_grace_hours",
-                    "undated_event_grace_hours",
-                    "duplicate_strategy",
-                    "keep_duplicates",
-                    "auto_set_dummy_epg_on_hide",
-                    "manage_dummy_epg",
-                    "dummy_epg_event_duration_hours",
-                    "dummy_epg_event_timezone",
-                    "dummy_epg_channel_format",
-                    "group_epg_source_map",
-                    "scheduled_times",
-                    "enable_scheduled_csv_export",
-                ]
-                # The plugin no longer owns a timezone setting; the scheduler/display
-                # timezone is sourced from Dispatcharr's General Settings -> Time Zone
-                # (injected into settings["timezone"] at scan start). Label it so the
-                # self-describing CSV makes the source obvious.
-                settings_labels = {"timezone": "timezone (from Dispatcharr)"}
+                # Every setting that changes what a run does, rendered with the label
+                # it carries in the interface and with checkboxes as Yes or No. The
+                # hand-maintained key list this replaced had drifted: it omitted the
+                # date format, the EPG override, the M3U rescan and the export
+                # retention, so a report could not explain its own behaviour. The
+                # table and the rendering live in ecm_parsing and are unit-tested.
                 header_lines.append("Settings:")
-                for k in settings_keys:
-                    v = settings.get(k, "")
-                    if v == "" or v is None:
-                        v_str = "(empty)"
-                    else:
-                        v_str = str(v)
-                    header_lines.append(f"  {settings_labels.get(k, k)}: {v_str}")
+                header_lines.extend(ecm_parsing.settings_report_lines(settings))
 
                 fieldnames = ['channel_id', 'channel_name', 'channel_number', 'channel_group',
                             'current_visibility', 'action', 'reason', 'hide_rule', 'has_epg',
@@ -4568,7 +4545,19 @@ class Plugin:
             timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
             csv_filename = f"epg_removal_{timestamp}.csv"
             fieldnames = ['channel_id', 'channel_name', 'channel_number', 'epg_entries_removed', 'status']
+            # This report had NO preamble at all, so it did not say what it was, when
+            # it ran or what it had done. It says all three now, and what the run did
+            # comes before the settings, which is the order a reader wants.
+            removal_header = list(ecm_parsing.REPORT_INTRO_LINES) + [
+                f"Event Channel Managarr v{self.version} - Remove EPG from Hidden Channels - {timestamp}",
+                f"Channels examined: {len(results)}",
+                f"Channels whose EPG assignment was cleared: {channels_set_to_dummy}",
+                f"Guide entries deleted: {total_epg_removed}",
+                "",
+                "Settings:",
+            ] + ecm_parsing.settings_report_lines(settings)
             csv_filepath = self._export_csv(csv_filename, results, fieldnames, logger,
+                                            removal_header,
                                             retention_days=settings.get("csv_retention_days"))
             
             # Trigger frontend refresh

@@ -888,3 +888,149 @@ def prune_csv_exports(directory, retention_days, now=None, protect=None,
             if logger is not None:
                 logger.warning(f"Could not delete old CSV export {name}: {exc}")
     return removed
+
+
+# --- the preamble on the CSV reports this plugin writes --------------------------
+#
+# WHOLE FILE PLAIN ASCII ON PURPOSE. A spreadsheet opening a CSV under another
+# codepage turns any other character into mojibake, so nothing this plugin writes
+# into the preamble may leave ASCII. A value the OPERATOR typed, such as a channel
+# group name carrying an emoji, is passed through untouched: it is their text and
+# mangling it would be worse than the codepage risk.
+
+REPORT_INTRO_LINES = (
+    "Event Channel Managarr channel visibility report.",
+    "Every line starting with # is a preamble. Tell your spreadsheet to skip "
+    "these lines, or delete them, before reading the columns below.",
+)
+
+# How each setting is written in the interface, and how to render its value.
+# THE LABEL IS THE ONE ON THE SETTINGS FORM, so a reader who wants to change what
+# they are looking at can find it. The internal ids are no help there and one of
+# them is actively misleading: auto_set_dummy_epg_on_hide says set and it REMOVES.
+#
+# kind: "yesno" for a checkbox, "hours" for a number of hours, "plain" otherwise.
+SETTINGS_REPORT = (
+    ("timezone", "Timezone (read from Dispatcharr, not a plugin setting)", "plain"),
+    ("channel_profile_name", "Channel Profile Names", "plain"),
+    ("channel_groups", "Channel Groups", "plain"),
+    ("name_source", "Name Source", "plain"),
+    ("date_format", "Date Format in Channel Names", "plain"),
+    ("hide_rules_priority", "Hide Rules Priority", "plain"),
+    ("regex_channels_to_ignore", "Regex: Channel Names to Ignore", "plain"),
+    ("regex_mark_inactive", "Regex: Mark Channel as Inactive", "plain"),
+    ("regex_force_visible", "Regex: Force Visible Channels", "plain"),
+    ("past_date_grace_hours", "Past Date Grace Period", "hours"),
+    ("undated_event_grace_hours", "Undated Event Grace Period", "hours"),
+    ("duplicate_strategy", "Duplicate Handling Strategy", "plain"),
+    ("keep_duplicates", "Keep Duplicate Channels", "yesno"),
+    ("auto_set_dummy_epg_on_hide", "Auto-Remove EPG on Hide", "yesno"),
+    ("manage_dummy_epg", "Manage Dummy EPG", "yesno"),
+    ("override_existing_epg", "Override Empty Existing EPG", "yesno"),
+    ("dummy_epg_channel_format", "Channel Name Format", "plain"),
+    ("dummy_epg_event_duration_hours", "Event Duration", "hours"),
+    ("dummy_epg_event_timezone", "Channel Name Event Timezone", "plain"),
+    ("group_epg_source_map", "Per-Group EPG Sources", "plain"),
+    ("scheduled_times", "Scheduled Run Times", "plain"),
+    ("enable_scheduled_csv_export", "Enable Scheduled CSV Export", "yesno"),
+    ("csv_retention_days", "Delete CSV Exports Older Than", "days"),
+    ("auto_rescan_on_m3u_refresh", "Auto-rescan after M3U refresh", "yesno"),
+    ("rate_limiting", "Rate Limiting", "plain"),
+)
+
+_TRUE_WORDS = ("true", "yes", "on", "1", "enabled")
+_FALSE_WORDS = ("false", "no", "off", "0", "disabled", "")
+
+
+def yes_no(value):
+    """Render a stored checkbox as Yes or No. Pure.
+
+    DISPATCHARR STORES SOME OF THESE BOOLEANS AS THE STRING "true", so a report
+    that only handled real booleans would show two spellings for one state. An
+    unset value reads as No, because that is what the plugin acts on. A value
+    that is neither is returned unchanged rather than guessed at, so a surprising
+    stored value is visible instead of being flattened into a confident No.
+    """
+    if isinstance(value, bool):
+        return "Yes" if value else "No"
+    if value is None:
+        return "No"
+    if isinstance(value, (int, float)):
+        return "Yes" if value else "No"
+    text = str(value).strip().lower()
+    if text in _TRUE_WORDS:
+        return "Yes"
+    if text in _FALSE_WORDS:
+        return "No"
+    return str(value)
+
+
+# How a stored choice is written in the interface. The report uses the interface
+# wording, because "lowest_number" is not a phrase anyone can find on the settings
+# form. tests/contract/test_report_value_labels.py holds this equal to the options
+# the form actually offers, so the two cannot drift.
+SETTING_VALUE_LABELS = {
+    "name_source": (("Channel_Name", "Channel Name"), ("Stream_Name", "Stream Name")),
+    "date_format": (("Auto", "Auto-detect (recommended)"), ("US", "US (MM/DD)"),
+                    ("EU", "EU (DD/MM)")),
+    "duplicate_strategy": (("lowest_number", "Keep Lowest Channel Number"),
+                           ("highest_number", "Keep Highest Channel Number"),
+                           ("longest_name", "Keep Longest Channel Name")),
+    "dummy_epg_channel_format": (
+        ("US", "US:  PPV/LIVE EVENT ##: Title (MM.DD HH:MM AM/PM TZ)"),
+        ("SE", "SE:  PREFIX | Title | DDD DD Mon HH:MM TZ | extras | channel name")),
+    "rate_limiting": (("none", "None (fastest)"), ("low", "Low (~0.05s / channel)"),
+                      ("medium", "Medium (~0.2s / channel)"),
+                      ("high", "High (~0.5s / channel)")),
+}
+
+
+def value_label(setting_id, value):
+    """The interface wording for a stored choice, or the stored value unchanged.
+
+    An unrecognised value is returned as it is rather than hidden, so a stored
+    value the plugin does not know about is visible in the report instead of
+    being quietly translated into something it is not.
+    """
+    for stored, label in SETTING_VALUE_LABELS.get(setting_id, ()):
+        if stored == value:
+            return label
+    return value
+
+
+def _plural(text, unit):
+    """"1 hour" rather than "1 hours", without pretending to know English."""
+    try:
+        one = float(text) == 1
+    except (TypeError, ValueError):
+        one = False
+    return f"{text} {unit}" if one else f"{text} {unit}s"
+
+
+def _render(setting_id, kind, value):
+    if kind == "yesno":
+        return yes_no(value)
+    unset = value is None or str(value).strip() == ""
+    if kind == "hours":
+        # The built-in default is NOT repeated here. Naming a number in two places
+        # is how a report comes to state a default the code no longer uses.
+        return "not set, the built-in default applies" if unset else _plural(str(value).strip(), "hour")
+    if kind == "days":
+        if unset or str(value).strip() in ("0", "0.0"):
+            return "not set, which keeps every export"
+        return _plural(str(value).strip(), "day")
+    if unset:
+        return "(empty)"
+    return str(value_label(setting_id, str(value).strip()))
+
+
+def settings_report_lines(settings):
+    """The indented "  Label: value" lines for the report preamble. Pure.
+
+    Every setting that changes what a run does is listed, including the ones that
+    are off, because a reader working out why a run behaved as it did needs to see
+    that a setting was off rather than find it missing and wonder.
+    """
+    settings = settings or {}
+    return [f"  {label}: {_render(sid, kind, settings.get(sid))}"
+            for sid, label, kind in SETTINGS_REPORT]

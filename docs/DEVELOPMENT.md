@@ -57,7 +57,7 @@ files inside it are ignored. Anything written there is public.
 
 ## Architecture & Code Map
 
-### `plugin.py` — two classes, one file
+### `plugin.py`: two classes, one file
 
 `PluginConfig` (line ~41) is a constants holder; it stores nothing dynamic. The actual plugin is `Plugin` (line ~212). Always instantiate `Plugin`, never `PluginConfig`, when smoke-testing.
 
@@ -80,17 +80,17 @@ table listed four methods that do not exist (`get_fields`, `_action_map`,
 
 ECM state files (inside the container at `/data/`):
 
-- `event_channel_managarr_results.json` — last scan output
-- `event_channel_managarr_settings.json` — saved settings (on-disk cache)
-- `event_channel_managarr_last_run.json` — last-run timestamp
-- `event_channel_managarr_undated_first_seen.json` — per-channel first-seen record for channels whose names carry no date. Each entry holds the channel name, the date it was first seen and, for entries written by version `1.26.2450117` or later, the exact moment. `[UndatedAge:days]` uses the date; `[UndatedEnded]` uses the moment as well, to reject an inferred event window that closed before the channel existed.
-- `event_channel_managarr_ledger.jsonl` — one line per applied run, recording how many channels changed visibility. The README badge publishes the running total.
-- `event_channel_managarr_scan.lock` — guards against two scans running at once
-- `event_channel_managarr_version_check.json` — cache for the version check
+- `event_channel_managarr_results.json`: last scan output
+- `event_channel_managarr_settings.json`: saved settings (on-disk cache)
+- `event_channel_managarr_last_run.json`: last-run timestamp
+- `event_channel_managarr_undated_first_seen.json`: per-channel first-seen record for channels whose names carry no date. Each entry holds the channel name, the date it was first seen and, for entries written by version `1.26.2450117` or later, the exact moment. `[UndatedAge:days]` uses the date; `[UndatedEnded]` uses the moment as well, to reject an inferred event window that closed before the channel existed.
+- `event_channel_managarr_ledger.jsonl`: one line per applied run, recording how many channels changed visibility. The README badge publishes the running total.
+- `event_channel_managarr_scan.lock`: guards against two scans running at once
+- `event_channel_managarr_version_check.json`: cache for the version check
 
 Channel visibility is per-profile via `ChannelProfileMembership.enabled`, not a flag on `Channel` itself.
 
-### `ecm_parsing.py` — Django-free date, time and event-window logic
+### `ecm_parsing.py`: Django-free date, time and event-window logic
 
 This sibling module was extracted so the most bug-prone logic can be unit-tested without a
 running Django or Dispatcharr environment. `plugin.py` imports it through a `sys.path` shim
@@ -103,17 +103,17 @@ the `[UndatedEnded]` hide rule, and the decision that rule makes. Putting the de
 rather than in `plugin.py` is deliberate: a rule left in `plugin.py` can only be tested by
 reading its source, which cannot distinguish a working comparison from a broken one.
 
-**Anything moved here must genuinely fail rather than guess.** An error handler in this
+**Anything moved here must fail rather than guess.** An error handler in this
 module returns "no answer" instead of substituting a smaller number. Collapsing an
 unreadable duration to zero minutes does not fail open; it shortens the event window and
 hides a channel earlier than any configured value asked for.
 
-### `plugin.json` — manifest
+### `plugin.json`: manifest
 
 The manifest declares two top-level arrays that must stay in sync with `plugin.py`:
 
-- `fields` — mirrors `Plugin.get_fields()`: every setting id, type, default, label
-- `actions` — mirrors `Plugin.actions`: every action id, label, event bindings
+- `fields`: mirrors `Plugin.get_fields()`: every setting id, type, default, label
+- `actions`: mirrors `Plugin.actions`: every action id, label, event bindings
 
 **The contract test (`tests/contract`) enforces action-id and version parity automatically.** README table coverage is a manual step (see [Adding a Setting or Action](#adding-a-setting-or-action)).
 
@@ -197,17 +197,17 @@ proves what the deployed code would serve.
 
 Running `docker exec` or `docker cp` with absolute container paths (e.g. `/data/plugins/...`) from Git Bash causes MSYS to rewrite them to Windows paths (`C:/Program Files/Git/data/...`). Three workarounds:
 
-1. **Prefix with `MSYS_NO_PATHCONV=1`** — suppresses MSYS conversion for that command:
+1. **Prefix with `MSYS_NO_PATHCONV=1`**: suppresses MSYS conversion for that command:
    ```bash
    MSYS_NO_PATHCONV=1 docker exec dispatcharr cat /data/event_channel_managarr_results.json
    ```
 
-2. **Pipe scripts via stdin** — avoids passing the script path as an argument at all:
+2. **Pipe scripts via stdin**: avoids passing the script path as an argument at all:
    ```bash
    docker exec -i dispatcharr python3 < my_script.py
    ```
 
-3. **Django shell via stdin** — for ORM access:
+3. **Django shell via stdin**: for ORM access:
    ```bash
    docker exec -i dispatcharr sh -c "cd /app && python3 manage.py shell" < my_script.py
    ```
@@ -257,7 +257,7 @@ There is no host Python environment required. Tests can be run in CI (recommende
 
 ### Running in CI
 
-The GitHub Actions workflow (`.github/workflows/ci.yml`) runs the full test suite on every push and PR. No setup needed — just push a branch or open a PR.
+The GitHub Actions workflow (`.github/workflows/ci.yml`) runs the full test suite on every push and PR. No setup needed - just push a branch or open a PR.
 
 ### Running in the container (manual)
 
@@ -278,9 +278,9 @@ docker exec dispatcharr sh -c "
 
 ### Two test layers
 
-**`tests/unit/`** — Django-free, fast. Covers the bug-prone date-parsing logic in `ecm_parsing.py`. Fixtures were captured from live plugin behavior to prevent regressions. These tests can run with just `pytest` + `python-dateutil`; no Django or Dispatcharr stack needed.
+**`tests/unit/`**: Django-free, fast. Covers the bug-prone date-parsing logic in `ecm_parsing.py`. Fixtures were captured from live plugin behavior to prevent regressions. These tests can run with just `pytest` + `python-dateutil`; no Django or Dispatcharr stack needed.
 
-**`tests/contract/`** — Static analysis, because `plugin.py` imports Django at module scope
+**`tests/contract/`**: Static analysis, because `plugin.py` imports Django at module scope
 and cannot be imported outside the container. Verifies, among other things:
 
 - Every action id in `Plugin.actions` appears in `plugin.json` `actions`, and the reverse.
@@ -363,9 +363,9 @@ Actions can subscribe to Dispatcharr system events by declaring an `"events"` li
 
 ```
 saved JSON file (/data/..._settings.json)
-    ↓  overridden by
+    v  overridden by
 DB (PluginConfig.settings)
-    ↓  overridden by
+    v  overridden by
 action params (passed to run())
 ```
 
@@ -377,7 +377,7 @@ The DB value always wins over the on-disk file. This matters for in-container te
 
 ### Version scheme
 
-`1.26.{DDD}{HHMM}` — day-of-year (zero-padded to 3 digits) + UTC hour/minute (4 digits). Examples: `1.26.1610837` (day 161, 08:37 UTC).
+`1.26.{DDD}{HHMM}`: day-of-year (zero-padded to 3 digits) + UTC hour/minute (4 digits). Examples: `1.26.1610837` (day 161, 08:37 UTC).
 
 The version appears in **two places** that must match:
 - `PLUGIN_VERSION = "..."` in `plugin.py`
@@ -395,9 +395,9 @@ PYTHONUTF8=1 python bump_version.py
 PYTHONUTF8=1 python bump_version.py 1.26.1610837
 ```
 
-> `PYTHONUTF8=1` is required on Windows — plugin files contain UTF-8 characters (emoji labels, em-dashes) that the default `cp1252` codec cannot handle.
+> `PYTHONUTF8=1` is required on Windows - plugin files contain UTF-8 characters (emoji labels, em-dashes) that the default `cp1252` codec cannot handle.
 
-`bump_version.py` is **intentionally gitignored** — it is a maintainer-local tool and does not ship.
+`bump_version.py` is **intentionally gitignored**: it is a maintainer-local tool and does not ship.
 
 ### Release runbook
 
@@ -476,14 +476,14 @@ The issues endpoint returns both issues and pull requests; a pull request carrie
 
 | Path | Reason |
 |---|---|
-| `.claude/` | AI tooling (Claude Code config, skills, agents) — local only |
-| `.wolf/` | OpenWolf session memory — local only |
-| `.serena/` | Serena MCP config — local only |
-| `docs/` | Internal design specs and plans — not user-facing |
-| `CLAUDE.md`, `GEMINI.md` | AI context files — local only |
-| `bump_version.py` | Maintainer-local tool — not needed by contributors |
-| `zip.cmd` | Release packaging — maintainer-local |
-| `Event-Channel-Managarr.zip` | Build artifact — not committed |
+| `.claude/` | AI tooling (Claude Code config, skills, agents) - local only |
+| `.wolf/` | OpenWolf session memory - local only |
+| `.serena/` | Serena MCP config - local only |
+| `docs/` | Internal design specs and plans - not user-facing |
+| `CLAUDE.md`, `GEMINI.md` | AI context files - local only |
+| `bump_version.py` | Maintainer-local tool - not needed by contributors |
+| `zip.cmd` | Release packaging - maintainer-local |
+| `Event-Channel-Managarr.zip` | Build artifact - not committed |
 
 **Note on `.claude/` skills and agents:** `.claude/skills/` and `.claude/agents/` are gitignored by default, so the `/release`, `/deploy-plugin`, and `plugin-contract-reviewer` automation files work locally but are not committed to the repo. To share them with other maintainers, un-ignore `.claude/skills` and `.claude/agents` in `.gitignore`.
 
@@ -499,7 +499,7 @@ The issues endpoint returns both issues and pull requests; a pull request carrie
 
 These items were identified during a workflow review as worthwhile future work:
 
-- **Finish splitting the monolith.** `ecm_parsing.py` was the first extraction. The hide-rule engine, dummy-EPG logic, and scheduler are good candidates to extract the same way — independently testable modules imported by `plugin.py`.
+- **Finish splitting the monolith.** `ecm_parsing.py` was the first extraction. The hide-rule engine, dummy-EPG logic, and scheduler are good candidates to extract the same way - independently testable modules imported by `plugin.py`.
 - **Tighten ruff to blocking.** The linter config is currently permissive while legacy lint is cleaned up. Once the backlog is clear, make ruff failures block CI.
 - **Generate README tables from plugin.json.** The settings and actions tables in `README.md` mirror `plugin.json` by hand. A small script (or pre-commit hook) could regenerate them automatically, eliminating drift.
 - **Install `gh` CLI or a GitHub MCP.** The `gh` CLI is not installed; release steps use raw REST API calls. Installing `gh` or a GitHub MCP would reduce friction and let the `/release` skill automate more steps end-to-end.
@@ -514,7 +514,7 @@ Pull requests welcome. To submit changes:
 
 ### To this repo (`PiratesIRC/Dispatcharr-Event-Channel-Managarr-Plugin`)
 
-0. **Check open issues and PRs first** — review open issues + PRs on this repo (and any open `[event-channel-managarr]` PRs on `Dispatcharr/Plugins`) before cutting a release, so in-flight reports/fixes are included and nothing conflicts or duplicates.
+0. **Check open issues and PRs first**: review open issues + PRs on this repo (and any open `[event-channel-managarr]` PRs on `Dispatcharr/Plugins`) before cutting a release, so in-flight reports/fixes are included and nothing conflicts or duplicates.
 1. Bump version: `python3 bump_version.py` (auto-stamps with current UTC day-of-year + HHMM).
 2. Commit, push, tag, and release:
    ```bash
@@ -525,7 +525,7 @@ Pull requests welcome. To submit changes:
 
 ### To the upstream marketplace (`Dispatcharr/Plugins`)
 
-Updates also need to be PR'd to `Dispatcharr/Plugins` so the plugin updates in users' Dispatcharr UIs. The repo's GitHub Actions validator enforces strict rules — failing any blocks the merge:
+Updates also need to be PR'd to `Dispatcharr/Plugins` so the plugin updates in users' Dispatcharr UIs. The repo's GitHub Actions validator enforces strict rules - failing any blocks the merge:
 
 | Check | Requirement |
 | :--- | :--- |
@@ -533,7 +533,7 @@ Updates also need to be PR'd to `Dispatcharr/Plugins` so the plugin updates in u
 | **Version bump** | `plugin.json` `version` must be greater than the version on upstream `main` for any code/asset change. Metadata-only edits are exempt. |
 | **Required `plugin.json` fields** | `name`, `version`, `description`, `author`, `license` (SPDX). |
 | **Authorship** | PR author's GitHub username must appear in `author` or `maintainers`, or the `close-unauthorized` job auto-closes the PR. |
-| **Folder name** | `plugins/event-channel-managarr/` (lowercase-kebab) — note this differs from the `Event-Channel-Managarr/` capitalization used in this repo's zip. |
+| **Folder name** | `plugins/event-channel-managarr/` (lowercase-kebab) - note this differs from the `Event-Channel-Managarr/` capitalization used in this repo's zip. |
 
 Workflow:
 
@@ -545,8 +545,8 @@ cp <this-repo>/Event-Channel-Managarr/plugin.{py,json} plugins/event-channel-man
 git commit -am "[event-channel-managarr]: ..."
 git push -u origin ecm-v<version>
 gh pr create --repo Dispatcharr/Plugins --base main \
-    --title "[event-channel-managarr]: Bump to v<version> — <summary>" \
+    --title "[event-channel-managarr]: Bump to v<version> - <summary>" \
     --body "..."
 ```
 
-On merge, upstream automation builds the zip + checksums and updates `manifest.json` on the `releases` branch — do not touch that branch manually.
+On merge, upstream automation builds the zip + checksums and updates `manifest.json` on the `releases` branch - do not touch that branch manually.

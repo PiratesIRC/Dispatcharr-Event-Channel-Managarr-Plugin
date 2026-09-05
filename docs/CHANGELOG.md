@@ -1,7 +1,7 @@
 # Changelog
 
 Every released version, newest first, with a link to its release notes. The notes
-on each release page describe what changed in terms of what you will notice, and
+on each release page describe what you will notice, and
 they are the authoritative record; this page is an index.
 
 Versions are calendar-based: `Major.YY.DDDHHMM`, where `DDD` is the day of the year
