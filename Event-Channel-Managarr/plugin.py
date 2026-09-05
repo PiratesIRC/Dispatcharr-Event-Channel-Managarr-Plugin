@@ -3899,10 +3899,14 @@ class Plugin:
                 channels_to_show,
                 duplicate_hide_list,
             )
-            # The full in-scope universe this scan considered (profile + group filtered,
+            # The in-scope universe this scan considered (profile + group filtered,
             # visible AND hidden). The managed-EPG detach is scoped to this so narrowing
             # channel_groups can't strip the dummy off channels in other groups (bug-045).
-            scanned_channel_ids = [c.id for c in channels]
+            # Channels matched by the ignore regex are removed from it: the plugin never
+            # attaches to them, so leaving them in meant it could only take EPG away from
+            # a channel it was told to leave alone.
+            scanned_channel_ids = ecm_profiles.managed_epg_detach_scope(
+                [c.id for c in channels], channels_ignored)
             managed_attached_ids, managed_detached_ids = self._run_managed_epg_pass(
                 settings, logger, dry_run, enabled_channel_ids, scanned_channel_ids
             )

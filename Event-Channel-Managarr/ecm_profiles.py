@@ -704,3 +704,23 @@ def managed_epg_enabled_ids(evaluated, forced_visible_ids, hide_ids, show_ids,
             enabled.append(channel_id)
             seen.add(channel_id)
     return enabled
+
+
+def managed_epg_detach_scope(scanned_ids, ignored_ids):
+    """Return the channel ids the managed EPG pass may take the managed source off.
+
+    The scope exists so that narrowing the Channel Groups setting cannot strip
+    the managed source from channels in groups this run never looked at
+    (bug-045). It is a restriction, never a permission: a channel inside the
+    scope is only detached if it is also absent from the enabled set.
+
+    Channels matched by the Regex: Channels to Ignore setting are removed here.
+    The plugin makes no visibility decision for them and never attaches the
+    managed source to them, so leaving them in the scope meant it could only
+    ever take EPG AWAY from a channel the operator asked it to leave alone.
+    Removing them makes ignore mean ignore in both directions, and the failure
+    direction is the safe one: an ignored channel keeps whatever it has.
+    """
+    ignored = set(ignored_ids or ())
+    return [channel_id for channel_id in (scanned_ids or ())
+            if channel_id not in ignored]
