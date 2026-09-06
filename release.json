@@ -1,0 +1,29 @@
+{
+  "repo": "Event-Channel-Managarr",
+  "tag_prefix": "v",
+  "default_branch": "main",
+  "remote": "origin",
+  "changelog": "docs/CHANGELOG.md",
+  "version_attr_regex": null,
+  "hub_mode": "external",
+  "publish_model": "tag",
+  "publish_branch": null,
+  "python": "3.12",
+  "extra_gates": [],
+  "tests_tracked": true,
+  "package_dir": "Event-Channel-Managarr",
+  "plugin_key": "event-channel-managarr",
+  "zip_name": "Event-Channel-Managarr.zip",
+  "hub_slug": "event-channel-managarr",
+  "version_files": [
+    {
+      "path": "Event-Channel-Managarr/plugin.json",
+      "regex": "\"version\"\\s*:\\s*\"([^\"]+)\""
+    },
+    {
+      "path": "Event-Channel-Managarr/plugin.py",
+      "regex": "^\\s*PLUGIN_VERSION\\s*=\\s*\"([^\"]+)\""
+    }
+  ],
+  "_note": "Contract read by scripts/*.py, .githooks, .github/workflows and the workspace release, pre-release-qa, deploy-plugin and hub-release skills. Values marked null are unknown or not applicable. Keep keys in this order."
+}

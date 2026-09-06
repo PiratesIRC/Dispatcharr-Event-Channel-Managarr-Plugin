@@ -74,7 +74,7 @@ Event-Channel-Managarr.txt
 Event-Channel-Managarr.zip
 SCHEDULED_TASKS_GUIDE.md
 zip.cmd
-bump_version.py
+/bump_version.py
 
 # Plugin run output written into the repository root by accident. An 11 KB
 # dry-run report from 2026-06-20 (message.txt) had sat here untracked for

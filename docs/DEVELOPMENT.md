@@ -45,8 +45,8 @@ git ls-tree --name-only HEAD:Event-Channel-Managarr
 | `tests/` | Yes | pytest suite (unit + contract) |
 | `pyproject.toml` | Yes | ruff + pytest config |
 | `.github/workflows/ci.yml` | Yes | CI (runs tests on push and pull request) |
-| `bump_version.py` | **No** | Maintainer-local version bump tool (gitignored) |
-| `zip.cmd` | **No** | Builds a release ZIP (gitignored, and must not be run from an agent shell: it ends in `pause`) |
+| `scripts/bump_version.py`, `scripts/check_version_sync.py`, `scripts/validate_zip.py`, `scripts/build_release_zip.py` | Yes | Release tooling, vendored byte-identically from the maintainer's shared source; `scripts/tools_manifest.json` pins the hashes |
+| `release.json` | Yes | Release contract the tooling reads: package directory, tag prefix, changelog path, version files |
 | `.claude/`, `.wolf/` | **No** | Agent tooling and session state (gitignored) |
 | `docs/CLAUDE-*.md` | **No** | Agent notes and hand-off prompts, gitignored because they quote a real installation |
 
@@ -119,7 +119,7 @@ The manifest declares two top-level arrays that must stay in sync with `plugin.p
 
 ### Version in two places
 
-`PLUGIN_VERSION` in `plugin.py` and `"version"` in `plugin.json` must always match. Format: `1.26.{DDD}{HHMM}` (day-of-year + UTC HHMM). The `bump_version.py` tool updates both atomically. The contract test will fail if they diverge.
+`PLUGIN_VERSION` in `plugin.py` and `"version"` in `plugin.json` must always match. Format: `1.26.{DDD}{HHMM}` (day-of-year + UTC HHMM). `scripts/bump_version.py` updates both atomically. The contract test will fail if they diverge.
 
 ---
 
@@ -385,19 +385,18 @@ The version appears in **two places** that must match:
 
 ### Bumping the version
 
-`bump_version.py` (repo root) updates both files atomically:
+`scripts/bump_version.py` updates every file named in `release.json` and writes a changelog stub:
 
 ```bash
 # Bump to a new auto-generated version (current UTC timestamp)
-PYTHONUTF8=1 python bump_version.py
+python scripts/bump_version.py
 
 # Bump to a specific version
-PYTHONUTF8=1 python bump_version.py 1.26.1610837
+python scripts/bump_version.py --set 1.26.1610837
 ```
 
-> `PYTHONUTF8=1` is required on Windows - plugin files contain UTF-8 characters (emoji labels, em-dashes) that the default `cp1252` codec cannot handle.
-
-`bump_version.py` is **intentionally gitignored**: it is a maintainer-local tool and does not ship.
+The script opens every file as UTF-8 itself, so no environment variable is needed on Windows.
+`scripts/check_version_sync.py` verifies the files agree; the pre-commit hook and CI both run it.
 
 ### Release runbook
 
@@ -430,7 +429,7 @@ The issues endpoint returns both issues and pull requests; a pull request carrie
    the new commits separately with `git rev-list --objects origin/main..HEAD` plus
    `git cat-file -p` per blob. A clean result means nothing until you have watched the rules
    fire: `python ../.claude/skills/pre-publish-audit/verify_deny_rules.py --rules .publish-audit.json`.
-3. Bump the version: `PYTHONUTF8=1 python bump_version.py`. Never hand-edit a version string.
+3. Bump the version: `python scripts/bump_version.py`. Never hand-edit a version string.
 4. Confirm `PLUGIN_VERSION` in `plugin.py` matches `"version"` in `plugin.json`. The contract
    test `tests/contract/test_manifest_parity.py` checks this.
 5. Update `docs/CHANGELOG.md` with the new version and a link to its release notes.
@@ -441,18 +440,13 @@ The issues endpoint returns both issues and pull requests; a pull request carrie
    bytes with Unix line endings:
 
    ```bash
-   git -c core.autocrlf=false -c core.eol=lf archive --format=zip \
-       --prefix=Event-Channel-Managarr/ -o Event-Channel-Managarr.zip vX.YY.DDDHHMM
-   python scripts/validate_zip.py Event-Channel-Managarr.zip   # must print OK
+   python scripts/build_release_zip.py --ref vX.YY.DDDHHMM --out dist
    ```
 
-   **Do not run `zip.cmd` from an agent shell**: it ends in `pause` and uses 7-Zip in add
-   mode, so it can carry stale files from a previous build. The `--prefix` is required;
-   every previous release asset has that top-level directory and a flat archive would
-   differ from all of them. Compare the entry names against the previous release's asset
-   every time. `validate_zip.py` guards against backslash path separators, which fail to
-   install on Dispatcharr's Linux host, but it does **not** check line endings; check those
-   separately by reading raw bytes.
+   That runs `git archive` from the tag with LF forced, adds the `Event-Channel-Managarr/`
+   prefix every previous asset has, and validates the result: forward-slash entry names,
+   the package root present, no development files, and no CRLF in any text entry. Pushing
+   the tag makes CI do the same build and create the GitHub release from the changelog entry.
 8. Create the GitHub release with that ZIP as an asset. Download the asset back and compare
    it byte for byte with what you uploaded.
 9. Update the marketplace listing. **This listing is in `external` mode**, so the pull
@@ -481,8 +475,7 @@ The issues endpoint returns both issues and pull requests; a pull request carrie
 | `.serena/` | Serena MCP config - local only |
 | `docs/` | Internal design specs and plans - not user-facing |
 | `CLAUDE.md`, `GEMINI.md` | AI context files - local only |
-| `bump_version.py` | Maintainer-local tool - not needed by contributors |
-| `zip.cmd` | Release packaging - maintainer-local |
+| `scripts/` | Release tooling (bump, version sync, zip build and validation) |
 | `Event-Channel-Managarr.zip` | Build artifact - not committed |
 
 **Note on `.claude/` skills and agents:** `.claude/skills/` and `.claude/agents/` are gitignored by default, so the `/release`, `/deploy-plugin`, and `plugin-contract-reviewer` automation files work locally but are not committed to the repo. To share them with other maintainers, un-ignore `.claude/skills` and `.claude/agents` in `.gitignore`.
@@ -515,7 +508,7 @@ Pull requests welcome. To submit changes:
 ### To this repo (`PiratesIRC/Dispatcharr-Event-Channel-Managarr-Plugin`)
 
 0. **Check open issues and PRs first**: review open issues + PRs on this repo (and any open `[event-channel-managarr]` PRs on `Dispatcharr/Plugins`) before cutting a release, so in-flight reports/fixes are included and nothing conflicts or duplicates.
-1. Bump version: `python3 bump_version.py` (auto-stamps with current UTC day-of-year + HHMM).
+1. Bump version: `python scripts/bump_version.py` (auto-stamps with current UTC day-of-year + HHMM).
 2. Commit, push, tag, and release:
    ```bash
    git tag <version> && git push origin <version>
