@@ -41,10 +41,12 @@ jobs:
         run: python -c "import json; json.load(open('Event-Channel-Managarr/plugin.json'))"
 
       - name: Lint
-        # continue-on-error: true — lint noise from legacy code doesn't block the pipeline yet.
-        # TODO: remove continue-on-error once the legacy plugin.py is cleaned up.
+        # Enforced. The `continue-on-error: true` that used to sit here made this
+        # step report green while ruff failed, which it did on every run for
+        # months. The 140 standing errors were cleared on 2026-09-05: 127 fixed
+        # and 13 exempted per file in pyproject.toml, each with the reason
+        # obeying the rule would break the code. A NEW error now fails CI.
         run: ruff check .
-        continue-on-error: true
 
       - name: Tests
         run: pytest
