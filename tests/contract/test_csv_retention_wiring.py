@@ -112,10 +112,16 @@ def test_the_clear_button_does_not_read_the_retention_setting():
 
 
 def test_the_clear_button_and_the_cleanup_agree_on_which_files_are_ours():
-    fn = _function("clear_csv_exports_action")
-    rendered = ast.unparse(fn)
-    assert "ecm_parsing.CSV_EXPORT_PREFIXES" in rendered
-    assert "ecm_parsing.CSV_EXPORT_SUFFIX" in rendered
+    """Updated 2026-09-05: the action now calls the shared predicate itself.
+
+    It used to read the two constants and respell the rule inline. Asking
+    ecm_parsing.is_our_export is the same requirement expressed once, so the
+    delete-everything button and the age-based cleanup cannot come to
+    disagree about which files in that shared directory belong to us.
+    """
+    rendered = ast.unparse(_function("clear_csv_exports_action"))
+    assert "ecm_parsing.is_our_export" in rendered
+    assert "startswith" not in rendered, "the rule is respelled inline again"
 
 
 def test_the_prefixes_cover_both_of_this_plugins_export_names():
@@ -146,3 +152,15 @@ def test_the_setting_defaults_to_off_in_the_manifest():
     field = next(f for f in fields if f["id"] == SETTING)
     assert field["type"] == "number"
     assert field["default"] == 0, "0 keeps every file; anything else deletes on upgrade"
+
+
+def test_the_export_helper_does_not_log_the_prune_twice():
+    """The helper already logs one line per file it deletes.
+
+    A summary line beside it repeated the same fact in aggregate, so N deletions
+    produced N+1 near-identical lines in a log the operator greps.
+    """
+    rendered = ast.unparse(_function("_export_csv"))
+    assert "Deleted" not in rendered, (
+        "ecm_parsing.prune_csv_exports already logs one line naming each file "
+        "it deleted; a summary here repeats the same fact in aggregate")

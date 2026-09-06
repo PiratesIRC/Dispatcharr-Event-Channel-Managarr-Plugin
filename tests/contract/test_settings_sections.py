@@ -180,3 +180,27 @@ def test_the_manifest_and_the_served_list_agree_on_every_field_label():
     assert not disagree, (
         f"plugin.py and plugin.json disagree about the label for {disagree}; "
         "Dispatcharr serves the plugin.py value")
+
+
+def test_the_scheduling_heading_describes_every_setting_it_covers():
+    """A heading body that lists two things over a section of four misleads.
+
+    Found by RENDERING the form and reading it, not from the source. The export
+    housekeeping setting was added to this section and the body still described
+    only the run times and the export toggle.
+    """
+    ids = _field_ids()
+    start = ids.index("_section_scheduling")
+    following = []
+    for name in ids[start + 1:]:
+        if str(name).startswith("_section_"):
+            break
+        following.append(name)
+    body = next(f.get("description") or f.get("help_text") or ""
+                for f in _manifest_fields() if f["id"] == "_section_scheduling")
+    assert "csv_retention_days" in following, "the section no longer holds it"
+    lowered = body.lower()
+    assert "delete" in lowered or "housekeep" in lowered or "older" in lowered, (
+        "the body does not mention the export housekeeping in its own section")
+    assert "m3u" in lowered or "refresh" in lowered, (
+        "the body does not mention the rescan trigger in its own section")

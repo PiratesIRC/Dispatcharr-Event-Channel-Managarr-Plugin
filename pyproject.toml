@@ -8,6 +8,34 @@ extend-exclude = [".serena", ".wolf", "docs"]
 select = ["E", "F", "W", "I"]
 ignore = ["E501"]  # line length handled by formatter; legacy lines are long
 
+# EVERY EXEMPTION BELOW IS A PLACE WHERE OBEYING THE RULE WOULD BREAK THE CODE,
+# not a place where the rule is inconvenient. Recorded 2026-09-05, when the 140
+# standing errors were cleared: 127 were fixed (whitespace on blank lines,
+# f-strings carrying no placeholder, and import order in the files whose imports
+# can be sorted safely) and only these remain. `ruff check .` now exits 0, so a
+# NEW error is visible instead of being lost in a standing count.
+#
+# Before this, the CI Lint step carried `continue-on-error: true`, so ruff failed
+# on every run for months and the step still reported green.
+[tool.ruff.lint.per-file-ignores]
+# The loader contract: Dispatcharr imports the package and expects Plugin on it.
+# The re-export looks unused to a linter and removing it breaks the plugin.
+"Event-Channel-Managarr/__init__.py" = ["F401"]
+
+# The plugin adds its own directory to sys.path before importing its sibling
+# modules, because Dispatcharr's loader does not put it there. Sorting the
+# imports would move those imports above the line that makes them resolvable,
+# and E402 is the same insertion seen from the other side.
+"Event-Channel-Managarr/plugin.py" = ["I001", "E402"]
+
+# Each of these inserts a path before importing what that path provides, so the
+# import cannot be hoisted above it. The unused imports are modules loaded for
+# their side effect of proving they import at all inside the container.
+"scripts/verify_routing_incontainer.py" = ["I001", "F401"]
+"scripts/verify_s2_incontainer.py" = ["I001"]
+"tests/contract/test_s2_wiring.py" = ["F401"]
+"tests/unit/test_bootstrap_merge.py" = ["I001"]
+
 [tool.pytest.ini_options]
 pythonpath = ["Event-Channel-Managarr"]
 testpaths = ["tests"]

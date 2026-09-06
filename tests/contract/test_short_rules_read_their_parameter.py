@@ -13,9 +13,8 @@ container, so its structure is read with ast.
 import ast
 from pathlib import Path
 
-import pytest
-
 import ecm_parsing  # noqa: E402  resolves via pyproject.toml pythonpath
+import pytest
 
 ROOT = Path(__file__).resolve().parents[2]
 PLUGIN_PY = ROOT / "Event-Channel-Managarr" / "plugin.py"

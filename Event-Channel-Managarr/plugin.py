@@ -294,23 +294,23 @@ class Plugin:
         try:
             timezone_file = "/usr/share/zoneinfo/zone1970.tab"
             timezones = []
-            
+
             with open(timezone_file, 'r') as f:
                 for line in f:
                     # Skip comments and empty lines
                     if line.startswith('#') or not line.strip():
                         continue
-                    
+
                     # Parse the tab-delimited format
                     parts = line.strip().split('\t')
                     if len(parts) >= 3:
                         timezone_name = parts[2]
                         timezones.append({"label": timezone_name, "value": timezone_name})
-            
+
             # Sort alphabetically by timezone name
             timezones.sort(key=lambda x: x['label'])
             return timezones
-        
+
         except Exception as e:
             LOGGER.warning(f"Could not load timezones from zone1970.tab: {e}, using fallback list")
             # Fallback to a minimal list if file cannot be read
@@ -323,7 +323,7 @@ class Plugin:
                 {"label": "Asia/Tokyo", "value": "Asia/Tokyo"},
                 {"label": "Australia/Sydney", "value": "Australia/Sydney"}
             ]
-    
+
     @property
     def fields(self):
         """Build the settings form.
@@ -524,7 +524,7 @@ class Plugin:
                 "id": "_section_scheduling",
                 "label": "⏰ Scheduling & Export",
                 "type": "info",
-                "description": "Unattended runs: the times the scan starts by itself, and whether those runs leave a CSV behind."
+                "description": "Everything that happens without you pressing a button: the times the scan starts by itself, whether those runs leave a CSV in /data/exports, how long an export is kept before older ones are deleted, and whether a scan follows every M3U refresh. Scheduled times are read in Dispatcharr's own timezone, not this plugin's event timezone."
             },
             {
                 "id": "scheduled_times",
@@ -577,7 +577,7 @@ class Plugin:
         ]
 
         return fields_list
-    
+
     # Actions for Dispatcharr UI
     # Actions metadata mirrors plugin.json (which drives the Dispatcharr UI).
     # Kept here so code that introspects Plugin.actions sees the same shape.
@@ -592,7 +592,7 @@ class Plugin:
         {"id": "cleanup_periodic_tasks", "label": "Cleanup Orphaned Tasks", "description": "Removes Celery periodic tasks left behind by older versions of this plugin, which scheduled runs through Celery instead of the built-in scheduler. Harmless to run when there are none.", "button_label": "🧼 Cleanup Orphaned Tasks", "button_variant": "outline", "button_color": "orange", "confirm": {"message": "This removes orphaned Celery periodic tasks left by older plugin versions. Continue?"}},
         {"id": "check_scheduler_status", "label": "Check Scheduler Status", "description": "Shows whether this worker's background scheduler thread is running, which times it is armed for, when the next one is due and when a scan last ran.", "button_label": "🩺 Check Scheduler", "button_variant": "outline", "button_color": "blue"},
     ]
-    
+
     def __init__(self):
         self.results_file = PluginConfig.RESULTS_FILE
         self.settings_file = PluginConfig.SETTINGS_FILE
@@ -623,14 +623,14 @@ class Plugin:
         """Safely get a boolean setting that might be stored as a string"""
         val = settings.get(key, default)
         LOGGER.debug(f"_get_bool_setting('{key}'): raw_value={val} (type={type(val).__name__}), default={default}")
-        if isinstance(val, str):
-            result = val.lower() == "true"
-            LOGGER.debug(f"  String value '{val}' -> {result}")
-            return result
-        result = bool(val)
-        LOGGER.debug(f"  Non-string value {val} -> {result}")
+        # ecm_parsing.setting_is_true is the ONE rule, shared with the CSV report.
+        # They used to differ: the report accepted "1", "on" and "yes" as on while
+        # this accepted only "true", so a report could print Yes for a checkbox the
+        # scan acted on as off.
+        result = ecm_parsing.setting_is_true(val, default)
+        LOGGER.debug(f"  {type(val).__name__} value {val!r} -> {result}")
         return result
-  
+
     def _load_settings(self):
         """Load saved settings from disk"""
         try:
@@ -740,7 +740,7 @@ class Plugin:
                 })
 
             return result
-                
+
         except Exception as e:
             LOGGER.error(f"{LOG_PREFIX} Error in plugin run: {str(e)}")
             return {"status": "error", "message": str(e)}
@@ -1016,7 +1016,7 @@ class Plugin:
             # Log what we're about to save
             LOGGER.info("Saving settings to disk:")
             LOGGER.info(f"  enable_scheduled_csv_export: {settings.get('enable_scheduled_csv_export', 'NOT SET')}")
-            
+
             # Ensure boolean defaults are explicitly set if missing
             if "enable_scheduled_csv_export" not in settings:
                 LOGGER.info(f"  Setting missing 'enable_scheduled_csv_export', adding default: {self.DEFAULT_SCHEDULED_CSV_EXPORT}")
@@ -1206,9 +1206,9 @@ class Plugin:
             # Return default rules if none specified
             rules_text = self.DEFAULT_HIDE_RULES
             logger.info("No hide rules specified, using defaults")
-        
+
         rules = []
-        
+
         # Check if rules are comma-separated or newline-separated
         # If there are newlines and no commas outside of brackets, use newline splitting
         # Otherwise, use comma splitting (new format)
@@ -1246,7 +1246,7 @@ class Plugin:
             line = line.strip()
             if not line or not line.startswith('[') or not line.endswith(']'):
                 continue
-            
+
             # Extract rule name and parameter
             rule_content = line[1:-1]  # Remove [ and ]
 
@@ -1275,7 +1275,7 @@ class Plugin:
                     continue
             else:
                 rules.append((rule_content, None))
-        
+
         logger.info(f"Parsed {len(rules)} hide rules: {[r[0] + (f':{r[1]}' if r[1] is not None else '') for r in rules]}")
         return rules
 
@@ -1489,7 +1489,7 @@ class Plugin:
                 return True, "[NoEPG] No EPG program data for next 24 hours"
 
             return False, None
-        
+
         elif rule_name == "BlankName":
             if not channel_name.strip():
                 return True, "[BlankName] Channel name is blank"
@@ -1534,13 +1534,13 @@ class Plugin:
         elif rule_name == "NoEventPattern":
             # Match variations: no event, no events, offline, no games scheduled, no scheduled event
             no_event_pattern = re.compile(
-                r'\b(no[_\s-]?events?|offline|no[_\s-]?games?[_\s-]?scheduled|no[_\s-]?scheduled[_\s-]?events?)\b', 
+                r'\b(no[_\s-]?events?|offline|no[_\s-]?games?[_\s-]?scheduled|no[_\s-]?scheduled[_\s-]?events?)\b',
                 re.IGNORECASE
             )
             if no_event_pattern.search(channel_name):
                 return True, "[NoEventPattern] Name contains 'no event(s)', 'offline', or 'no games/scheduled'"
             return False, None
-        
+
         elif rule_name == "EmptyPlaceholder":
             # Literal date/time template tokens inside a parenthesized run
             # (e.g. "(MM.DD h:mmAM/PM ET)") indicate an unpopulated stub channel.
@@ -1574,7 +1574,7 @@ class Plugin:
                     return True, f"[EmptyPlaceholder] Empty or minimal content after dash ({len(content_after)} chars)"
 
             return False, None
-        
+
         elif rule_name == "ShortDescription":
             # The cutoff is [ShortDescription:N], defaulting to the 15 this rule
             # always used. The rule parser has always accepted a number here and
@@ -1702,12 +1702,12 @@ class Plugin:
                 return True, f"[PastDate:{days_threshold}] Event date {extracted_date.strftime('%m/%d/%Y')} is {days_diff} days in the past (grace period: {grace_hours}h)"
 
             return False, None
-        
+
         elif rule_name == "FutureDate":
             extracted_date = self._extract_date_from_channel_name(channel_name, logger, settings)
             if extracted_date is None:
                 return False, None  # Skip rule if no date found
-            
+
             days_threshold = rule_param if rule_param is not None else 14
             # Resolve "today" in the configured Dispatcharr timezone, consistent with
             # [PastDate]/[WrongDayOfWeek]/[UndatedAge]; a naive datetime.now() here used
@@ -1723,9 +1723,9 @@ class Plugin:
 
             if days_diff > days_threshold:
                 return True, f"[FutureDate:{days_threshold}] Event date {extracted_date.strftime('%m/%d/%Y')} is {days_diff} days in the future"
-            
+
             return False, None
-        
+
         elif rule_name == "UndatedAge":
             tracker = getattr(self, '_undated_tracker', None) or {}
             entry = tracker.get(str(channel.id))
@@ -1863,9 +1863,9 @@ class Plugin:
                         return True, f"[InactiveRegex] Matches pattern: {regex_inactive_str}"
                 except re.error as e:
                     logger.warning(f"Invalid InactiveRegex pattern '{regex_inactive_str}': {e}")
-            
+
             return False, None
-        
+
         else:
             logger.warning(f"Unknown hide rule: {rule_name}")
             return False, None
@@ -1917,51 +1917,51 @@ class Plugin:
 
         # No rules matched - channel should be visible
         return False, "Has event"
-            
+
     def cleanup_periodic_tasks_action(self, settings, logger):
         """Remove orphaned Celery periodic tasks from old plugin versions"""
         try:
             from django_celery_beat.models import PeriodicTask
-            
+
             # Find all periodic tasks created by this plugin
             tasks = PeriodicTask.objects.filter(name__startswith='event_channel_managarr_')
             task_count = tasks.count()
-            
+
             if task_count == 0:
                 return {
                     "status": "success",
                     "message": "No orphaned periodic tasks found. Database is clean!"
                 }
-            
+
             # Get task names before deletion
             task_names = list(tasks.values_list('name', flat=True))
-            
+
             # Delete the tasks
             deleted = tasks.delete()
-            
+
             logger.info(f"Deleted {deleted[0]} orphaned periodic tasks")
-            
+
             message_parts = [
                 f"Successfully removed {task_count} orphaned Celery periodic task(s):",
                 ""
             ]
-            
+
             # Show deleted task names
             for task_name in task_names[:10]:
                 message_parts.append(f"• {task_name}")
-            
+
             if len(task_names) > 10:
                 message_parts.append(f"• ... and {len(task_names) - 10} more tasks")
-            
+
             message_parts.append("")
             message_parts.append("These were leftover from older plugin versions that used Celery scheduling.")
             message_parts.append("The plugin now uses background threading instead.")
-            
+
             return {
                 "status": "success",
                 "message": "\n".join(message_parts)
             }
-            
+
         except ImportError:
             return {
                 "status": "error",
@@ -1972,27 +1972,26 @@ class Plugin:
             import traceback
             logger.error(f"Traceback: {traceback.format_exc()}")
             return {"status": "error", "message": f"Error cleaning up periodic tasks: {e}"}
-        
+
     def clear_csv_exports_action(self, settings, logger):
         """Delete all CSV export files created by this plugin"""
         try:
             export_dir = PluginConfig.EXPORTS_DIR
-            
+
             if not os.path.exists(export_dir):
                 return {
                     "status": "success",
                     "message": "No export directory found. No files to delete."
                 }
-            
+
             # Find all CSV files created by this plugin
             deleted_count = 0
-            
+
             for filename in os.listdir(export_dir):
                 # Deliberately ignores csv_retention_days: someone pressing this
                 # expects everything cleared. It shares the prefix constants with the
                 # age-based cleanup so the two cannot disagree about what is ours.
-                if (filename.startswith(ecm_parsing.CSV_EXPORT_PREFIXES)
-                        and filename.endswith(ecm_parsing.CSV_EXPORT_SUFFIX)):
+                if ecm_parsing.is_our_export(filename):
                     filepath = os.path.join(export_dir, filename)
                     try:
                         os.remove(filepath)
@@ -2000,18 +1999,18 @@ class Plugin:
                         logger.info(f"Deleted CSV file: {filename}")
                     except Exception as e:
                         logger.warning(f"Failed to delete {filename}: {e}")
-            
+
             if deleted_count == 0:
                 return {
                     "status": "success",
                     "message": "No CSV export files found to delete."
                 }
-            
+
             return {
                 "status": "success",
                 "message": f"Successfully deleted {deleted_count} CSV export file(s)."
             }
-            
+
         except Exception as e:
             logger.error(f"Error clearing CSV exports: {e}")
             return {"status": "error", "message": f"Error clearing CSV exports: {e}"}
@@ -2117,7 +2116,7 @@ class Plugin:
 
             self._save_settings(settings)
             self._start_background_scheduler(settings)
-            
+
             if scheduled_times_str:
                 rejected = []
                 times = self._parse_scheduled_times(scheduled_times_str, rejects=rejected)
@@ -2177,11 +2176,11 @@ class Plugin:
             user_tz = settings.get('timezone')
             LOGGER.debug(f"Using user-specified timezone: {user_tz}")
             return user_tz
-        
+
         # Otherwise use default timezone
         LOGGER.debug(f"Using default timezone: {self.DEFAULT_TIMEZONE}")
         return self.DEFAULT_TIMEZONE
-        
+
     def _parse_scheduled_times(self, scheduled_times_str, rejects=None):
         """Parse scheduled times string into list of datetime.time objects.
 
@@ -2336,7 +2335,7 @@ class Plugin:
             _bg_thread.join(timeout=self.SCHEDULER_STOP_TIMEOUT)
 
             if _bg_thread.is_alive():
-                LOGGER.warning(f"Background scheduler thread did not stop within timeout - may still be running!")
+                LOGGER.warning("Background scheduler thread did not stop within timeout - may still be running!")
             else:
                 LOGGER.info("Background scheduler stopped successfully")
 
@@ -2384,19 +2383,13 @@ class Plugin:
 
             logger.info(f"{LOG_PREFIX} CSV exported: {filepath} ({len(rows)} rows)")
 
-            # Housekeeping runs HERE, at the one point a CSV is written, so it covers
-            # the manual buttons and any scheduled export without a second schedule
-            # of its own: files only accumulate when one is written, so pruning here
-            # keeps the directory bounded at all times. It never raises and never
-            # deletes the file just written, so it cannot turn a good export into a
-            # reported failure. /data/exports is shared with five other plugins and
-            # only this plugin's own files are considered.
-            pruned = ecm_parsing.prune_csv_exports(
+            # Housekeeping runs HERE, at the one point a CSV is written, so it needs
+            # no schedule of its own: files only accumulate when one is written.
+            # Everything else about it, including that it never raises, is in
+            # ecm_parsing.prune_csv_exports, which also logs each file it deletes.
+            ecm_parsing.prune_csv_exports(
                 PluginConfig.EXPORTS_DIR, retention_days,
                 protect=filename, logger=logger)
-            if pruned:
-                logger.info(f"{LOG_PREFIX} Deleted {pruned} CSV export(s) older than "
-                            f"{retention_days} days")
             return filepath
         except Exception as e:
             logger.error(f"{LOG_PREFIX} CSV export error: {e}")
@@ -2440,7 +2433,7 @@ class Plugin:
         # Normalize whitespace and convert to uppercase for comparison
         description = re.sub(r'\s+', ' ', description).strip().upper()
         return description
-    
+
     def _handle_duplicates(self, channels_to_process, channels_to_hide, channels_to_show, logger, strategy="lowest_number", keep_duplicates=False):
         """Handle duplicate channels - keep only one visible based on the selected strategy."""
         # If keep_duplicates is enabled, skip duplicate handling entirely
@@ -2450,41 +2443,41 @@ class Plugin:
 
         # Group channels by normalized name AND event description
         channel_groups = {}
-        
+
         for channel_info in channels_to_process:
             channel_id = channel_info['channel_id']
             channel_name = channel_info['channel_name']
             channel_number = channel_info['channel_number']
-            
+
             normalized_name = self._normalize_channel_name(channel_name)
             event_description = self._get_event_description(channel_name)
-            
+
             # Group key is now a tuple of (base_name, event_description)
             group_key = (normalized_name, event_description)
-            
+
             if group_key not in channel_groups:
                 channel_groups[group_key] = []
-            
+
             channel_groups[group_key].append({
                 'id': channel_id,
                 'name': channel_name,
                 'number': channel_number,
                 'name_length': len(channel_name)
             })
-        
+
         # Process each group of duplicates
         duplicate_hide_list = []
-        
+
         for (normalized_name, event_description), channels in channel_groups.items():
             if len(channels) <= 1:
                 continue  # No duplicates in this group, skip
-            
+
             # Only log if it's a "real" event (has a description)
             if event_description:
                  logger.debug(f"Found {len(channels)} duplicate channels for '{normalized_name} | {event_description}'")
             else:
                  logger.debug(f"Found {len(channels)} duplicate channels for base name '{normalized_name}' (no event desc)")
-            
+
             # Sort channels based on the selected strategy
             if strategy == "highest_number":
                 channels_sorted = sorted(channels, key=lambda x: (x['number'] if x['number'] is not None else float('-inf')), reverse=True)
@@ -2492,26 +2485,26 @@ class Plugin:
                 channels_sorted = sorted(channels, key=lambda x: x['name_length'], reverse=True)
             else:  # Default to "lowest_number"
                 channels_sorted = sorted(channels, key=lambda x: (x['number'] if x['number'] is not None else float('inf'), -x['name_length']))
-            
+
             # Keep the first one (which is the best according to the sort)
             channel_to_keep = channels_sorted[0]
             channels_to_hide_in_group = channels_sorted[1:]
-            
+
             logger.debug(f"Keeping channel {channel_to_keep['id']} (#{channel_to_keep['number']}): {channel_to_keep['name']}")
-            
+
             # Mark the rest for hiding
             for dup in channels_to_hide_in_group:
                 logger.debug(f"Marking duplicate for hiding: {dup['id']} (#{dup['number']}): {dup['name']}")
                 duplicate_hide_list.append(dup['id'])
-                
+
                 # Remove from show list if it was going to be shown
                 if dup['id'] in channels_to_show:
                     channels_to_show.remove(dup['id'])
-                
+
                 # Add to hide list if not already there
                 if dup['id'] not in channels_to_hide:
                     channels_to_hide.append(dup['id'])
-        
+
         return duplicate_hide_list
 
     def _localized_template_props(self, settings):
@@ -3538,7 +3531,7 @@ class Plugin:
                 channel_profile_id__in=profile_ids,
                 enabled=True
             ).first()
-            
+
             return membership is not None
         except Exception as e:
             logger.warning(f"Error getting visibility for channel {channel_id}: {e}")
@@ -3645,10 +3638,10 @@ class Plugin:
             channel_profile_names_str = settings.get("channel_profile_name", "").strip()
             if not channel_profile_names_str:
                 return {"status": "error", "message": "Channel Profile Name is required. Please configure it in the plugin settings."}
-            
+
             # Parse multiple profile names
             channel_profile_names = [name.strip() for name in channel_profile_names_str.split(',') if name.strip()]
-            
+
             # Parse hide rules
             hide_rules_text = settings.get("hide_rules_priority", "").strip()
             hide_rules = self._parse_hide_rules(hide_rules_text, logger)
@@ -3663,9 +3656,9 @@ class Plugin:
                 else f'[{r[0]}]'
                 for r in hide_rules
             ])
-            
 
-            
+
+
             # Get Channel Profiles via ORM
             logger.info(f"Fetching Channel Profile(s): {', '.join(channel_profile_names)}")
             profile_ids = []
@@ -3677,27 +3670,27 @@ class Plugin:
                     found_profile_names.append(profile_name)
                 except ChannelProfile.DoesNotExist:
                     logger.warning(f"Channel Profile '{profile_name}' not found")
-            
+
             if not profile_ids:
                 return {"status": "error", "message": f"None of the specified Channel Profiles were found: {channel_profile_names_str}. Please check the profile names in settings."}
-            
+
             logger.info(f"Found {len(profile_ids)} profile(s): {', '.join(found_profile_names)}")
-            
+
             # Get ALL channels in the profiles (both enabled and disabled) via membership
             memberships = ChannelProfileMembership.objects.filter(
                 channel_profile_id__in=profile_ids
             ).select_related('channel')
-            
+
             all_channel_ids = [m.channel_id for m in memberships]
-            
+
             if not all_channel_ids:
                 return {"status": "error", "message": f"Channel Profile(s) '{', '.join(found_profile_names)}' have no channels."}
-            
+
             logger.info(f"Found {len(all_channel_ids)} channels in profile(s) '{', '.join(found_profile_names)}' (including hidden channels)")
-            
+
             # Get channels query - now includes both visible and hidden channels
             channels_query = Channel.objects.filter(id__in=all_channel_ids).select_related('channel_group', 'epg_data')
-            
+
             # Apply group filter if specified. Group names are matched
             # case-insensitively (like profile names) so minor case differences and
             # exotic provider unicode still match (bug-049).
@@ -3741,9 +3734,9 @@ class Plugin:
                 if separator_hint:
                     extra += f" {separator_hint}"
                 return {"status": "error", "message": f"No channels found in profile(s) '{', '.join(found_profile_names)}' with the specified groups.{extra}"}
-            
+
             logger.info(f"Processing {total_channels} channels...")
-            
+
             # Compile regex for ignore pattern
             regex_ignore = None
             regex_ignore_str = settings.get("regex_channels_to_ignore", "").strip()
@@ -3762,7 +3755,7 @@ class Plugin:
                     logger.info(f"Force visible regex compiled: {regex_force_visible_str}")
                 except re.error as e:
                     return {"status": "error", "message": f"Invalid 'Regex: Force Visible Channels': {e}"}
-            
+
             # Initialize progress tracker
             progress = ProgressTracker(total_channels, "Channel Scan", logger)
 
@@ -3818,7 +3811,7 @@ class Plugin:
 
                 channel_name = self._get_effective_name(channel, settings, logger)
                 current_visible = self._get_channel_visibility(channel.id, profile_ids, logger)
-                
+
                 logger.debug(f"Processing channel {channel.id} using name '{channel_name}' (source={settings.get('name_source', 'Channel_Name')})")
 
                 # Check if channel should be ignored
@@ -3880,7 +3873,7 @@ class Plugin:
 
                 # Check hide rules
                 should_hide, reason = self._check_channel_should_hide(channel, hide_rules, logger, settings)
-                
+
                 action_needed = None
                 if should_hide:
                     if current_visible:
@@ -3888,7 +3881,7 @@ class Plugin:
                 else:
                     if not current_visible:
                         action_needed = "show"
-                
+
                 # Store channel info for duplicate detection and logging
                 channel_info_map[channel.id] = {
                     'channel_name': channel_name,
@@ -3896,7 +3889,7 @@ class Plugin:
                     'reason': reason,
                     'current_visible': current_visible
                 }
-                
+
                 channels_for_duplicate_check.append({
                     'channel_id': channel.id,
                     'channel_name': channel_name,
@@ -3908,7 +3901,7 @@ class Plugin:
                     'has_epg': "Yes" if channel.epg_data else "No",
                     'epg_source': self._epg_source_name(channel),
                 })
-                
+
                 # Determine initial action (will be refined by duplicate handling)
                 if action_needed == "hide":
                     channels_to_hide.append(channel.id)
@@ -3931,11 +3924,11 @@ class Plugin:
             logger.info("Checking for duplicate channels...")
             # Filter to only channels that would be visible (either currently visible or about to be shown)
             potentially_visible_channels = [
-                ch for ch in channels_for_duplicate_check 
-                if (ch['current_visible'] and ch['channel_id'] not in channels_to_hide) 
+                ch for ch in channels_for_duplicate_check
+                if (ch['current_visible'] and ch['channel_id'] not in channels_to_hide)
                 or ch['channel_id'] in channels_to_show
             ]
-            
+
             duplicate_hide_list = self._handle_duplicates(
                 potentially_visible_channels,
                 channels_to_hide,
@@ -3997,7 +3990,7 @@ class Plugin:
                 channel_id = channel_info['channel_id']
                 action_needed = channel_info['action_needed']
                 reason = channel_info['reason']
-                
+
                 # Check if this channel was marked for hiding due to duplicates
                 if channel_id in duplicate_hide_list:
                     final_action = "Hide"
@@ -4012,13 +4005,13 @@ class Plugin:
                         final_action = "Visible"
                     else:
                         final_action = "No change"
-                
+
                 logger.debug(f"Decision for Channel {channel_id} ('{channel_info['channel_name']}'): Action={final_action}, Reason='{reason}'")
 
                 # The rule tag the CSV column and the Rule Effectiveness tally
                 # group by. ecm_parsing.hide_rule_tag is pure and unit-tested.
                 hide_rule = ecm_parsing.hide_rule_tag(reason)
-                
+
                 # has_epg was captured before the managed pass; reconcile it with this
                 # run's attach/detach so the CSV doesn't show e.g. has_epg=No alongside
                 # managed_epg_assigned=True (bug-050).
@@ -4042,7 +4035,7 @@ class Plugin:
                     "managed_epg_assigned": channel_id in managed_attached_set,
                     "managed_epg_detached": channel_id in managed_detached_set,
                 })
-            
+
             # Mark scan as complete
             progress.finish()
 
@@ -4120,7 +4113,6 @@ class Plugin:
                     f"Duplicates Hidden: {total_duplicates_hidden}",
                     f"Managed EPG Attached: {len(managed_attached_set)}",
                     f"Managed EPG Detached: {len(managed_detached_set)}",
-                    f"Rate Limiting: {settings.get('rate_limiting', self.DEFAULT_RATE_LIMITING)}",
                 ]
                 if rule_stats:
                     header_lines.append("Rule Effectiveness:")
@@ -4136,11 +4128,16 @@ class Plugin:
                         f"Channel Groups that matched no channels: {', '.join(unmatched_groups)}")
                     if separator_hint:
                         header_lines.append(f"  {separator_hint}")
-                header_lines.append(f"Hide Rules Priority: {hide_rules_text_for_export}")
+                header_lines.append(
+                    f"Hide Rules Priority (as applied, including any defaults): "
+                    f"{hide_rules_text_for_export}")
 
-                # Full settings snapshot so a CSV is self-describing. Skip legacy keys
-                # that may hold credentials (dispatcharr_username/password from pre-ORM
-                # versions) and already-exported lines (rate_limiting, hide_rules_priority).
+                # Full settings snapshot so a CSV is self-describing. Only the ids
+                # listed in ecm_parsing.SETTINGS_REPORT are printed, so a legacy key
+                # left in the stored settings, including the pre-ORM
+                # dispatcharr_username and dispatcharr_password, can never reach the
+                # file. The line above prints the hide rules AS APPLIED; the block
+                # below prints the setting as configured, which is a different fact.
                 # Every setting that changes what a run does, rendered with the label
                 # it carries in the interface and with checkboxes as Yes or No. The
                 # hand-maintained key list this replaced had drifted: it omitted the
@@ -4155,7 +4152,7 @@ class Plugin:
                             'epg_source', 'managed_epg_assigned', 'managed_epg_detached']
                 csv_filepath = self._export_csv(csv_filename, results, fieldnames, logger, header_lines,
                                             retention_days=settings.get("csv_retention_days"))
-            
+
             # Apply changes if not dry run
             if not dry_run and (channels_to_hide or channels_to_show):
                 # Log channels being hidden with reasons
@@ -4229,15 +4226,15 @@ class Plugin:
                 "channels_ignored": len(channels_ignored),
                 "results": results
             }
-            
+
             with open(self.results_file, 'w') as f:
                 json.dump(result_data, f, indent=2)
-            
+
             self.last_results = results
-            
+
             # Build summary message
             mode_text = "Dry Run" if dry_run else "Applied"
-            
+
             # Configuration problems go FIRST. Dispatcharr's toast shows roughly seven
             # lines and clips from the MIDDLE, so a warning appended at the end is the
             # part most likely to be cut. Until now these two only reached the
@@ -4264,28 +4261,28 @@ class Plugin:
                 f"• Channels ignored: {len(channels_ignored)}",
                 f"• Duplicate channels hidden: {total_duplicates_hidden}",
                 f"• Managed EPG: {len(managed_attached_set)} attached, {len(managed_detached_set)} detached",
-                f"",
+                "",
             ]
             if csv_filepath:
                 message_parts.append(f"Results exported to: {csv_filepath}")
             else:
-                message_parts.append(f"CSV export disabled for this run.")
-            
+                message_parts.append("CSV export disabled for this run.")
+
             # Add scheduler status
             scheduled_times_str = settings.get("scheduled_times", "").strip()
             if scheduled_times_str:
                 times = self._parse_scheduled_times(scheduled_times_str)
                 time_list = [t.strftime('%H:%M') for t in times]
-                message_parts.append(f"")
+                message_parts.append("")
                 message_parts.append(f"Scheduler active - runs daily at: {', '.join(time_list)}")
-            
+
             if dry_run:
                 message_parts.append("")
                 message_parts.append("Use 'Run Now' to apply these changes.")
             else:
                 message_parts.append("")
                 message_parts.append("Changes applied successfully - GUI should update shortly.")
-            
+
             return {
                 "status": "success",
                 "message": "\n".join(message_parts),
@@ -4300,7 +4297,7 @@ class Plugin:
                     "csv_file": csv_filepath if csv_filepath else "N/A"
                 }
             }
-            
+
         except Exception as e:
             logger.error(f"Error scanning channels: {str(e)}")
             import traceback
@@ -4447,7 +4444,13 @@ class Plugin:
         """Remove EPG data from all hidden/disabled channels in the selected profile and set to dummy EPG"""
         try:
             logger.info("Starting EPG removal from hidden channels...")
-            
+
+            # The report this action writes prints the timezone it ran under.
+            # That is not a setting of this plugin, it is read from Dispatcharr,
+            # and nothing injects it here unless this line does, so the preamble
+            # used to state "(empty)" on every removal export ever written.
+            settings["timezone"] = self._dispatcharr_timezone()
+
             # Validate required settings
             channel_profile_names_str = settings.get("channel_profile_name", "").strip()
             if not channel_profile_names_str:
@@ -4455,7 +4458,7 @@ class Plugin:
                     "status": "error",
                     "message": "Channel Profile Name is required. Please configure it in settings."
                 }
-            
+
             # Parse multiple profile names
             channel_profile_names = [name.strip() for name in channel_profile_names_str.split(',') if name.strip()]
             if not channel_profile_names:
@@ -4463,7 +4466,7 @@ class Plugin:
                     "status": "error",
                     "message": "Channel Profile Name is required. Please configure it in settings."
                 }
-            
+
             # Get channel profiles using Django ORM
             profile_ids = []
             found_profile_names = []
@@ -4475,13 +4478,13 @@ class Plugin:
                     logger.info(f"Found profile: {profile_name} (ID: {profile.id})")
                 except ChannelProfile.DoesNotExist:
                     logger.warning(f"Channel profile '{profile_name}' not found")
-            
+
             if not profile_ids:
                 return {
                     "status": "error",
                     "message": f"None of the specified Channel Profiles were found: {channel_profile_names_str}"
                 }
-            
+
             # Get all channel memberships in these profiles that are disabled
             hidden_memberships = ChannelProfileMembership.objects.filter(
                 channel_profile_id__in=profile_ids,
@@ -4496,16 +4499,16 @@ class Plugin:
                     hidden_memberships = hidden_memberships.filter(
                         self._group_name_q("channel__channel_group__name", group_names))
                     logger.info(f"Filtering EPG removal to groups: {', '.join(group_names)}")
-            
+
             if not hidden_memberships.exists():
                 return {
                     "status": "success",
                     "message": "No hidden channels found in the selected profile. No EPG data to remove."
                 }
-            
+
             hidden_count = hidden_memberships.count()
             logger.info(f"Found {hidden_count} hidden channels")
-            
+
             # Collect EPG removal results
             results = []
             total_epg_removed = 0
@@ -4551,7 +4554,7 @@ class Plugin:
                     Channel.objects.bulk_update(channels_to_bulk_clear, ['epg_data'])
                 logger.info(f"{LOG_PREFIX} Bulk-cleared EPG from {len(channels_to_bulk_clear)} channels")
             channels_set_to_dummy = len(channels_to_bulk_clear)
-            
+
             # Export results to CSV
             timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
             csv_filename = f"epg_removal_{timestamp}.csv"
@@ -4570,23 +4573,23 @@ class Plugin:
             csv_filepath = self._export_csv(csv_filename, results, fieldnames, logger,
                                             removal_header,
                                             retention_days=settings.get("csv_retention_days"))
-            
+
             # Trigger frontend refresh
             self._trigger_frontend_refresh(settings, logger)
-            
+
             # Build summary message
             message_parts = [
-                f"EPG Removal Complete:",
+                "EPG Removal Complete:",
                 f"• Hidden channels processed: {hidden_count}",
                 f"• Channels set to dummy EPG: {channels_set_to_dummy}",
                 f"• Total EPG entries removed: {total_epg_removed}",
                 f"• Channels already using dummy EPG: {sum(1 for r in results if r['status'] == 'already_dummy')}",
-                f"",
+                "",
                 f"Results exported to: {csv_filepath}",
-                f"",
-                f"Frontend refresh triggered - GUI should update shortly."
+                "",
+                "Frontend refresh triggered - GUI should update shortly."
             ]
-            
+
             return {
                 "status": "success",
                 "message": "\n".join(message_parts),
@@ -4597,7 +4600,7 @@ class Plugin:
                     "csv_file": csv_filepath
                 }
             }
-            
+
         except Exception as e:
             logger.error(f"Error removing EPG from hidden channels: {str(e)}")
             import traceback

@@ -10,11 +10,10 @@ parse_scheduled_times now returns the rejected text alongside the accepted times
 so both the settings form and the scheduler can name what will never run.
 """
 
-import pytest
 from datetime import time
 
+import pytest
 from ecm_parsing import parse_scheduled_times
-
 
 # ---------------------------------------------------------------------------
 # Entries that are accepted

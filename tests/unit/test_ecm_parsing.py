@@ -6,10 +6,10 @@ apply_meridiem, resolve_numeric_date_pair, and name_has_stop_timestamp.
 Failing any of these tests means a regression in the parsing logic.
 """
 
-import pytest
 from datetime import date, datetime
 
 import ecm_parsing
+import pytest
 from ecm_parsing import (
     apply_meridiem,
     coerce_timezone,

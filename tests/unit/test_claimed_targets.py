@@ -13,8 +13,6 @@ channel currently holds a real, populated EPG that must not be destroyed.
 
 from pathlib import Path
 
-import pytest
-
 import ecm_profiles
 
 FIXTURE = Path(__file__).resolve().parents[1] / "fixtures" / "us_ppv_channel_names.txt"

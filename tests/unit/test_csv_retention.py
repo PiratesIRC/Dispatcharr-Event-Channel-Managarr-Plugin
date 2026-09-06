@@ -333,3 +333,145 @@ def test_the_wrapper_never_deletes_the_file_just_written():
     fake = FakeDir(files)
     assert run_prune(fake, protect="event_channel_managarr_applied_a.csv") == 3
     assert "event_channel_managarr_applied_a.csv" not in fake.removed
+
+
+# --- work that is done before discovering there is nothing to do -----------------
+#
+# Measured against a directory shaped like the live one, 126 files of which 14 are
+# ours: with retention OFF, which is the DEFAULT, the wrapper still made 1 listdir
+# and 126 getmtime calls to produce an empty list. Every export on every
+# installation pays that until someone turns the feature on.
+
+SHARED_DIR = ([f"stream_mapparr_{i}.csv" for i in range(65)]
+              + [f"epg_janitor_{i}.csv" for i in range(26)]
+              + [f"lineuparr_{i}.csv" for i in range(10)]
+              + [f"iptv_checker_results_{i}.csv" for i in range(5)]
+              + [f"channel_mapparr_{i}.csv" for i in range(6)]
+              + [f"event_channel_managarr_applied_{i}.csv" for i in range(14)])
+
+
+class CountingDir:
+    def __init__(self, names):
+        self.names = list(names)
+        self.listdir_calls = 0
+        self.getmtime_calls = 0
+        self.removed = []
+
+    def listdir(self, directory):
+        self.listdir_calls += 1
+        return list(self.names)
+
+    def getmtime(self, path):
+        self.getmtime_calls += 1
+        return NOW - 400 * DAY
+
+    def remove(self, path):
+        self.removed.append(path)
+
+
+def _count(days):
+    d = CountingDir(SHARED_DIR)
+    removed = prune("/data/exports", days, now=NOW, listdir=d.listdir,
+                    getmtime=d.getmtime, remove=d.remove)
+    return d, removed
+
+
+def test_nothing_is_read_from_disk_when_pruning_is_switched_off():
+    for days in (0, None, "", -1, "not a number"):
+        d, removed = _count(days)
+        assert removed == 0
+        assert d.listdir_calls == 0, f"listed the directory for retention={days!r}"
+        assert d.getmtime_calls == 0, f"stat'd files for retention={days!r}"
+
+
+def test_only_this_plugins_own_files_are_stat_ed():
+    d, removed = _count(7)
+    ours = sum(1 for n in SHARED_DIR if n.startswith(("event_channel_managarr_", "epg_removal_")))
+    assert d.getmtime_calls == ours, (
+        f"stat'd {d.getmtime_calls} files when only {ours} belong to this plugin")
+    assert removed == ours - 1, "one of ours always survives"
+
+
+def test_the_directory_is_listed_once():
+    d, _ = _count(7)
+    assert d.listdir_calls == 1
+
+
+# --- a retention typed as a whole number stored as a float ------------------------
+
+def test_a_whole_number_stored_as_a_float_still_prunes():
+    """Dispatcharr's number widget can hand back 7.0 for a field the operator
+    typed 7 into. Treating that as "off" disables the feature with nothing in the
+    interface to explain why."""
+    entries = [(f"event_channel_managarr_applied_{n}.csv", aged(400)) for n in "abcd"]
+    assert len(to_delete(entries, 7.0, NOW)) == 3
+    assert len(to_delete(entries, "7.0", NOW)) == 3
+
+
+def test_a_fractional_retention_is_refused_rather_than_rounded():
+    """Rounding 7.5 silently would be a guess about what the operator meant."""
+    entries = [(f"event_channel_managarr_applied_{n}.csv", aged(400)) for n in "abcd"]
+    assert to_delete(entries, 7.5, NOW) == []
+
+
+def test_a_configured_but_unusable_retention_is_reported():
+    """"Off" and "you typed something I cannot use" must be distinguishable."""
+    assert ecm_parsing.retention_days_problem(7) is None
+    assert ecm_parsing.retention_days_problem("7") is None
+    assert ecm_parsing.retention_days_problem(7.0) is None
+    assert ecm_parsing.retention_days_problem(0) is None
+    assert ecm_parsing.retention_days_problem(None) is None
+    assert ecm_parsing.retention_days_problem("") is None
+    for bad in ("soon", "7 days", 7.5, []):
+        assert ecm_parsing.retention_days_problem(bad), f"{bad!r} should be reported"
+
+
+class RecordingLogger:
+    def __init__(self):
+        self.info, self.warning = [], []
+
+    def __getattr__(self, name):
+        raise AttributeError(name)
+
+
+class Logger:
+    def __init__(self):
+        self.infos, self.warnings = [], []
+
+    def info(self, message):
+        self.infos.append(str(message))
+
+    def warning(self, message):
+        self.warnings.append(str(message))
+
+
+def test_a_retention_that_cannot_be_used_is_logged_not_silently_ignored():
+    """"Off" and "you typed something I cannot use" must be distinguishable.
+
+    Without this the operator sees a number in the interface, nothing is ever
+    deleted, and there is nothing anywhere to say why.
+    """
+    d = CountingDir(SHARED_DIR)
+    log = Logger()
+    prune("/data/exports", "soon", now=NOW, logger=log, listdir=d.listdir,
+          getmtime=d.getmtime, remove=d.remove)
+    assert log.warnings, "an unusable retention produced no log line"
+    assert "soon" in log.warnings[0]
+
+
+def test_switching_the_feature_off_is_not_logged_as_a_problem():
+    """0 is the default and means keep everything. It is not a mistake."""
+    d = CountingDir(SHARED_DIR)
+    log = Logger()
+    for value in (0, None, ""):
+        prune("/data/exports", value, now=NOW, logger=log, listdir=d.listdir,
+              getmtime=d.getmtime, remove=d.remove)
+    assert log.warnings == []
+
+
+def test_a_usable_retention_is_not_logged_as_a_problem():
+    d = CountingDir(SHARED_DIR)
+    log = Logger()
+    prune("/data/exports", 7, now=NOW, logger=log, listdir=d.listdir,
+          getmtime=d.getmtime, remove=d.remove)
+    assert log.warnings == []

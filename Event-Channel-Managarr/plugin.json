@@ -154,7 +154,7 @@
       "id": "_section_scheduling",
       "label": "⏰ Scheduling & Export",
       "type": "info",
-      "description": "Unattended runs: the times the scan starts by itself, and whether those runs leave a CSV behind."
+      "description": "Everything that happens without you pressing a button: the times the scan starts by itself, whether those runs leave a CSV in /data/exports, how long an export is kept before older ones are deleted, and whether a scan follows every M3U refresh. Scheduled times are read in Dispatcharr's own timezone, not this plugin's event timezone."
     },
     {
       "id": "scheduled_times",

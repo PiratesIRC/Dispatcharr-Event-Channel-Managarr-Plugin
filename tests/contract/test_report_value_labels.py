@@ -129,3 +129,20 @@ def test_every_report_site_passes_the_defaults():
             "a report site does not pass the defaults, so an unset choice there "
             "still reads as (empty) when a default is in fact applied")
         assert ast.unparse(call.args[1]) == "self._field_defaults()"
+
+
+def test_the_removal_report_states_the_timezone_it_ran_under():
+    """It is not a declared field, so nothing supplies it unless the action does.
+
+    Without the injection the epg_removal_*.csv preamble always printed
+    "Timezone (read from Dispatcharr, not a plugin setting): (empty)" -- a
+    self-describing report asserting a value is unset when it is always set.
+    """
+    fn = _function("remove_epg_from_hidden_action")
+    rendered = ast.unparse(fn)
+    assert "settings['timezone'] = self._dispatcharr_timezone()" in rendered, (
+        "the removal action must inject the runtime timezone before it builds "
+        "its report header")
+    injected = rendered.index("settings['timezone']")
+    built = rendered.index("removal_header")
+    assert injected < built, "the timezone is injected after the header is built"

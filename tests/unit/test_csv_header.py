@@ -50,10 +50,19 @@ def test_the_string_false_renders_as_no():
         assert yes_no(value) == "No", value
 
 
-def test_the_other_spellings_a_checkbox_can_produce():
-    assert yes_no("yes") == "Yes"
-    assert yes_no("no") == "No"
-    assert yes_no(1) == "Yes"
+def test_the_report_says_what_the_run_does_not_what_the_word_suggests():
+    """Corrected 2026-09-05. This used to assert yes_no("yes") == "Yes".
+
+    The run reads a stored checkbox with one rule and only the string "true" is
+    on, so a value of "yes" makes the plugin act as if the box were OFF. A report
+    printing Yes for it would contradict the behaviour it exists to explain. The
+    two now share ecm_parsing.setting_is_true.
+    """
+    assert yes_no("true") == "Yes"
+    assert yes_no("yes") == "No", "the run does not treat 'yes' as on"
+    assert yes_no("on") == "No", "the run does not treat 'on' as on"
+    assert yes_no("1") == "No", "the run does not treat '1' as on"
+    assert yes_no(1) == "Yes", "a real 1 is truthy to the run"
     assert yes_no(0) == "No"
 
 
@@ -62,8 +71,22 @@ def test_an_unset_value_reads_as_no_rather_than_blank():
     assert yes_no("") == "No"
 
 
-def test_an_unrecognised_value_is_shown_as_it_is_rather_than_guessed():
-    assert yes_no("sometimes") == "sometimes"
+def test_an_unrecognised_value_is_reported_the_way_the_run_treats_it():
+    """Corrected 2026-09-05. This used to assert the raw value was echoed back.
+
+    Echoing it looked more honest and was less so: the run coerces anything that
+    is not "true" to off, so the report has to say No or it describes a state the
+    plugin is not in.
+    """
+    assert yes_no("sometimes") == "No"
+
+
+def test_the_report_and_the_run_can_never_disagree():
+    """The property itself, over every spelling either of them might see."""
+    for value in (True, False, "true", "True", "TRUE", "false", "1", "0", "on",
+                  "off", "yes", "no", 1, 0, None, "", "sometimes"):
+        expected = "Yes" if ecm_parsing.setting_is_true(value) else "No"
+        assert yes_no(value) == expected, value
 
 
 # --- the preamble identifies the file --------------------------------------------
@@ -303,3 +326,29 @@ def test_an_unset_number_of_hours_with_no_default_still_says_so():
     out = "\n".join(lines_for({}, {}))
     assert "Past Date Grace Period: (empty)" not in out
     assert "not set" in out
+
+
+def test_a_multi_line_setting_never_carries_its_newline_into_the_preamble():
+    """The caller writes each preamble line as "# " + line + newline.
+
+    A raw newline in a value therefore ENDS the comment prefix, so the rest of a
+    multi-line setting lands in the CSV as data rows ahead of the column header.
+    Per-Group EPG Sources is documented as one mapping per line, so this is
+    reachable the moment an operator configures a second mapping.
+    """
+    value = "NFL Sunday Ticket = ECM - NFL\nNBA = ECM - NBA\r\nNHL = ECM - NHL"
+    rendered = "\n".join(lines_for({"group_epg_source_map": value}, {}))
+    line = [x for x in lines_for({"group_epg_source_map": value}, {})
+            if "Per-Group" in x][0]
+    assert "\n" not in line and "\r" not in line, repr(line)
+    for mapping in ("NFL Sunday Ticket = ECM - NFL", "NBA = ECM - NBA",
+                    "NHL = ECM - NHL"):
+        assert mapping in line, f"{mapping} was dropped from the report"
+    assert "\n" not in rendered.split("Per-Group EPG Sources:")[1].split("\n")[0]
+
+
+def test_no_rendered_settings_line_can_contain_a_line_break():
+    """The property, over every setting, not just the one known to be multi-line."""
+    settings = {sid: "first line\nsecond line" for sid, _l, _k in ecm_parsing.SETTINGS_REPORT}
+    for line in lines_for(settings, {}):
+        assert "\n" not in line and "\r" not in line, repr(line)

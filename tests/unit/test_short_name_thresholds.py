@@ -13,14 +13,12 @@ colon. Those two names are the first cases below.
 """
 
 import pytest
-
 from ecm_parsing import (
     SHORT_CHANNEL_NAME_DEFAULT,
     SHORT_DESCRIPTION_DEFAULT,
     short_channel_name_match,
     short_description_match,
 )
-
 
 # ---------------------------------------------------------------------------
 # The defaults must not move: a bare tag has to behave as it always has

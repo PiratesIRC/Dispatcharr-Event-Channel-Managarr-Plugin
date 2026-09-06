@@ -539,7 +539,7 @@ def _split_top_level_alternatives(pattern):
     the first characters of an alternative.
     """
     levels = []
-    stack = [{"start": 0, "alts": [], "has_pipe": False}]
+    stack = [{"start": 0, "alts": [], "root": True}]
     index = 0
     length = len(pattern)
     while index < length:
@@ -560,19 +560,20 @@ def _split_top_level_alternatives(pattern):
         if char == "(":
             index += 1
             index = _skip_group_prefix(pattern, index)
-            stack.append({"start": index, "alts": [], "has_pipe": False})
+            stack.append({"start": index, "alts": [], "root": False})
             continue
         if char == ")" and len(stack) > 1:
             level = stack.pop()
             level["alts"].append(pattern[level["start"]:index])
-            if level["has_pipe"]:
-                levels.append(level["alts"])
+            # More than one alternative means the level alternated. The flag this
+            # replaced had to be kept in step with the list beside it by hand.
+            if len(level["alts"]) > 1:
+                levels.append((level["root"], level["alts"]))
             index += 1
             continue
         if char == "|":
             level = stack[-1]
             level["alts"].append(pattern[level["start"]:index])
-            level["has_pipe"] = True
             level["start"] = index + 1
             index += 1
             continue
@@ -580,8 +581,8 @@ def _split_top_level_alternatives(pattern):
 
     root = stack[0]
     root["alts"].append(pattern[root["start"]:length])
-    if root["has_pipe"]:
-        levels.append(root["alts"])
+    if len(root["alts"]) > 1:
+        levels.append((root["root"], root["alts"]))
     return levels
 
 
@@ -635,13 +636,8 @@ def regex_alternative_problems(pattern):
     An empty alternative is reported because it makes the whole pattern match
     every name, which for the ignore field means nothing is ever scanned.
     """
-    if not pattern:
-        return []
-    try:
-        re.compile(pattern)
-    except re.error:
-        return []
-
+    # No guard here: _regex_alternative_findings is the single gate for an empty
+    # or uncompilable pattern and returns nothing for either.
     found = []
     for kind, alternative in _regex_alternative_findings(pattern):
         if kind == "empty":
@@ -673,10 +669,20 @@ def _regex_alternative_findings(pattern):
     except re.error:
         return []
     findings = []
-    for alternatives in _split_top_level_alternatives(pattern):
+    for is_root, alternatives in _split_top_level_alternatives(pattern):
         for alternative in alternatives:
-            if not alternative.strip():
-                findings.append(("empty", alternative))
+            if alternative == "":
+                # Only at the ROOT does an empty alternative make the whole
+                # pattern match every name. Inside a group it is the ordinary
+                # optional idiom: ^NFL( HD|)$ means the same as ^NFL( HD)?$.
+                if is_root:
+                    findings.append(("empty", alternative))
+            elif not alternative.strip():
+                # Whitespace only, which is the word-boundary idiom (?:^| )NFL.
+                # Neither empty nor a pasted name, so it is not reported at all:
+                # a warning that fires on a correct and common pattern teaches
+                # the operator to ignore warnings.
+                continue
             elif alternative != alternative.strip():
                 findings.append(("space", alternative))
     return findings
@@ -781,11 +787,62 @@ CSV_EXPORT_SUFFIX = ".csv"
 SECONDS_PER_DAY = 86400.0
 
 
-def _is_our_export(name):
-    """True when this filename is one of this plugin's CSV exports."""
+def is_our_export(name):
+    """True when this filename is one of this plugin's CSV exports. Pure.
+
+    PUBLIC because the Clear CSV Exports action asks the same question. That
+    action used to spell the rule out again inline, so the delete-everything
+    button and the age-based cleanup could come to disagree about which files
+    belong to this plugin, in a directory shared with five others.
+    """
     return (isinstance(name, str)
             and name.startswith(CSV_EXPORT_PREFIXES)
             and name.endswith(CSV_EXPORT_SUFFIX))
+
+
+def retention_days_value(value):
+    """The configured retention as a whole number of days, or None. Pure.
+
+    None means "do not delete anything", which covers unset, blank, zero,
+    negative and anything unusable. A whole number stored as a float is accepted,
+    because a number widget can hand back 7.0 for a field the operator typed 7
+    into and treating that as off would disable the feature silently. A fraction
+    is refused rather than rounded, because rounding is a guess about intent.
+    """
+    if value is None or isinstance(value, bool):
+        return None
+    text = str(value).strip()
+    if not text:
+        return None
+    try:
+        number = float(text)
+    except (TypeError, ValueError):
+        return None
+    if number != int(number):
+        return None
+    days = int(number)
+    return days if days > 0 else None
+
+
+def retention_days_problem(value):
+    """Say why a configured retention cannot be used, or None. Pure.
+
+    "Off" and "you typed something I cannot use" look identical from the outside,
+    and the second is worth a log line: the operator sees a number in the
+    interface and nothing is ever deleted.
+    """
+    if value is None or str(value).strip() == "":
+        return None
+    if isinstance(value, bool):
+        return f"expected a number of days, got {value!r}"
+    text = str(value).strip()
+    try:
+        number = float(text)
+    except (TypeError, ValueError):
+        return f"{text!r} is not a number of days"
+    if number != int(number):
+        return f"{text!r} is not a whole number of days"
+    return None
 
 
 def csv_exports_to_delete(entries, retention_days, now, protect=None):
@@ -814,16 +871,13 @@ def csv_exports_to_delete(entries, retention_days, now, protect=None):
     The age comparison is strict, so a file exactly N days old is not older than
     N days.
     """
-    try:
-        days = int(str(retention_days).strip())
-    except (TypeError, ValueError, AttributeError):
-        return []
-    if days <= 0:
+    days = retention_days_value(retention_days)
+    if days is None:
         return []
 
     ours = []
     for name, mtime in entries or ():
-        if not _is_our_export(name):
+        if not is_our_export(name):
             continue
         try:
             stamp = float(mtime)
@@ -864,6 +918,21 @@ def prune_csv_exports(directory, retention_days, now=None, protect=None,
     remove = os.remove if remove is None else remove
     now = time.time() if now is None else now
 
+    # Decide BEFORE touching the filesystem. Retention is off by default, and the
+    # shared export directory held 126 files when this was measured, so without
+    # this every export paid one listdir and 126 stat calls to produce an empty
+    # list on the default setting.
+    if retention_days_value(retention_days) is None:
+        # Distinguish "switched off" from "configured with something unusable".
+        # The second leaves the operator looking at a number in the interface
+        # while nothing is ever deleted, so it gets a line to explain itself.
+        problem = retention_days_problem(retention_days)
+        if problem and logger is not None:
+            logger.warning(
+                f"Delete CSV Exports Older Than is set to something unusable, so "
+                f"no export is being deleted: {problem}")
+        return 0
+
     try:
         names = listdir(directory)
     except OSError:
@@ -871,6 +940,10 @@ def prune_csv_exports(directory, retention_days, now=None, protect=None,
 
     entries = []
     for name in names:
+        # Only our own files are stat'd. The other 112 in that directory belong
+        # to five sibling plugins and can never be selected anyway.
+        if not is_our_export(name):
+            continue
         try:
             entries.append((name, getmtime(os.path.join(directory, name))))
         except OSError:
@@ -909,7 +982,8 @@ REPORT_INTRO_LINES = (
 # they are looking at can find it. The internal ids are no help there and one of
 # them is actively misleading: auto_set_dummy_epg_on_hide says set and it REMOVES.
 #
-# kind: "yesno" for a checkbox, "hours" for a number of hours, "plain" otherwise.
+# kind: "yesno" for a checkbox, "hours" for a number of hours, "days" for a
+# number of days, "plain" otherwise.
 SETTINGS_REPORT = (
     ("timezone", "Timezone (read from Dispatcharr, not a plugin setting)", "plain"),
     ("channel_profile_name", "Channel Profile Names", "plain"),
@@ -938,31 +1012,28 @@ SETTINGS_REPORT = (
     ("rate_limiting", "Rate Limiting", "plain"),
 )
 
-_TRUE_WORDS = ("true", "yes", "on", "1", "enabled")
-_FALSE_WORDS = ("false", "no", "off", "0", "disabled", "")
+def setting_is_true(value, default=False):
+    """Is this stored checkbox on? The ONE rule, shared with the run. Pure.
+
+    Dispatcharr stores some of these booleans as the STRING "true", and this
+    mirrors Plugin._get_bool_setting exactly, which delegates here.
+
+    THE TWO USED TO DISAGREE and the report was the loser. An earlier version of
+    yes_no accepted "1", "on" and "yes" as true while the run accepted only
+    "true", so a checkbox stored as "on" printed Yes in the CSV preamble while
+    the scan acted on False. A report whose whole job is to explain a run must
+    not be able to contradict it, so there is one rule and both callers use it.
+    """
+    if value is None:
+        return bool(default)
+    if isinstance(value, str):
+        return value.strip().lower() == "true"
+    return bool(value)
 
 
 def yes_no(value):
-    """Render a stored checkbox as Yes or No. Pure.
-
-    DISPATCHARR STORES SOME OF THESE BOOLEANS AS THE STRING "true", so a report
-    that only handled real booleans would show two spellings for one state. An
-    unset value reads as No, because that is what the plugin acts on. A value
-    that is neither is returned unchanged rather than guessed at, so a surprising
-    stored value is visible instead of being flattened into a confident No.
-    """
-    if isinstance(value, bool):
-        return "Yes" if value else "No"
-    if value is None:
-        return "No"
-    if isinstance(value, (int, float)):
-        return "Yes" if value else "No"
-    text = str(value).strip().lower()
-    if text in _TRUE_WORDS:
-        return "Yes"
-    if text in _FALSE_WORDS:
-        return "No"
-    return str(value)
+    """Render a stored checkbox as Yes or No, saying what the RUN does. Pure."""
+    return "Yes" if setting_is_true(value) else "No"
 
 
 # How a stored choice is written in the interface. The report uses the interface
@@ -1020,6 +1091,19 @@ def _unset_with_default(setting_id, default, unit=None):
     return f"not set, so the default applies: {shown}"
 
 
+def _one_line(value):
+    """Collapse a stored value onto one line. Pure.
+
+    The caller writes each preamble line as "# " + line + a newline, so a raw
+    newline in a value ENDS the comment prefix and the rest of it lands in the
+    CSV as data rows ahead of the column header. Per-Group EPG Sources is
+    documented as one mapping per line, so this is reachable as soon as an
+    operator configures a second mapping. Applied to EVERY kind, not only text:
+    a property test over all of them found the number kinds still leaking.
+    """
+    return " / ".join(part.strip() for part in str(value).splitlines() if part.strip())
+
+
 def _render(setting_id, kind, value, default=None):
     if kind == "yesno":
         return yes_no(value)
@@ -1027,11 +1111,11 @@ def _render(setting_id, kind, value, default=None):
     if kind == "hours":
         if unset:
             return _unset_with_default(setting_id, default, "hour")
-        return _plural(str(value).strip(), "hour")
+        return _plural(_one_line(value), "hour")
     if kind == "days":
         if unset or str(value).strip() in ("0", "0.0"):
             return "not set, which keeps every export"
-        return _plural(str(value).strip(), "day")
+        return _plural(_one_line(value), "day")
     if unset:
         # An unset CHOICE still has an effect, because the plugin falls back to its
         # own default. Printing "(empty)" implied nothing was being applied, which a
@@ -1043,7 +1127,11 @@ def _render(setting_id, kind, value, default=None):
         if default is not None and str(default).strip() != "":
             return _unset_with_default(setting_id, default)
         return "(empty)"
-    return str(value_label(setting_id, str(value).strip()))
+    # A newline here would end the "# " comment prefix the caller adds, so the
+    # rest of a multi-line setting would land in the CSV as data rows AHEAD of
+    # the column header. group_epg_source_map is documented as one mapping per
+    # line, so this is reachable as soon as an operator configures two of them.
+    return _one_line(value_label(setting_id, str(value).strip()))
 
 
 def settings_report_lines(settings, defaults=None):

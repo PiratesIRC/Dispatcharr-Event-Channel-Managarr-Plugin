@@ -93,10 +93,15 @@ def test_a_trailing_empty_alternative_is_reported():
     assert len(problems("NFL|")) == 1
 
 
-def test_a_whitespace_only_alternative_counts_as_empty_not_as_whitespace():
-    found = problems("NFL| |NHL")
-    assert len(found) == 1
-    assert "empty" in found[0].lower()
+def test_a_whitespace_only_alternative_is_not_reported_at_all():
+    """Corrected 2026-09-05. This used to assert it was reported as empty.
+
+    A code review pointed out that a single-space alternative is the standard
+    word-boundary idiom, (?:^| )NFL, and calling it empty told the operator
+    their working pattern matched every name. It is neither empty nor a
+    pasted name, so it is not reported.
+    """
+    assert problems("NFL| |NHL") == []
 
 
 # --- alternation inside a group -------------------------------------------------
@@ -177,3 +182,46 @@ def test_the_summary_covers_the_empty_alternative_case():
     line = summary("NFL||NHL")
     assert line is not None
     assert "empty" in line.lower()
+
+
+# --- false positives found by a code review on 2026-09-05 -------------------------
+#
+# Both were measured, not theorised. The warning is advisory, but a warning that
+# fires on a correct and common pattern teaches the operator to ignore warnings.
+
+def test_a_word_boundary_idiom_is_not_called_empty():
+    """(?:^| )NFL is the standard way to write "at a word boundary".
+
+    Its second alternative is a single space, which is not an empty alternative,
+    and the pattern does not match every name. Saying so is simply false.
+    """
+    for pattern in ("(?:^| )NFL", "(^| )NFL", r"(?:^|\s)NFL"):
+        assert summary(pattern) is None, f"{pattern} should not be reported"
+
+
+def test_an_optional_suffix_group_does_not_claim_to_match_every_name():
+    """^NFL( HD|)$ is the optional-suffix idiom and it is anchored.
+
+    The empty alternative sits inside a GROUP, so it makes the group optional; it
+    does not make the pattern match every name.
+    """
+    details = " ".join(problems("^NFL( HD|)$"))
+    assert "matches every name" not in details
+
+
+def test_an_empty_alternative_at_the_top_level_is_still_reported():
+    """The real mistake this warning exists for is a stray pipe at the root."""
+    assert "empty" in (summary("NFL||NHL") or "").lower()
+    assert "empty" in (summary("|NFL") or "").lower()
+
+
+def test_a_whitespace_only_alternative_is_never_reported_anywhere():
+    for pattern in ("NFL| |NHL", "(NFL| )"):
+        details = " ".join(problems(pattern))
+        assert "empty" not in details.lower(), pattern
+
+
+def test_the_pasted_group_names_are_still_caught():
+    """The mistake this whole warning was built for must still fire."""
+    found = problems("USA | Sports |USA | Kids ")
+    assert len(found) == 4

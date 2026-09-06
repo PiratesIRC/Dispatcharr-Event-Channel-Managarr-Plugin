@@ -5,9 +5,8 @@ import importlib.util
 import re as _stdlib_re
 from pathlib import Path
 
+import ecm_profiles  # resolves via pyproject.toml pythonpath
 import pytest
-
-import ecm_profiles   # resolves via pyproject.toml pythonpath
 
 FIXTURE = Path(__file__).resolve().parents[1] / "fixtures" / "us_ppv_channel_names.txt"
 

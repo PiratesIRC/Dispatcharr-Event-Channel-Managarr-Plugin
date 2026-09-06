@@ -601,11 +601,10 @@ def template_is_plugin_owned(key, stored):
     shipped = stock_templates_for(key)
     if not shipped:
         return True
-    if stored is None:
-        return True
-    if not isinstance(stored, str):
-        return False
-    return stored in shipped
+    # A value that is not a string cannot be one this plugin shipped, so the
+    # membership test already answers False for it. There is no separate branch
+    # to keep in step with this one.
+    return stored is None or stored in shipped
 
 
 def source_props_to_write(profile, current_props, desired_props):
