@@ -174,3 +174,156 @@ def test_the_warning_set_is_cleared_at_the_start_of_every_scan():
     """Warning once ever would hide the problem from every run after the first."""
     source = PLUGIN_PY.read_text(encoding="utf-8")
     assert "self._undated_warned = set()" in source
+
+
+# --- the named-day anchor -----------------------------------------------------------
+# The rule anchors an event on the date the channel was first seen. When the name states
+# a day of the week that is the better anchor, and the decision for both halves lives in
+# ecm_parsing so it can be unit-tested. These assertions hold the wiring only; whether the
+# anchor is computed correctly is settled in tests/unit/test_ecm_parsing.py.
+
+
+def test_the_rule_reads_the_day_the_name_states():
+    branch = _rule_branch("UndatedEnded")
+    assert "extract_named_day_of_week" in branch, (
+        "the rule must read the day from the name through the shared helper")
+
+
+def test_the_rule_resolves_the_named_day_to_a_date():
+    branch = _rule_branch("UndatedEnded")
+    assert "resolve_named_day_date" in branch, (
+        "resolving the day to a date belongs in ecm_parsing so it stays unit-testable")
+
+
+def _rule_branch_nodes(rule_name):
+    """The statements of a rule's own branch, as syntax nodes rather than text.
+
+    Asserting on the unparsed text of a branch cannot tell whether a value reaches the
+    call that uses it. The rule reverts entirely by passing a different variable to the
+    window helper, and a text search for the helper names still passes.
+    """
+    for node in ast.walk(TREE):
+        if not isinstance(node, ast.If):
+            continue
+        test = node.test
+        if (isinstance(test, ast.Compare)
+                and isinstance(test.left, ast.Name) and test.left.id == "rule_name"
+                and test.comparators
+                and isinstance(test.comparators[0], ast.Constant)
+                and test.comparators[0].value == rule_name):
+            return node.body
+    pytest.fail(f"plugin.py has no rule branch for {rule_name}")
+
+
+def _window_first_argument(body):
+    """The name the rule passes to infer_undated_event_window as its event date."""
+    for node in body:
+        for inner in ast.walk(node):
+            if not isinstance(inner, ast.Call):
+                continue
+            func = inner.func
+            name = func.attr if isinstance(func, ast.Attribute) else getattr(func, "id", "")
+            if name == "infer_undated_event_window":
+                assert inner.args, "the window helper is called with no positional arguments"
+                first = inner.args[0]
+                assert isinstance(first, ast.Name), (
+                    "the event date passed to the window helper must be a named variable")
+                return first.id
+    pytest.fail("the rule does not call infer_undated_event_window")
+
+
+def _assignments(body):
+    """Map every assigned name in the branch to the list of values assigned to it."""
+    found = {}
+    for node in body:
+        for inner in ast.walk(node):
+            if isinstance(inner, ast.Assign):
+                for target in inner.targets:
+                    if isinstance(target, ast.Name):
+                        found.setdefault(target.id, []).append(inner.value)
+    return found
+
+
+def _calls_in(value):
+    names = set()
+    for inner in ast.walk(value):
+        if isinstance(inner, ast.Call):
+            func = inner.func
+            names.add(func.attr if isinstance(func, ast.Attribute) else getattr(func, "id", ""))
+    return names
+
+
+def test_the_anchor_reaches_the_window_helper():
+    """The date the resolver returns must be the date the window is built from.
+
+    Without this, changing one argument back to the first-seen date reverts the whole
+    change and every test still passes. That mutation was run and it did.
+    """
+    body = _rule_branch_nodes("UndatedEnded")
+    argument = _window_first_argument(body)
+    assigned = _assignments(body)
+
+    reached = False
+    seen = set()
+    pending = [argument]
+    while pending:
+        name = pending.pop()
+        if name in seen:
+            continue
+        seen.add(name)
+        for value in assigned.get(name, []):
+            if "resolve_named_day_date" in _calls_in(value):
+                reached = True
+            if isinstance(value, ast.Name):
+                pending.append(value.id)
+    assert reached, (
+        f"the value passed to infer_undated_event_window ({argument!r}) is never "
+        "assigned from resolve_named_day_date, so the named day anchor is not used")
+
+
+def test_the_anchor_is_only_adopted_when_the_resolver_returns_one():
+    """The resolver returns None for anything it cannot use. Adopting that
+    unconditionally would pass None to the window helper and lose the rule entirely."""
+    body = _rule_branch_nodes("UndatedEnded")
+    argument = _window_first_argument(body)
+
+    assigned = _assignments(body)
+    resolver_names = {name for name, values in assigned.items()
+                      if any("resolve_named_day_date" in _calls_in(v) for v in values)}
+    assert resolver_names, "nothing in the rule is assigned from resolve_named_day_date"
+
+    guarded = False
+    for node in body:
+        for inner in ast.walk(node):
+            if not isinstance(inner, ast.If):
+                continue
+            tested = {n.id for n in ast.walk(inner.test) if isinstance(n, ast.Name)}
+            if not (tested & resolver_names):
+                continue
+            for stmt in inner.body:
+                for assign in ast.walk(stmt):
+                    if (isinstance(assign, ast.Assign)
+                            and any(isinstance(t, ast.Name) and t.id == argument
+                                    for t in assign.targets)):
+                        guarded = True
+    assert guarded, (
+        f"{argument!r} is assigned the resolved anchor without a conditional that "
+        f"tests the resolver's own result, so a None anchor would reach the window")
+
+
+def test_the_rule_still_falls_back_to_the_first_seen_date():
+    """A name stating no day, or one the extractor will not read, must keep the
+    behaviour the rule had before the anchor existed rather than lose its window."""
+    body = _rule_branch_nodes("UndatedEnded")
+    argument = _window_first_argument(body)
+    assigned = _assignments(body)
+    assert any(isinstance(value, ast.Name) and value.id == "first_seen"
+               for value in assigned.get(argument, [])), (
+        f"{argument!r} is never initialised from first_seen, so a name stating no day "
+        "has no event date to fall back to")
+
+
+def test_the_named_day_helpers_are_declared_in_the_parsing_module():
+    parsing = (ROOT / "Event-Channel-Managarr" / "ecm_parsing.py").read_text(encoding="utf-8")
+    assert "def extract_named_day_of_week(" in parsing
+    assert "def resolve_named_day_date(" in parsing
