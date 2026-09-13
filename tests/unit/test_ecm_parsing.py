@@ -339,3 +339,110 @@ def test_an_unreadable_minute_abandons_the_time_rather_than_assuming_oclock():
     inferred start up to 59 minutes earlier and the end of the window with it."""
     pattern = r"(?<hour>\d{1,2}):(?<minute>[A-Za-z]{2})"
     assert ecm_parsing.extract_time_of_day("Event 7:xx tonight", pattern) is None
+
+
+# --- the day a name states, and the date it resolves to ---------------------------
+# [UndatedEnded] anchors an event on the date the channel was first seen. When the
+# name states a day of the week, that is a better anchor: a slate published on a
+# Thursday for a Monday night game is not a Thursday event. These two functions
+# supply that anchor. They read the day out of the name rather than inferring one,
+# and they resolve it forward from the first-seen date so the answer stays monotonic.
+
+
+def test_extract_named_day_of_week_reads_the_three_football_markers():
+    assert ecm_parsing.extract_named_day_of_week("NFL  | 16 - MNF 8:15pm Broncos at Chiefs") == 0
+    assert ecm_parsing.extract_named_day_of_week("NFL  | 02 - TNF 8:35pm 49ers at Rams") == 3
+    assert ecm_parsing.extract_named_day_of_week("NFL  | 15 - SNF 8:20pm Cowboys at Giants") == 6
+
+
+def test_extract_named_day_of_week_reads_a_full_day_name():
+    assert ecm_parsing.extract_named_day_of_week("Boxing 04 - Saturday 9pm Main Card") == 5
+    assert ecm_parsing.extract_named_day_of_week("wednesday night darts") == 2
+
+
+def test_extract_named_day_of_week_ignores_short_forms_that_collide_with_real_names():
+    """SUN and SAT appear inside ordinary channel and team names, and a wrong day
+    moves the event window rather than widening it, so the short forms are not read."""
+    assert ecm_parsing.extract_named_day_of_week("NCAAF 44: Arizona State Sun Devils vs Texas Tech") is None
+    assert ecm_parsing.extract_named_day_of_week("SAT.1 Live") is None
+    assert ecm_parsing.extract_named_day_of_week("NFL  | 01 - Wed 8:20pm Patriots at Seahawks") is None
+
+
+def test_extract_named_day_of_week_returns_none_when_the_name_states_no_day():
+    assert ecm_parsing.extract_named_day_of_week("NFL  | 03 - 1pm Buccaneers at Bengals") is None
+    assert ecm_parsing.extract_named_day_of_week("NFL REDZONE") is None
+    assert ecm_parsing.extract_named_day_of_week("") is None
+    assert ecm_parsing.extract_named_day_of_week(None) is None
+
+
+def test_extract_named_day_of_week_takes_the_first_day_in_the_name():
+    """The extractor in plugin.py returns the first day in its own table rather than
+    the first in the name, so a name carrying two days answers Monday whatever it says."""
+    assert ecm_parsing.extract_named_day_of_week("Sunday repeat of the Monday game") == 6
+    assert ecm_parsing.extract_named_day_of_week("Monday repeat of the Sunday game") == 0
+
+
+def test_resolve_named_day_date_moves_forward_from_the_first_seen_date():
+    # 2026-09-10 is a Thursday. Monday Night Football is the following Monday.
+    assert ecm_parsing.resolve_named_day_date(date(2026, 9, 10), 0) == date(2026, 9, 14)
+    # Sunday Night Football is the Sunday three days later.
+    assert ecm_parsing.resolve_named_day_date(date(2026, 9, 10), 6) == date(2026, 9, 13)
+
+
+def test_resolve_named_day_date_returns_the_first_seen_date_when_the_day_matches():
+    assert ecm_parsing.resolve_named_day_date(date(2026, 9, 10), 3) == date(2026, 9, 10)
+
+
+def test_resolve_named_day_date_never_moves_more_than_six_days():
+    """Resolving forward keeps the anchor monotonic. Anchoring on the current week
+    instead would re-date a stale channel every week and it would never retire."""
+    first_seen = date(2026, 9, 10)
+    for weekday in range(7):
+        resolved = ecm_parsing.resolve_named_day_date(first_seen, weekday)
+        assert 0 <= (resolved - first_seen).days <= 6
+        assert resolved.weekday() == weekday
+
+
+def test_resolve_named_day_date_rejects_a_weekday_it_cannot_use():
+    assert ecm_parsing.resolve_named_day_date(date(2026, 9, 10), None) is None
+    assert ecm_parsing.resolve_named_day_date(date(2026, 9, 10), 7) is None
+    assert ecm_parsing.resolve_named_day_date(date(2026, 9, 10), "Monday") is None
+
+
+def test_resolve_named_day_date_rejects_a_first_seen_date_it_cannot_use():
+    assert ecm_parsing.resolve_named_day_date(None, 0) is None
+    assert ecm_parsing.resolve_named_day_date("2026-09-10", 0) is None
+
+
+def test_the_anchor_can_hide_a_channel_the_first_seen_window_never_hid():
+    """The one direction in which this anchor hides something that used to stay visible.
+
+    undated_event_has_ended declines when the window closed at or before the moment the
+    channel was first recorded, which protects a channel named for an event that has not
+    started. Anchored on the first-seen date, a late-evening channel named for an early
+    morning event could satisfy that condition for ever, so the rule never fired for it
+    at all. Anchored on the day the name states, the window describes the real event and
+    the guard stops applying. The channel is then hidden after its event, not before it.
+    """
+    import pytz
+    eastern = pytz.timezone("US/Eastern")
+    first_seen = date(2026, 9, 10)                     # a Thursday
+    first_seen_at = eastern.localize(datetime(2026, 9, 10, 23, 0))
+
+    # Anchored on the first-seen date: the window closes before anyone saw the channel.
+    _, hide_after_old = ecm_parsing.infer_undated_event_window(
+        first_seen, 1, 0, "US/Eastern", 300, 1)
+    assert hide_after_old <= first_seen_at
+    assert ecm_parsing.undated_event_has_ended(
+        eastern.localize(datetime(2026, 9, 20, 12, 0)), hide_after_old, first_seen_at) is False
+
+    # Anchored on the Monday the name states, the window describes the real event.
+    anchored = ecm_parsing.resolve_named_day_date(first_seen, 0)
+    assert anchored == date(2026, 9, 14)
+    _, hide_after_new = ecm_parsing.infer_undated_event_window(
+        anchored, 1, 0, "US/Eastern", 300, 1)
+    assert hide_after_new > first_seen_at
+    assert ecm_parsing.undated_event_has_ended(
+        eastern.localize(datetime(2026, 9, 14, 5, 0)), hide_after_new, first_seen_at) is False
+    assert ecm_parsing.undated_event_has_ended(
+        eastern.localize(datetime(2026, 9, 14, 8, 0)), hide_after_new, first_seen_at) is True

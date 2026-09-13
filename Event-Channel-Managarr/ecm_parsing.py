@@ -16,7 +16,7 @@ from __future__ import annotations
 
 import logging
 import re
-from datetime import datetime, time, timedelta
+from datetime import date, datetime, time, timedelta
 
 LOG = logging.getLogger("event_channel_managarr.parsing")
 
@@ -450,6 +450,80 @@ def extract_time_of_day(channel_name, time_pattern=None):
     if not 0 <= hour <= 23 or not 0 <= minute <= 59:
         return None
     return hour, minute
+
+
+# The day tokens a channel name may state, as a tuple of pairs because this module
+# forbids module level mutable state. Full day names and the three football markers
+# only. The short forms are deliberately absent: SUN appears in team names such as
+# Arizona State Sun Devils and SAT in the broadcaster SAT.1, and a day read out of an
+# ordinary word does not widen the event window, it MOVES it, which can hide a channel
+# whose event has not started. A name whose day cannot be read safely gets no anchor
+# and the caller falls back to the date the channel was first seen.
+_NAMED_DAY_TOKENS = (
+    ("MONDAY", 0),
+    ("TUESDAY", 1),
+    ("WEDNESDAY", 2),
+    ("THURSDAY", 3),
+    ("FRIDAY", 4),
+    ("SATURDAY", 5),
+    ("SUNDAY", 6),
+    ("MNF", 0),
+    ("TNF", 3),
+    ("SNF", 6),
+)
+
+
+def extract_named_day_of_week(channel_name):
+    """Return the weekday a channel name states, Monday as 0, or None.
+
+    Reads the day out of the name rather than inferring one. Only full day names and
+    the football markers MNF, TNF and SNF are recognised, for the reason recorded on
+    _NAMED_DAY_TOKENS above.
+
+    When a name states more than one day this returns the one that appears EARLIEST IN
+    THE NAME. The equivalent method in plugin.py returns the first match in its own
+    table instead, so a name reading "Sunday repeat of the Monday game" answers Monday
+    there. That is harmless for a rule that only asks whether the day is close to today,
+    and wrong for one that resolves the day to a date.
+    """
+    if not channel_name:
+        return None
+    try:
+        upper = str(channel_name).upper()
+    except (TypeError, ValueError):
+        return None
+    earliest = None
+    for token, weekday in _NAMED_DAY_TOKENS:
+        found = re.search(r"\b" + token + r"\b", upper)
+        if found is not None and (earliest is None or found.start() < earliest[0]):
+            earliest = (found.start(), weekday)
+    return None if earliest is None else earliest[1]
+
+
+def resolve_named_day_date(first_seen_date, weekday):
+    """Return the date of the first `weekday` on or after `first_seen_date`, or None.
+
+    This is the anchor [UndatedEnded] uses when the name states a day. A slate
+    published on a Thursday for a Monday night game is not a Thursday event, and
+    anchoring it on the day the channel appeared judges the event finished before it
+    has started.
+
+    Resolving FORWARD from the first-seen date, rather than onto the current week,
+    is what keeps the answer monotonic. An anchor computed from today would move
+    every week, so a channel the provider never removes would re-enter the future
+    every week and never retire. Resolving forward can move the anchor by at most six
+    days and then stops.
+
+    Returns None for anything it cannot use, so the caller keeps the behaviour it had
+    before this function existed rather than acting on a guess.
+    """
+    if not isinstance(first_seen_date, date):
+        return None
+    if isinstance(weekday, bool) or not isinstance(weekday, int):
+        return None
+    if not 0 <= weekday <= 6:
+        return None
+    return first_seen_date + timedelta(days=(weekday - first_seen_date.weekday()) % 7)
 
 
 def infer_undated_event_window(first_seen_date, hour, minute, tz_name,

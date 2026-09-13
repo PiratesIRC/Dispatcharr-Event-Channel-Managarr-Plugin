@@ -1280,7 +1280,16 @@ class Plugin:
         return rules
 
     def _extract_day_of_week_from_channel_name(self, channel_name, logger):
-        """Extract day of week from channel name if present"""
+        """Extract day of week from channel name if present.
+
+        Used by [WrongDayOfWeek] only. This is NOT the same reader as
+        ecm_parsing.extract_named_day_of_week, which [UndatedEnded] uses to
+        anchor an event date, and the two are deliberately different. This one
+        accepts the short forms and returns the first day in its own table
+        rather than the first in the name, which is harmless for a rule that
+        only asks whether the named day is within a day of today. Anchoring a
+        date needs neither of those behaviours, so do not unify them.
+        """
         if not channel_name:
             return None
 
@@ -1808,8 +1817,24 @@ class Plugin:
                         f"{grace_hours}h instead, which may hide channels earlier than "
                         f"you intended.")
 
+            # A name that states a day of the week anchors the event on that day
+            # rather than on the date the channel was first seen. A slate published on
+            # a Thursday for a Monday night game is not a Thursday event, and anchoring
+            # it on the day the channel appeared judges the event finished before it has
+            # started. The day is READ from the name and never inferred from its absence,
+            # and it resolves FORWARD from the first-seen date, so a channel the provider
+            # never removes cannot be re-dated into the future week after week. A name
+            # stating no day, or one the extractor will not read, keeps the first-seen
+            # anchor this rule used before.
+            event_date = first_seen
+            named_day = ecm_parsing.extract_named_day_of_week(channel_name)
+            if named_day is not None:
+                anchored_date = ecm_parsing.resolve_named_day_date(first_seen, named_day)
+                if anchored_date is not None:
+                    event_date = anchored_date
+
             window = ecm_parsing.infer_undated_event_window(
-                first_seen, parsed_time[0], parsed_time[1], tz_name,
+                event_date, parsed_time[0], parsed_time[1], tz_name,
                 duration_minutes, grace_hours)
             if window is None:
                 # The timezone is the input most likely to be wrong, and it is the one a
@@ -1844,8 +1869,11 @@ class Plugin:
 
             if ecm_parsing.undated_event_has_ended(
                     datetime.now(local_tz), hide_after, first_seen_at):
+                anchor_note = ("" if event_date == first_seen else
+                               f", day read from the name as {event_date.isoformat()}")
                 return True, (
-                    f"[UndatedEnded] No date in name; first seen {first_seen.isoformat()}, "
+                    f"[UndatedEnded] No date in name; first seen {first_seen.isoformat()}"
+                    f"{anchor_note}, "
                     f"inferred start {start.strftime('%m/%d %I:%M %p %Z')} "
                     f"(+{duration_minutes // 60}h duration, {grace_hours}h grace)")
             return False, None
