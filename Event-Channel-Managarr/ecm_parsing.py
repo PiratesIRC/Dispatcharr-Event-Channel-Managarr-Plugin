@@ -89,6 +89,31 @@ def name_has_stop_timestamp(channel_name):
     return bool(EVENT_TS_RE["stop:"].search(channel_name))
 
 
+def pair_is_the_all_hours_idiom(match):
+    """True when a bare M/D match is the idiom 24/7 rather than a date.
+
+    In Auto and EU format the pair 24/7 resolves to 24 July, so a channel named
+    "24/7 Racing Stream" is read as carrying a date months in the past and [PastDate]
+    hides it. The idiom is common enough in channel names that this installation has a
+    channel group named for it.
+
+    The idiom stands alone, so a pair carrying a clock time is left as a date: a
+    European installation legitimately writes 24 July as 24/7, and such a name reads
+    "24/7 8pm". `match` is a bare-pair match whose third group is the optional hour.
+
+    Rejecting a pair is the safe direction. A name with no readable date falls to the
+    undated rules, which leave the channel visible until their own thresholds decide,
+    whereas reading a date that is not there removes the channel from the lineup.
+
+    Nothing here tries to separate an ordinal out of a total, such as the doubleheader
+    name "Game 1/2", from a date. The captured baseline in tests carries "Game 10/27"
+    and "Race 10/27 8:00 PM", where the same shape after the same word IS the date, and
+    1 and 2 are each a valid month and a valid day, so neither the preceding word nor
+    the values separate them.
+    """
+    return match.group(1) == "24" and match.group(2) == "7" and not match.group(3)
+
+
 def extract_date_from_channel_name(channel_name, date_format="Auto", prefer="start",
                                    now=None, logger=None):
     """Extract a date (with time if present) from a channel name.
@@ -204,7 +229,15 @@ def extract_date_from_channel_name(channel_name, date_format="Auto", prefer="sta
     # Lookahead excludes "/" (year follows, handled by Pattern 1) and ":" (time
     # range like "1/3:30pm" — second number is hours, not a day). An optional trailing
     # 12-hour time is captured and applied (bug-046).
-    pattern4 = re.search(r'\b(\d{1,2})/(\d{1,2})\b(?![/:])(?:\s+(\d{1,2})(?::(\d{2}))?\s*([AaPp][Mm]))?', channel_name)
+    # Scanned rather than searched, so a rejected pair does not suppress a real
+    # date later in the same name.
+    pattern4 = None
+    for candidate in re.finditer(
+            r'\b(\d{1,2})/(\d{1,2})\b(?![/:])(?:\s+(\d{1,2})(?::(\d{2}))?\s*([AaPp][Mm]))?',
+            channel_name):
+        if not pair_is_the_all_hours_idiom(candidate):
+            pattern4 = candidate
+            break
     if pattern4:
         first, second = int(pattern4.group(1)), int(pattern4.group(2))
         extracted_date = resolve_numeric_date_pair(first, second, current_year, date_format)

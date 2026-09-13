@@ -446,3 +446,68 @@ def test_the_anchor_can_hide_a_channel_the_first_seen_window_never_hid():
         eastern.localize(datetime(2026, 9, 14, 5, 0)), hide_after_new, first_seen_at) is False
     assert ecm_parsing.undated_event_has_ended(
         eastern.localize(datetime(2026, 9, 14, 8, 0)), hide_after_new, first_seen_at) is True
+
+
+# --- the 24/7 idiom is not a date -------------------------------------------------
+# Pattern 4 reads any bare M/D pair as a date. In Auto and EU format 24/7 resolves to
+# 24 July, so a channel named "24/7 Racing Stream" is read as a date months in the
+# past and [PastDate] hides it. This installation has a whole channel group named for
+# the idiom. Refusing to read it leaves the channel visible and lets the undated rules
+# decide, which is the safe direction for a rule whose effect is to remove a channel.
+
+
+def test_the_24_7_idiom_is_not_a_date():
+    assert ecm_parsing.extract_date_from_channel_name(
+        "LIVE EVENT 04 - 24/7 Racing Stream", now=datetime(2026, 9, 13)) is None
+    assert ecm_parsing.extract_date_from_channel_name(
+        "24/7 Sports Talk", now=datetime(2026, 9, 13)) is None
+    assert ecm_parsing.extract_date_from_channel_name(
+        "24/7 The Office", date_format="EU", now=datetime(2026, 9, 13)) is None
+
+
+def test_the_24_7_idiom_is_still_read_as_a_date_when_a_clock_time_follows_it():
+    """A European installation legitimately writes 24 July as 24/7. The idiom stands
+    alone, so a pair carrying a time keeps its date reading."""
+    result = ecm_parsing.extract_date_from_channel_name(
+        "Racing 24/7 8pm", date_format="EU", now=datetime(2026, 9, 13))
+    assert result is not None
+    assert (result.month, result.day, result.hour) == (7, 24, 20)
+
+
+def test_the_idiom_guard_does_not_suppress_a_date_elsewhere_in_the_name():
+    """The guard removes the pair it rejects, not every date in the name."""
+    result = ecm_parsing.extract_date_from_channel_name(
+        "24/7 Racing on 8/14 7pm", now=datetime(2026, 9, 13))
+    assert result is not None
+    assert (result.month, result.day, result.hour) == (8, 14, 19)
+
+
+def test_a_real_numeric_date_still_reads():
+    result = ecm_parsing.extract_date_from_channel_name(
+        "07 - 8/14 7pm Broncos at Falcons", now=datetime(2026, 9, 13))
+    assert (result.month, result.day, result.hour) == (8, 14, 19)
+    dotted = ecm_parsing.extract_date_from_channel_name(
+        "PPV EVENT 05: Boxing (9.12 8:00 PM ET)", now=datetime(2026, 9, 13))
+    assert (dotted.month, dotted.day, dotted.hour) == (9, 12, 20)
+    with_year = ecm_parsing.extract_date_from_channel_name(
+        "Event 8/14/2026 7pm", now=datetime(2026, 9, 13))
+    assert (with_year.year, with_year.month, with_year.day) == (2026, 8, 14)
+
+
+def test_an_ordinal_out_of_a_total_is_still_read_as_a_date_and_that_is_known():
+    """A KNOWN LIMITATION, pinned so nobody 'fixes' it and breaks real dates.
+
+    "Cubs at Reds Game 1/2 7:05 PM ET" means game one of a doubleheader, and this
+    reads it as 2 January. It is not safely separable from a real date: the captured
+    baseline in this file contains "Game 10/27", "Match 15/04" and "Race 10/27 8:00
+    PM", where the same shape after the same words IS the date, so a guard keyed on
+    the preceding word would break documented behaviour. Both 1 and 2 are a valid
+    month and a valid day, so plausibility does not separate them either.
+
+    The consequence is bounded: the wrong date is in the past, so [PastDate] hides a
+    doubleheader channel. The fix is the Regex: Force Visible field or a narrower
+    Channel Name Format, not a change here.
+    """
+    result = ecm_parsing.extract_date_from_channel_name(
+        "MLB 03 | Cubs at Reds Game 1/2 7:05 PM ET", now=datetime(2026, 9, 13))
+    assert (result.month, result.day) == (1, 2)
