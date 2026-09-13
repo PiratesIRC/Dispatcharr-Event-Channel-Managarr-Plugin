@@ -511,3 +511,39 @@ def test_an_ordinal_out_of_a_total_is_still_read_as_a_date_and_that_is_known():
     result = ecm_parsing.extract_date_from_channel_name(
         "MLB 03 | Cubs at Reds Game 1/2 7:05 PM ET", now=datetime(2026, 9, 13))
     assert (result.month, result.day) == (1, 2)
+
+
+# --- a day-first date keeps its clock time ----------------------------------------
+# Pull request 30 by mwongj. The day-first pattern read the date and dropped the time,
+# so "12 Sep 7:00pm" became midnight and [PastDate] judged the event at day
+# granularity: it kept a finished evening event visible until the next day, and could
+# hide a live one after local midnight. The month-first pattern already kept its time.
+# The change shipped without tests, so these were added afterwards rather than by its
+# author. Measured across 1445 live channel names, it changes four of them, all
+# boxing events that were losing their start time.
+
+
+def test_a_day_first_date_keeps_its_clock_time():
+    result = ecm_parsing.extract_date_from_channel_name(
+        "Boxing 1 : MCCANN vs BIG STACKS UK Sat 12 Sep 7:00pm",
+        now=datetime(2026, 9, 13))
+    assert (result.month, result.day, result.hour, result.minute) == (9, 12, 19, 0)
+
+
+def test_a_day_first_date_applies_the_meridiem():
+    """Dropping the marker would read 12:15 PM as a quarter past midnight."""
+    result = ecm_parsing.extract_date_from_channel_name(
+        "MLB 01 | Marlins at Nationals NATIONAL 30 Aug 12:15 PM ET",
+        now=datetime(2026, 9, 13))
+    assert (result.month, result.day, result.hour, result.minute) == (8, 30, 12, 15)
+    after_midnight = ecm_parsing.extract_date_from_channel_name(
+        "Boxing 3 : GARCIA vs BENN Main Card UK Sun 13 Sep 12:58am",
+        now=datetime(2026, 9, 13))
+    assert (after_midnight.hour, after_midnight.minute) == (0, 58)
+
+
+def test_a_day_first_date_without_a_time_is_still_midnight():
+    """The time is optional. A date-only name keeps the behaviour it had."""
+    result = ecm_parsing.extract_date_from_channel_name(
+        "Racing 28th Apr Silverstone", now=datetime(2026, 4, 1))
+    assert (result.month, result.day, result.hour, result.minute) == (4, 28, 0, 0)
