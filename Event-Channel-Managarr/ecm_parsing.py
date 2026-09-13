@@ -176,16 +176,22 @@ def extract_date_from_channel_name(channel_name, date_format="Auto", prefer="sta
             log.debug(f"Extracted date {extracted_date.date()} from pattern M/D/YYYY ({date_format}) in '{channel_name}'")
             return extracted_date
 
-    # Pattern 2c: DDth MONTH e.g., "28th Apr"
-    pattern2c = re.search(r'\b(\d{1,2})(?:st|nd|rd|th)?\s+(JAN|FEB|MAR|APR|MAY|JUN|JUL|AUG|SEP|OCT|NOV|DEC)\b', channel_name, re.IGNORECASE)
+    # Pattern 2c: DDth MONTH with optional clock time, e.g., "12 Sep 12:00 PM".
+    pattern2c = re.search(
+        r'\b(\d{1,2})(?:st|nd|rd|th)?\s+(JAN|FEB|MAR|APR|MAY|JUN|JUL|AUG|SEP|OCT|NOV|DEC)\b'
+        r'(?:\s+(\d{1,2}):(\d{2})(?::\d{2})?\s*(?P<ap>[AaPp][Mm])?)?',
+        channel_name, re.IGNORECASE)
     if pattern2c:
-        day, month_str = pattern2c.groups()
+        day, month_str = pattern2c.group(1), pattern2c.group(2)
+        hh, mm, ap = pattern2c.group(3), pattern2c.group(4), pattern2c.group("ap")
         try:
             temp_date = dateutil_parser.parse(f"{month_str} {day} {current_year}")
-            extracted_date = datetime(temp_date.year, temp_date.month, temp_date.day)
+            hour = apply_meridiem(int(hh), ap) if hh else 0
+            minute = int(mm) if mm else 0
+            extracted_date = datetime(temp_date.year, temp_date.month, temp_date.day, hour, minute)
             if (today - extracted_date).days > 180:
-                extracted_date = datetime(current_year + 1, temp_date.month, temp_date.day)
-            log.debug(f"Extracted date {extracted_date.date()} from pattern DDth MONTH in '{channel_name}'")
+                extracted_date = datetime(current_year + 1, temp_date.month, temp_date.day, hour, minute)
+            log.debug(f"Extracted datetime {extracted_date} from pattern DDth MONTH[ HH:MM[:SS] AM/PM] in '{channel_name}'")
             return extracted_date
         except (ValueError, dateutil_parser.ParserError):
             pass
