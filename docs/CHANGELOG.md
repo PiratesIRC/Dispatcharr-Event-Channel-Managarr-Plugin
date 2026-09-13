@@ -7,6 +7,38 @@ they are the authoritative record; this page is an index.
 Versions are calendar-based: `Major.YY.DDDHHMM`, where `DDD` is the day of the year
 and `HHMM` the UTC time of the version bump. A higher version is always later.
 
+## 1.26.2561545 (2026-09-13)
+
+### Fixed
+
+- The idiom `24/7` in a channel name is no longer read as a date. The bare
+  month-and-day pattern reads any two number pair as a date, and in both Auto and
+  European format `24/7` is a valid day and month, so a channel named
+  `24/7 Racing Stream` was read as carrying a date of 24 July, months in the past,
+  and the past-date rule hid it. Measured across 1445 channel names on one
+  installation, 157 of them were affected. The idiom is only rejected when no clock
+  time follows it, because a European installation legitimately writes 24 July as
+  `24/7` and such a name carries a time, so `Racing 24/7 8pm` keeps its date
+  reading. A rejected pair no longer suppresses a real date later in the same name.
+
+- A day-first textual date keeps its clock time, contributed by mwongj in pull
+  request 30. `12 Sep 7:00pm` previously read as midnight, so the past-date rule
+  judged the event at day granularity: it kept a finished evening event visible
+  until the next day and could hide a live one after local midnight. The month-first
+  pattern already kept its time. Measured across the same 1445 names, four of them
+  change, all boxing events that were losing their start time. Tests covering it
+  were added after the merge.
+
+### Known limitation
+
+- An ordinal out of a total, as in the doubleheader name
+  `Cubs at Reds Game 1/2 7:05 PM ET`, is still read as a date, 2 January in that
+  example. It is not safely separable from a real date: names such as `Game 10/27`
+  and `Race 10/27 8:00 PM` use the same shape after the same word and there the pair
+  IS the date, and 1 and 2 are each a valid month and a valid day. The levers for an
+  affected channel are the Regex: Force Visible field or a narrower Channel Name
+  Format.
+
 ## 1.26.2561458 (2026-09-13)
 
 ### Changed
@@ -61,6 +93,7 @@ and `HHMM` the UTC time of the version bump. A higher version is always later.
 
 | Version | Released | Notes |
 | :--- | :--- | :--- |
+| `v1.26.2561545` | 2026-09-13 | [Release notes](https://github.com/PiratesIRC/Dispatcharr-Event-Channel-Managarr-Plugin/releases/tag/v1.26.2561545) |
 | `v1.26.2561458` | 2026-09-13 | [Release notes](https://github.com/PiratesIRC/Dispatcharr-Event-Channel-Managarr-Plugin/releases/tag/v1.26.2561458) |
 | `v1.26.2490035` | 2026-09-06 | [Release notes](https://github.com/PiratesIRC/Dispatcharr-Event-Channel-Managarr-Plugin/releases/tag/v1.26.2490035) |
 | `v1.26.2451734` | 2026-09-02 | [Release notes](https://github.com/PiratesIRC/Dispatcharr-Event-Channel-Managarr-Plugin/releases/tag/v1.26.2451734) |
