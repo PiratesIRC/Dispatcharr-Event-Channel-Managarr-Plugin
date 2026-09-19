@@ -115,6 +115,15 @@ import ecm_profiles  # noqa: E402
 # would keep the broken value for ever, which is why the fields are not simply
 # frozen. Nothing else in the method moved.
 #
+# _localized_template_props was re-recorded on 2026-09-19 (bug-193). The ended
+# title template lost its {month}/{day} date: Dispatcharr fills those with the
+# event's START date and has no end-date placeholder, so an event ending after
+# midnight was labelled "Ended at 9/19 12 AM" when it ended at midnight on 9/20.
+# The upcoming template keeps its date. Covered by
+# tests/unit/test_ended_label_and_inactive_regex.py, which executes this method
+# and ecm_profiles.resolve_output_timezone and holds their ended labels equal.
+# Nothing else in the method moved.
+#
 # The other three remain at their original S2 baseline values and must not be
 # touched without the same argument.
 FROZEN_BODIES = {
@@ -123,8 +132,8 @@ FROZEN_BODIES = {
     "_managed_override_ids": "5d41e55a7146863609792f31f20134469c090b51938c1ab67d0f34399c526d6c",
     # re-recorded 2026-08-12, 2026-08-14, 2026-08-29, 2026-08-30 and twice on 2026-09-05, see the notes above
     "_get_or_create_managed_epg_source": "09fb337987711c0d28822c1608d5ec6b6ebf8e839d91afd1181410056f9768f5",
-    # re-recorded 2026-08-12, see the note above
-    "_localized_template_props": "8daf6f68b33352690f255dc6d7185546c0ea70596743e633b0403861c62e75dd",
+    # re-recorded 2026-08-12 and 2026-09-19, see the notes above
+    "_localized_template_props": "b5d1608dcdd70292a004b519a4d13264fc3014ba51eaa747bd4238f7b7a8af53",
 }
 
 

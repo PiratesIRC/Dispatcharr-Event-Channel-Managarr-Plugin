@@ -56,7 +56,7 @@ _scheduler_lock = threading.Lock()  # Prevent concurrent scheduler starts
 class PluginConfig:
     """Centralized configuration constants for Event Channel Managarr."""
 
-    PLUGIN_VERSION = "1.26.2561545"
+    PLUGIN_VERSION = "1.26.2621024"
 
     # Fallback timezone when Dispatcharr's global time zone is unset/invalid.
     DEFAULT_TIMEZONE = "UTC"
@@ -1883,10 +1883,10 @@ class Plugin:
             logger.debug(f"[InactiveRegex] Checking pattern '{regex_inactive_str}' against channel name '{channel_name}'")
             if regex_inactive_str:
                 try:
-                    # Un-escape backslashes from the JSON string before compiling
-                    unescaped_regex_str = bytes(regex_inactive_str, "utf-8").decode("unicode_escape")
-                    logger.debug(f"[InactiveRegex] Compiling unescaped pattern: '{unescaped_regex_str}'")
-                    regex_inactive = re.compile(unescaped_regex_str, re.IGNORECASE)
+                    # Compiled exactly as typed, like the Ignore and Force Visible fields.
+                    # A unicode_escape step here once turned \b into a backspace, so a
+                    # word-boundary pattern never matched (bug-192).
+                    regex_inactive = re.compile(regex_inactive_str, re.IGNORECASE)
                     if regex_inactive.search(channel_name):
                         return True, f"[InactiveRegex] Matches pattern: {regex_inactive_str}"
                 except re.error as e:
@@ -2619,7 +2619,10 @@ class Plugin:
             "output_timezone": display_tz_name,
             "title_template": "{title}",
             "upcoming_title_template": f"Upcoming at {date_ph} {start_ph}{suffix}: {{title}}",
-            "ended_title_template": f"Ended at {date_ph} {end_ph}{suffix}: {{title}}",
+            # No date in the ended label. Dispatcharr fills {month}/{day} with the
+            # START date and has no end-date placeholder, so an event ending after
+            # midnight was labelled with the day before it ended (bug-193).
+            "ended_title_template": f"Ended at {end_ph}{suffix}: {{title}}",
         }
 
     def _epg_binding_is_reroutable(self, channel, logger=None):
@@ -4086,10 +4089,9 @@ class Plugin:
                 # genuinely matches can be hidden by a rule placed earlier in the
                 # priority list, and a decision count would then report "matched
                 # nothing" for a pattern that is working. Compiled the same way the
-                # rule itself compiles it, including the unicode_escape step.
+                # rule itself compiles it.
                 try:
-                    _inactive_re = re.compile(
-                        bytes(_inactive_str, "utf-8").decode("unicode_escape"), re.IGNORECASE)
+                    _inactive_re = re.compile(_inactive_str, re.IGNORECASE)
                     regex_field_counts.append((
                         "Regex: Mark Channel as Inactive",
                         sum(1 for r in results if _inactive_re.search(r.get("channel_name") or ""))))

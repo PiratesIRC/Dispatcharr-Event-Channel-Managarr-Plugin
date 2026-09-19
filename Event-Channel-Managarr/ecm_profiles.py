@@ -309,7 +309,8 @@ def resolve_output_timezone(source_tz_name, system_tz_name, date_format="Auto"):
         "output_timezone": system_tz_name,
         "title_template": "{title}",
         "upcoming_title_template": f"Upcoming at {date_ph} {{starttime}}{suffix}: {{title}}",
-        "ended_title_template": f"Ended at {date_ph} {{endtime}}{suffix}: {{title}}",
+        # No date: Dispatcharr's {month}/{day} is the START date (bug-193).
+        "ended_title_template": f"Ended at {{endtime}}{suffix}: {{title}}",
     }
 
 

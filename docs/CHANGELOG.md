@@ -7,6 +7,28 @@ they are the authoritative record; this page is an index.
 Versions are calendar-based: `Major.YY.DDDHHMM`, where `DDD` is the day of the year
 and `HHMM` the UTC time of the version bump. A higher version is always later.
 
+## 1.26.2621024 (2026-09-19)
+
+### Fixed
+
+- The guide label shown after an event ends no longer carries a wrong date. The
+  plugin wrote the label as `Ended at {month}/{day} {endtime}`, but Dispatcharr
+  fills the month and day with the date the event STARTED and has no placeholder
+  for the date it ended. An event starting at 7pm and running five hours was
+  labelled `Ended at 9/19 12 AM` when it ended at midnight on 9/20. The label is
+  now `Ended at <end-time> <zone>: <title>`, with no date. The `Upcoming at` label
+  keeps its date, which is correct because it is shown before the event starts.
+  The managed dummy EPG source is rewritten on the next applied run.
+
+- **Regex: Mark Channel as Inactive** now compiles the pattern exactly as typed,
+  the same way the Ignore and Force Visible fields and Validate Configuration
+  already did. It used to pass the pattern through an escape-decoding step first,
+  which turned the word boundary `\b` into a backspace character, so a pattern
+  such as `\bCANCELLED\b` never matched any channel, and a pattern containing a
+  non-ASCII letter could not match that letter. A pattern written with doubled
+  backslashes to work around this, such as `\\d`, now means a literal backslash
+  and needs to be written with single backslashes, as in the other two fields.
+
 ## 1.26.2561545 (2026-09-13)
 
 ### Fixed
