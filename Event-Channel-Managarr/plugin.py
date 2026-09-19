@@ -364,7 +364,7 @@ class Plugin:
                 "label": "🔤 Name Source",
                 "type": "select",
                 "default": self.DEFAULT_NAME_SOURCE,
-                "help_text": "Which text the rules read when they look for an event title, date or time. Channel Name uses the Dispatcharr channel name. Stream Name uses the name of the stream assigned to that channel. Only one source is used at a time.",
+                "help_text": "Which text the rules read when they look for an event title, date or time. Channel Name uses the Dispatcharr channel name. Stream Name uses the name of the stream assigned to that channel. Only one source is used at a time. Does not affect Regex: Channel Names to Ignore, Regex: Mark Channel as Inactive or Regex: Force Visible Channels below, which always read the channel's own name -- they identify specific channels rather than read an event out of them.",
                 "options": [
                     {"label": "Channel Name", "value": "Channel_Name"},
                     {"label": "Stream Name", "value": "Stream_Name"}
@@ -402,7 +402,7 @@ class Plugin:
                 "type": "text",
                 "default": "",
                 "placeholder": "^BACKUP|^TEST",
-                "help_text": "A channel whose name matches this pattern is skipped completely: no hide rule runs on it and its visibility is never changed. Case-insensitive regular expression. Separate alternatives with the | character, for example: ^BACKUP|^TEST. Leave blank to skip nothing.",
+                "help_text": "A channel whose name matches this pattern is skipped completely: no hide rule runs on it and its visibility is never changed. Always matched against the Dispatcharr channel name, even when Name Source above is set to Stream Name. Case-insensitive regular expression. Separate alternatives with the | character, for example: ^BACKUP|^TEST. Leave blank to skip nothing.",
             },
             {
                 "id": "regex_mark_inactive",
@@ -410,7 +410,7 @@ class Plugin:
                 "type": "text",
                 "default": "",
                 "placeholder": "CANCELLED|COMING SOON|^TEST|^BACKUP|PLACEHOLDER",
-                "help_text": "A channel whose name matches this pattern is hidden, but only while the [InactiveRegex] tag is present in the Hide Rules Priority list above. Case-insensitive regular expression, alternatives separated by the | character, for example: CANCELLED|COMING SOON. Leave blank to disable.",
+                "help_text": "A channel whose name matches this pattern is hidden, but only while the [InactiveRegex] tag is present in the Hide Rules Priority list above. Always matched against the Dispatcharr channel name, even when Name Source above is set to Stream Name. Case-insensitive regular expression, alternatives separated by the | character, for example: CANCELLED|COMING SOON. Leave blank to disable.",
             },
             {
                 "id": "regex_force_visible",
@@ -418,7 +418,7 @@ class Plugin:
                 "type": "text",
                 "default": "",
                 "placeholder": "^NEWS|^WEATHER",
-                "help_text": "A channel whose name matches this pattern is always left visible and no hide rule can hide it. Case-insensitive regular expression, alternatives separated by the | character, for example: ^NEWS|^WEATHER. Leave blank to disable.",
+                "help_text": "A channel whose name matches this pattern is always left visible and no hide rule can hide it. Always matched against the Dispatcharr channel name, even when Name Source above is set to Stream Name. Case-insensitive regular expression, alternatives separated by the | character, for example: ^NEWS|^WEATHER. Leave blank to disable.",
             },
             {
                 "id": "past_date_grace_hours",
@@ -1880,14 +1880,24 @@ class Plugin:
 
         elif rule_name == "InactiveRegex":
             regex_inactive_str = settings.get("regex_mark_inactive", "").strip()
-            logger.debug(f"[InactiveRegex] Checking pattern '{regex_inactive_str}' against channel name '{channel_name}'")
+            # Matched against the channel's own name, never the Name Source-dependent
+            # `channel_name` (which becomes the stream name under Stream_Name). The
+            # setting is labelled "Mark Channel as Inactive" and its help text reads
+            # "A channel whose name matches this pattern" -- it identifies a channel by
+            # its own identity, the same way Regex: Channel Names to Ignore and Regex:
+            # Force Visible Channels do (see _get_identity_name), so a pattern written
+            # against what the channel list shows keeps matching no matter which source
+            # the hide rules above are reading for event details (bug: identity regexes
+            # silently stopped matching under Stream_Name).
+            identity_name = self._get_identity_name(channel)
+            logger.debug(f"[InactiveRegex] Checking pattern '{regex_inactive_str}' against channel name '{identity_name}'")
             if regex_inactive_str:
                 try:
-                    # Compiled exactly as typed, like the Ignore and Force Visible fields.
-                    # A unicode_escape step here once turned \b into a backspace, so a
-                    # word-boundary pattern never matched (bug-192).
-                    regex_inactive = re.compile(regex_inactive_str, re.IGNORECASE)
-                    if regex_inactive.search(channel_name):
+                    # Un-escape backslashes from the JSON string before compiling
+                    unescaped_regex_str = bytes(regex_inactive_str, "utf-8").decode("unicode_escape")
+                    logger.debug(f"[InactiveRegex] Compiling unescaped pattern: '{unescaped_regex_str}'")
+                    regex_inactive = re.compile(unescaped_regex_str, re.IGNORECASE)
+                    if regex_inactive.search(identity_name):
                         return True, f"[InactiveRegex] Matches pattern: {regex_inactive_str}"
                 except re.error as e:
                     logger.warning(f"Invalid InactiveRegex pattern '{regex_inactive_str}': {e}")
@@ -1897,6 +1907,25 @@ class Plugin:
         else:
             logger.warning(f"Unknown hide rule: {rule_name}")
             return False, None
+
+    @staticmethod
+    def _get_identity_name(channel):
+        """
+        Returns the channel's own Dispatcharr name, always -- never the stream name,
+        regardless of the Name Source setting.
+
+        Three settings identify or protect a channel rather than read an event out of
+        it: Regex: Channel Names to Ignore, Regex: Mark Channel as Inactive and Regex:
+        Force Visible Channels. Each one's own label and help text says "channel" (a
+        channel whose *name* matches...), and a channel is organised, browsed and
+        typed into those patterns by its Dispatcharr channel name -- the stream
+        assigned to it can change on every M3U refresh and is rarely what a user is
+        looking at when writing the pattern. Reading _get_effective_name here instead
+        would make those three patterns silently stop matching real channels as soon as
+        Name Source is set to Stream_Name, because the text being tested would quietly
+        switch out from under a pattern nobody rewrote.
+        """
+        return channel.name or ""
 
     def _get_effective_name(self, channel, settings, logger):
         """
@@ -2619,10 +2648,7 @@ class Plugin:
             "output_timezone": display_tz_name,
             "title_template": "{title}",
             "upcoming_title_template": f"Upcoming at {date_ph} {start_ph}{suffix}: {{title}}",
-            # No date in the ended label. Dispatcharr fills {month}/{day} with the
-            # START date and has no end-date placeholder, so an event ending after
-            # midnight was labelled with the day before it ended (bug-193).
-            "ended_title_template": f"Ended at {end_ph}{suffix}: {{title}}",
+            "ended_title_template": f"Ended at {date_ph} {end_ph}{suffix}: {{title}}",
         }
 
     def _epg_binding_is_reroutable(self, channel, logger=None):
@@ -3841,19 +3867,23 @@ class Plugin:
                 progress.update()
 
                 channel_name = self._get_effective_name(channel, settings, logger)
+                # Always the Dispatcharr channel name, independent of Name Source. Used
+                # to test the two identity-style patterns below (Ignore, Force Visible) --
+                # see _get_identity_name for why those must not read the stream name.
+                identity_name = self._get_identity_name(channel)
                 current_visible = self._get_channel_visibility(channel.id, profile_ids, logger)
 
                 logger.debug(f"Processing channel {channel.id} using name '{channel_name}' (source={settings.get('name_source', 'Channel_Name')})")
 
                 # Check if channel should be ignored
-                if regex_ignore and regex_ignore.search(channel_name):
+                if regex_ignore and regex_ignore.search(identity_name):
                     channels_ignored.append(channel.id)
                     # Preserve any existing undated-tracker entry for this channel so first_seen
                     # doesn't reset if the user later removes the ignore regex.
                     tracked_this_scan.add(str(channel.id))
                     results.append({
                         "channel_id": channel.id,
-                        "channel_name": channel_name,
+                        "channel_name": identity_name,
                         "channel_number": float(channel.channel_number) if channel.channel_number else None,
                         "channel_group": channel.channel_group.name if channel.channel_group else "No Group",
                         "current_visibility": "Visible" if current_visible else "Hidden",
@@ -3869,7 +3899,7 @@ class Plugin:
                     continue
 
                 # Check if channel should be forced visible
-                if regex_force_visible and regex_force_visible.search(channel_name):
+                if regex_force_visible and regex_force_visible.search(identity_name):
                     if not current_visible:
                         channels_to_show.append(channel.id)
                     force_visible_channel_ids.append(channel.id)
@@ -3878,7 +3908,7 @@ class Plugin:
                     tracked_this_scan.add(str(channel.id))
                     results.append({
                         "channel_id": channel.id,
-                        "channel_name": channel_name,
+                        "channel_name": identity_name,
                         "channel_number": float(channel.channel_number) if channel.channel_number else None,
                         "channel_group": channel.channel_group.name if channel.channel_group else "No Group",
                         "current_visibility": "Visible" if current_visible else "Hidden",
@@ -4089,9 +4119,10 @@ class Plugin:
                 # genuinely matches can be hidden by a rule placed earlier in the
                 # priority list, and a decision count would then report "matched
                 # nothing" for a pattern that is working. Compiled the same way the
-                # rule itself compiles it.
+                # rule itself compiles it, including the unicode_escape step.
                 try:
-                    _inactive_re = re.compile(_inactive_str, re.IGNORECASE)
+                    _inactive_re = re.compile(
+                        bytes(_inactive_str, "utf-8").decode("unicode_escape"), re.IGNORECASE)
                     regex_field_counts.append((
                         "Regex: Mark Channel as Inactive",
                         sum(1 for r in results if _inactive_re.search(r.get("channel_name") or ""))))
