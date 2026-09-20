@@ -833,6 +833,37 @@ def regex_alternative_summary(pattern):
 # Effectiveness tally. Before that tag existed a duplicate hide produced no tag at
 # all, and the tally counted ten of them under an empty label, printing
 # "  : 10 channels" in a user's export (bug-177).
+IDENTITY_REGEX_SETTINGS = (
+    "regex_channels_to_ignore",
+    "regex_mark_inactive",
+    "regex_force_visible",
+)
+
+
+def regex_target_name(setting_id, channel_name, effective_name):
+    """Return the text an ECM regex setting is matched against.
+
+    Name Source decides which text the hide rules read when they look for an event
+    title, date or time: the Dispatcharr channel name, or the name of the first
+    stream bound to the channel.
+
+    The three settings in IDENTITY_REGEX_SETTINGS are not reading an event out of a
+    name. They pick out a particular channel: skip it, hide it, or keep it visible.
+    An operator writes them while looking at the Dispatcharr channel list, and the
+    stream bound to a channel can be replaced on any M3U refresh, so the text they
+    are matched against stays the channel name whatever Name Source is set to.
+    Letting them follow Name Source made them stop matching the channels they were
+    written for as soon as Name Source was changed, with nothing reporting it
+    (pull request 31, reported by ferteque 2026-09-19).
+
+    Every other caller passes a setting id that is not in that tuple and gets the
+    Name Source text, which is the whole point of the setting.
+    """
+    if setting_id in IDENTITY_REGEX_SETTINGS:
+        return channel_name or ""
+    return effective_name or ""
+
+
 DUPLICATE_HIDE_REASON = "[Duplicate] Another channel has the same event and was kept"
 
 # Printed instead of a blank label when a hidden channel carries no tag. A hide

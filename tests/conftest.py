@@ -66,3 +66,9 @@ def bare_plugin(plugin_module):
     instance._undated_tracker = {}
     instance._undated_warned = set()
     return instance
+
+
+@pytest.fixture(scope="session")
+def plugin_source():
+    """plugin.py's text, for the structural tests that read it with ast."""
+    return PLUGIN_PY.read_text(encoding="utf-8")
