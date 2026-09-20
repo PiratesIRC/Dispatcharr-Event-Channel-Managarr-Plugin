@@ -75,9 +75,18 @@ def test_plugin_and_profiles_write_the_same_ended_label(bare_plugin, monkeypatch
 
 # --- [InactiveRegex] --------------------------------------------------------------
 
+class _FakeChannel:
+    """The rule reads the channel's own name, so these tests have to supply one.
+    See tests/unit/test_identity_regex_name_source.py for why."""
+
+    def __init__(self, name):
+        self.id = 1
+        self.name = name
+
+
 def _inactive(bare_plugin, pattern, channel_name):
     hidden, _reason = bare_plugin._check_hide_rule(
-        "InactiveRegex", None, None, channel_name, _NullLogger(),
+        "InactiveRegex", None, _FakeChannel(channel_name), channel_name, _NullLogger(),
         {"regex_mark_inactive": pattern})
     return hidden
 
