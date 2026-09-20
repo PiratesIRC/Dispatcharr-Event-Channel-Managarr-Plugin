@@ -7,6 +7,36 @@ they are the authoritative record; this page is an index.
 Versions are calendar-based: `Major.YY.DDDHHMM`, where `DDD` is the day of the year
 and `HHMM` the UTC time of the version bump. A higher version is always later.
 
+## 1.26.2631853 (2026-09-20)
+
+### Fixed
+
+- **Regex: Channel Names to Ignore**, **Regex: Mark Channel as Inactive** and
+  **Regex: Force Visible Channels** are now always matched against the Dispatcharr
+  channel name, whatever **Name Source** is set to. Before this version they were
+  matched against whichever text **Name Source** selected, so setting **Name
+  Source** to `Stream Name` made a pattern written against the channel list quietly
+  stop matching the channels it was written for, and nothing in the run report said
+  so. Those three fields pick out a particular channel to skip, hide or keep
+  visible rather than read an event out of a name, and the stream bound to a
+  channel can be replaced on any M3U refresh, so they no longer follow **Name
+  Source**. Every other hide rule still reads the **Name Source** text, which is
+  what that setting is for.
+
+  Reported by ferteque in pull request 31, which is the source of this fix.
+
+- The **Regex Field Matches** count for **Regex: Mark Channel as Inactive** now
+  re-tests the same text the rule tests. It was reading the **Name Source** text
+  recorded in the report rows, so under `Stream Name` it could report that the
+  pattern matched no channels while the rule was matching them.
+
+### Changed
+
+- The help text on **Name Source** and on all three regex fields now says which
+  fields follow **Name Source** and which always read the channel name. The log
+  line warning that a regex field matched nothing says the same. `docs/USER-GUIDE.md`
+  has been updated to match.
+
 ## 1.26.2621024 (2026-09-19)
 
 ### Fixed
