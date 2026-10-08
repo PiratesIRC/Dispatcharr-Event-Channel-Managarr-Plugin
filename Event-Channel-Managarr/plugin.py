@@ -3558,6 +3558,22 @@ class Plugin:
 
         return attached_ids, detached_ids
 
+    def _channel_number_for(self, channel):
+        """Return the channel number the operator sees, as a float, or None.
+
+        Dispatcharr's UI shows ChannelOverride.channel_number when it is set. A channel
+        with no override row raises RelatedObjectDoesNotExist, which subclasses
+        AttributeError, so getattr with a default covers that case. Any other fault
+        falls back to the raw number so a scan is never broken by this lookup.
+        """
+        raw_number = channel.channel_number or None
+        try:
+            override = getattr(channel, "override", None)
+            override_number = getattr(override, "channel_number", None)
+        except Exception:
+            override_number = None
+        return ecm_parsing.effective_channel_number(raw_number, override_number)
+
     def _get_channel_visibility(self, channel_id, profile_ids, logger):
         """Get current visibility status for a channel in profiles - returns True if enabled in ANY profile"""
         try:
@@ -3725,7 +3741,7 @@ class Plugin:
             logger.info(f"Found {len(all_channel_ids)} channels in profile(s) '{', '.join(found_profile_names)}' (including hidden channels)")
 
             # Get channels query - now includes both visible and hidden channels
-            channels_query = Channel.objects.filter(id__in=all_channel_ids).select_related('channel_group', 'epg_data')
+            channels_query = Channel.objects.filter(id__in=all_channel_ids).select_related('channel_group', 'epg_data', 'override')
 
             # Apply group filter if specified. Group names are matched
             # case-insensitively (like profile names) so minor case differences and
@@ -3872,7 +3888,7 @@ class Plugin:
                     results.append({
                         "channel_id": channel.id,
                         "channel_name": channel_name,
-                        "channel_number": float(channel.channel_number) if channel.channel_number else None,
+                        "channel_number": self._channel_number_for(channel),
                         "channel_group": channel.channel_group.name if channel.channel_group else "No Group",
                         "current_visibility": "Visible" if current_visible else "Hidden",
                         "action": "Ignored",
@@ -3897,7 +3913,7 @@ class Plugin:
                     results.append({
                         "channel_id": channel.id,
                         "channel_name": channel_name,
-                        "channel_number": float(channel.channel_number) if channel.channel_number else None,
+                        "channel_number": self._channel_number_for(channel),
                         "channel_group": channel.channel_group.name if channel.channel_group else "No Group",
                         "current_visibility": "Visible" if current_visible else "Hidden",
                         "action": "Forced Visible" if not current_visible else "Visible (Forced)",
@@ -3934,7 +3950,7 @@ class Plugin:
                 # Store channel info for duplicate detection and logging
                 channel_info_map[channel.id] = {
                     'channel_name': channel_name,
-                    'channel_number': float(channel.channel_number) if channel.channel_number else None,
+                    'channel_number': self._channel_number_for(channel),
                     'reason': reason,
                     'current_visible': current_visible
                 }
@@ -3942,7 +3958,7 @@ class Plugin:
                 channels_for_duplicate_check.append({
                     'channel_id': channel.id,
                     'channel_name': channel_name,
-                    'channel_number': float(channel.channel_number) if channel.channel_number else None,
+                    'channel_number': self._channel_number_for(channel),
                     'action_needed': action_needed,
                     'reason': reason,
                     'current_visible': current_visible,
@@ -4524,7 +4540,7 @@ class Plugin:
             found_profile_names = []
             for profile_name in channel_profile_names:
                 try:
-                    profile = ChannelProfile.objects.get(name=profile_name)
+                    profile = ChannelProfile.objects.get(name__iexact=profile_name.strip())
                     profile_ids.append(profile.id)
                     found_profile_names.append(profile_name)
                     logger.info(f"Found profile: {profile_name} (ID: {profile.id})")

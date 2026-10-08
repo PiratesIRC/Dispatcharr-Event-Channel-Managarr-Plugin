@@ -294,6 +294,20 @@ def lock_is_stale(mtime, now, max_age_seconds):
         return False
 
 
+def effective_channel_number(raw_number, override_number):
+    """Return the channel number the operator sees, as a float, or None.
+
+    Dispatcharr's ChannelOverride can carry its own channel_number, and the UI shows
+    that number in place of Channel.channel_number. So the override wins whenever it
+    is set, including 0, which is a real number and not a missing one. Duplicate
+    handling and the CSV export must use this value, or they disagree with the UI.
+    """
+    number = override_number if override_number is not None else raw_number
+    if number is None:
+        return None
+    return float(number)
+
+
 def parse_scheduled_times(scheduled_times_str):
     """Split a comma-separated HHMM schedule into accepted times and rejected text.
 
