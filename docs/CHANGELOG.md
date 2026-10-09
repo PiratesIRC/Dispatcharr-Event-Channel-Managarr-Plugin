@@ -7,6 +7,26 @@ they are the authoritative record; this page is an index.
 Versions are calendar-based: `Major.YY.DDDHHMM`, where `DDD` is the day of the year
 and `HHMM` the UTC time of the version bump. A higher version is always later.
 
+## 1.26.2821924 (2026-10-09)
+
+### Added
+
+- A new setting, **Stream Name Groups**, for providers that keep the channel names
+  fixed and put each week's events in the stream names. The groups you list there
+  read the stream name for every hide rule, while every other group keeps following
+  **Name Source**. Before this, **Name Source** applied to the whole scan, so one
+  group with stale channel names and another whose channel names are newer than
+  their streams could not both be read correctly.
+- A group listed in **Stream Name Groups** and given its own source in **Per-Group
+  EPG Sources** now gets that source created already set to read the stream name,
+  so its guide shows this week's game rather than the one in the channel name. This
+  uses the **Name Source** field that Dispatcharr 0.32.0 added to dummy EPG sources.
+  A source that already exists is not changed; set its **Name Source** in
+  Dispatcharr's EPG source editor.
+- **Validate Configuration** reports a listed group that is not in **Channel
+  Groups**, and a mapped source shared by a listed and an unlisted group, which
+  stays on channel names.
+
 ## 1.26.2821849 (2026-10-09)
 
 ### Added
