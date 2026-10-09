@@ -34,8 +34,8 @@ git ls-tree --name-only HEAD:Event-Channel-Managarr
 | File | Ships? | Purpose |
 |---|---|---|
 | `Event-Channel-Managarr/plugin.py` | Yes | All plugin logic (about 4,250 lines) |
-| `Event-Channel-Managarr/ecm_parsing.py` | Yes | Django-free date, time and event-window logic |
-| `Event-Channel-Managarr/ecm_profiles.py` | Yes | Django-free. The channel-name format profiles, and every routing and ownership decision: `parse_group_source_map`, `build_group_profiles`, `routing_destinations` and `source_props_to_write` |
+| `Event-Channel-Managarr/ecm_parsing.py` | Yes | Django-free date, time and event-window logic, and the `AT` channel-name patterns (`AT_TITLE_PATTERN`, `AT_TIME_PATTERN`, `AT_DATE_PATTERN`), which exist only here |
+| `Event-Channel-Managarr/ecm_profiles.py` | Yes | Django-free. The channel-name format profiles, and every routing and ownership decision: `parse_group_source_map`, `build_group_profiles`, `routing_destinations` and `source_props_to_write`, plus the Stream Name Groups decisions `stream_name_group_keys`, `name_source_for_group` and `mixed_name_source_problems` |
 | `Event-Channel-Managarr/plugin.json` | Yes | Manifest: `fields` + `actions` arrays |
 | `Event-Channel-Managarr/__init__.py` | Yes | Package marker; must export only `Plugin` |
 | `Event-Channel-Managarr/README.txt` | Yes | In-container readme |

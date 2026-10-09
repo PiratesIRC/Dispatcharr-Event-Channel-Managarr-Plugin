@@ -34,15 +34,18 @@ period you set, has passed.
 
 **Reads either the channel name or the stream name.** Providers that leave the
 channel name fixed and put the game in the stream name are handled by switching one
-setting.
+setting, or by listing just those channel groups in **Stream Name Groups** so other
+groups keep reading channel names. On Dispatcharr 0.32.0 or later such a group can
+also get its own guide source that reads the stream name.
 
 **Fills the guide for channels that have no EPG.** An optional plugin-managed dummy
 EPG source renders the event title during its window, `Upcoming at <time>: <title>`
 before it and `Ended at <time>: <title>` after, in the viewer's local time. Channels
 whose names claim a different timezone get their own source rather than being pulled
-back and forth. Two channel-name layouts are understood: the US form
+back and forth. Three channel-name layouts are understood: the US form
 (`PPV EVENT 12: Title (MM.DD HH:MM AM/PM TZ)`, and bare numbered slots such as
-`07 - 8/14 7pm Broncos at Falcons`) and the Swedish pipe-delimited form.
+`07 - 8/14 7pm Broncos at Falcons`), the Swedish pipe-delimited form, and the `AT`
+form with the date after an `@` (`NHL 01: Kraken @ Red Wings @ 9 Oct 07:00 PM ET`).
 
 **Gives a channel group its own guide source.** Groups whose events are labelled in
 different timezones, or that need different durations or title patterns, can each be
