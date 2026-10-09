@@ -7,6 +7,22 @@ they are the authoritative record; this page is an index.
 Versions are calendar-based: `Major.YY.DDDHHMM`, where `DDD` is the day of the year
 and `HHMM` the UTC time of the version bump. A higher version is always later.
 
+## 1.26.2821849 (2026-10-09)
+
+### Added
+
+- **Channel Name Format** has a new option, `AT`, for channels named like
+  `NHL 01: Kraken @ Red Wings @ 9 Oct 07:00 PM ET` or
+  `NCAA Baseball 01: Oklahoma vs North Carolina @ Jun 22 07:00 PM ET`. With the
+  `US` format these names showed the whole channel name in repeating blocks in the
+  guide. With `AT` the guide shows an Upcoming entry, the game at its start time
+  for the Event Duration, and an Ended entry. The date after the `@` may be day
+  first or month first. A channel such as `NHL 09: NO EVENT`, with no date after
+  an `@`, keeps the plain fallback entry. Set **Channel Name Event Timezone** to
+  the zone written in the names, which is `US/Eastern` for names ending in `ET`.
+  Switching the format and running a scan rewrites the patterns on the managed
+  dummy EPG source, unless you have edited them yourself.
+
 ## 1.26.2821323 (2026-10-09)
 
 ### Fixed
