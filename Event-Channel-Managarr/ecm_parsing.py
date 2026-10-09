@@ -1194,6 +1194,54 @@ def yes_no(value):
     return "Yes" if setting_is_true(value) else "No"
 
 
+# Channel Name Format "AT": the managed dummy EPG patterns for names that put the
+# event date after an @ sign, as one sports provider names every league slot:
+#   "NHL Game Pass 01: Kraken @ Red Wings @ 9 Oct 07:00 PM ET"
+#   "MLB 02 | Los Angeles Dodgers at Atlanta Braves NATIONAL @ 7 Oct 06:00 PM ET"
+#   "NCAA Baseball 01: Oklahoma vs #5 North Carolina @ Jun 22 07:00 PM ET"
+# The date may be day first ("9 Oct") or month first ("Jun 22"). The patterns are
+# handed to Dispatcharr's dummy EPG renderer, which reads the groups title, hour,
+# minute, ampm, month and day, accepts a month name under "month", and takes the
+# year from the current date. Named groups use the JavaScript (?<name>) form for the
+# reason given beside the US patterns in plugin.py, and no group name is used twice,
+# because Python's re rejects a repeated name.
+#
+# Every part is anchored on an @ that is followed by a date, because the title can
+# carry its own @ ("Kraken @ Red Wings"). A month is only read as a whole word, so
+# "Marlins" or "Mayweather" after an @ is not taken for March or May.
+_AT_MONTHS = (
+    r"(?:January|February|March|April|June|July|August|September|October|November"
+    r"|December|Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)"
+)
+# "t?" admits "Sept", which the renderer cannot look up, so the month group below
+# stops before it and captures "Sep".
+_AT_MONTH_WORD = _AT_MONTHS + r"t?\.?(?![A-Za-z])"
+_AT_DATE_WORDS = (
+    r"(?:\d{1,2}\s+" + _AT_MONTH_WORD
+    + r"|" + _AT_MONTH_WORD + r"\s+\d{1,2}(?:st|nd|rd|th)?(?![\d:]))"
+)
+# "(?![\d:])" after a month-first day stops "@ Oct 7:30 PM", which carries no day,
+# from reading the clock hour 7 as the day. AT_DATE_PATTERN applies the same guard.
+
+# The slot prefix holds no colon or pipe, so the title starts after the FIRST
+# "NN:" or "NN |" and keeps any colon of its own ("NHL on TNT: Penguins at Capitals").
+AT_TITLE_PATTERN = (
+    r"^[^:|]*?\d{1,3}\s*[:|]\s*(?<title>.+?)\s*@\s*(?=" + _AT_DATE_WORDS + r")"
+)
+# The clock time is read only where it follows the @ date, so a number in the title
+# ("Nets vs 76ers", "#5 North Carolina") can never be taken for the air time. The am/pm
+# marker is optional: without it the renderer reads the hour as a 24-hour clock.
+AT_TIME_PATTERN = (
+    r"@\s*" + _AT_DATE_WORDS + r"(?:,?\s+\d{4})?,?\s+"
+    r"(?<hour>\d{1,2})(?::(?<minute>\d{2}))?\s*(?<ampm>[AaPp][Mm])?(?![A-Za-z\d])"
+)
+# Two lookaheads from the same @ read the month and the day whichever comes first.
+AT_DATE_PATTERN = (
+    r"@\s*(?=(?:\d{1,2}\s+)?(?<month>" + _AT_MONTHS + r")t?\.?(?![A-Za-z]))"
+    r"(?=(?:[A-Za-z]+\.?\s+)?(?<day>\d{1,2})(?![\d:]))"
+)
+
+
 # How a stored choice is written in the interface. The report uses the interface
 # wording, because "lowest_number" is not a phrase anyone can find on the settings
 # form. tests/contract/test_report_value_labels.py holds this equal to the options
@@ -1207,7 +1255,8 @@ SETTING_VALUE_LABELS = {
                            ("longest_name", "Keep Longest Channel Name")),
     "dummy_epg_channel_format": (
         ("US", "US:  PPV/LIVE EVENT ##: Title (MM.DD HH:MM AM/PM TZ)"),
-        ("SE", "SE:  PREFIX | Title | DDD DD Mon HH:MM TZ | extras | channel name")),
+        ("SE", "SE:  PREFIX | Title | DDD DD Mon HH:MM TZ | extras | channel name"),
+        ("AT", "AT:  PREFIX ##: Title @ DD Mon HH:MM AM/PM TZ")),
     "rate_limiting": (("none", "None (fastest)"), ("low", "Low (~0.05s / channel)"),
                       ("medium", "Medium (~0.2s / channel)"),
                       ("high", "High (~0.5s / channel)")),

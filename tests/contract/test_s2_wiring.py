@@ -124,14 +124,26 @@ import ecm_profiles  # noqa: E402
 # and ecm_profiles.resolve_output_timezone and holds their ended labels equal.
 # Nothing else in the method moved.
 #
+# _get_or_create_managed_epg_source was re-recorded a SEVENTH time on 2026-10-09.
+# It gained a third Channel Name Format, "AT", for names such as
+# "NHL Game Pass 01: Kraken @ Red Wings @ 9 Oct 07:00 PM ET", which neither the US
+# nor the SE patterns read, so every such channel on the managed source got the
+# renderer's fallback block instead of an event at game time (support case,
+# 2026-10-09). The method now selects ecm_parsing's AT patterns for that value and
+# lists them in stock_patterns, so a source switches between formats in both
+# directions while a pattern the operator wrote is still kept. Covered by
+# tests/unit/test_at_format_managed_source.py, which executes this method against a
+# stand-in EPGSource, and tests/unit/test_at_channel_format.py, which runs the
+# patterns against 162 captured names. The US and SE branches did not move.
+#
 # The other three remain at their original S2 baseline values and must not be
 # touched without the same argument.
 FROZEN_BODIES = {
     "_attach_managed_epg": "b0126debd9231deb49625ca0404952679197b862bff6cd86c618eb46fe3b335e",
     "_detach_managed_epg": "9e8d367e7d0789715e04249dab786a494b7f6919a60d6f9c755029e8261b98ca",
     "_managed_override_ids": "5d41e55a7146863609792f31f20134469c090b51938c1ab67d0f34399c526d6c",
-    # re-recorded 2026-08-12, 2026-08-14, 2026-08-29, 2026-08-30 and twice on 2026-09-05, see the notes above
-    "_get_or_create_managed_epg_source": "09fb337987711c0d28822c1608d5ec6b6ebf8e839d91afd1181410056f9768f5",
+    # re-recorded 2026-08-12, 2026-08-14, 2026-08-29, 2026-08-30, twice on 2026-09-05 and 2026-10-09, see the notes above
+    "_get_or_create_managed_epg_source": "b26ac09922d3184cc62fad2e2c156b2c0f140592f60d6e32d7af1e40ee2e61c7",
     # re-recorded 2026-08-12 and 2026-09-19, see the notes above
     "_localized_template_props": "b5d1608dcdd70292a004b519a4d13264fc3014ba51eaa747bd4238f7b7a8af53",
 }

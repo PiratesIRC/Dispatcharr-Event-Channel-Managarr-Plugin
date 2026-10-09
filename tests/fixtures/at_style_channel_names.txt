@@ -1,0 +1,162 @@
+MLB 01 | Chicago White Sox at Cleveland Guardians NATIONAL @ 3 Oct 01:00 PM ET
+MLB 01 | Cleveland Guardians at Chicago White Sox NATIONAL @ 7 Oct 04:00 PM ET
+MLB 01 | Cleveland Guardians at Chicago White Sox NATIONAL @ 8 Oct 08:00 PM ET
+MLB 02 | Atlanta Braves at Los Angeles Dodgers NATIONAL @ 3 Oct 04:00 PM ET
+MLB 02 | Los Angeles Dodgers at Atlanta Braves NATIONAL @ 7 Oct 06:00 PM ET
+MLB 03 | New York Yankees at Tampa Bay Rays NATIONAL @ 3 Oct 06:30 PM ET
+MLB 03 | Tampa Bay Rays at New York Yankees NATIONAL @ 7 Oct 08:00 PM ET
+MLB 04 | Milwaukee Brewers at San Diego Padres NATIONAL @ 7 Oct 10:00 PM ET
+MLB 04 | San Diego Padres at Milwaukee Brewers NATIONAL @ 3 Oct 08:30 PM ET
+NBA 01: Mavericks vs Rockets (Rockets In-Arena) @ 9 Oct 08:00 AM ET
+NBA 01: Pacers vs Timberwolves (Pacers In-Arena) @ 7 Oct 07:00 PM ET
+NBA 02: Grizzlies vs Magic (Grizzlies In-Arena) @ 7 Oct 08:00 PM ET
+NBA 02: Mavericks vs Rockets (Mavericks In-Arena) @ 9 Oct 08:00 AM ET
+NBA 03: Bulls vs Grizzlies (Grizzlies In-Arena) @ 9 Oct 08:00 PM ET
+NBA 03: Thunder vs Bucks (Thunder In-Arena) @ 7 Oct 08:00 PM ET
+NBA 04: Bulls vs Grizzlies (Bulls In-Arena) @ 9 Oct 08:00 PM ET
+NBA 04: Bulls vs Suns (Bulls In-Arena) @ 7 Oct 08:00 PM ET
+NBA 05: Bulls vs Suns (Suns In-Arena) @ 7 Oct 08:00 PM ET
+NBA 06: Nets vs 76ers (76ers In-Arena) @ 8 Oct 07:30 PM ET
+NBA 06: Trail Blazers vs Warriors (Trail Blazers In-Arena) @ 7 Oct 10:00 PM ET
+NBA 07: Knicks vs Wizards (Knicks In-Arena) @ 8 Oct 07:30 PM ET
+NBA 09: Spurs vs Hawks (Spurs In-Arena) @ 8 Oct 08:00 PM ET
+NBA 10: Lakers vs Kings (Lakers In-Arena) @ 8 Oct 10:30 PM ET
+NCAA Baseball 01: Oklahoma vs #5 North Carolina @ Jun 22 07:00 PM ET
+NCAAF 01: #7 Alabama vs. #16 Mississippi State @ 3 Oct 12:00 PM ET
+NCAAF 01: Florida State vs. Louisville @ 9 Oct 07:00 PM ET
+NCAAF 01: Jacksonville State at Kennesaw State @ 7 Oct 07:00 PM ET
+NCAAF 02: Stanford vs. Wake Forest @ 3 Oct 12:00 PM ET
+NCAAF 03: Merrimack vs. Yale @ 3 Oct 12:00 PM ET
+NCAAF 04: Princeton vs. Columbia @ 3 Oct 12:00 PM ET
+NCAAF 04: South Alabama vs. Arkansas State @ 8 Oct 07:30 PM ET
+NCAAF 05: Mercyhurst vs. Long Island University @ 3 Oct 12:00 PM ET
+NCAAF 06: Boston College vs. #21 SMU @ 3 Oct 12:00 PM ET
+NCAAF 07: Middle Tennessee vs. Kansas @ 3 Oct 12:00 PM ET
+NCAAF 08: Fordham vs. Lehigh @ 3 Oct 12:00 PM ET
+NCAAF 09: #3 Notre Dame vs. North Carolina @ 3 Oct 12:00 PM ET
+NCAAF 10: UCF vs. #20 Houston @ 3 Oct 12:00 PM ET
+NCAAF 11: West Virginia at Iowa State @ 3 Oct 12:00 PM ET
+NCAAF 12: Syracuse at UConn @ 3 Oct 12:00 PM ET
+NCAAF 13: Navy at Air Force @ 3 Oct 12:00 PM ET
+NCAAF 14: FOX College Football - Big Ten: Michigan at Minnesota (FOX Sports) @ 3 Oct 12:00 PM ET
+NCAAF 15: B1G Football - Michigan State at Wisconsin (Big Ten Network) @ 3 Oct 12:30 PM ET
+NCAAF 16: Memphis vs. Charlotte @ 3 Oct 11:00 AM ET
+NCAAF 17: St. Thomas (MN) vs. Presbyterian @ 3 Oct 12:00 PM ET
+NCAAF 18: Richmond vs. Lafayette @ 3 Oct 12:30 PM ET
+NCAAF 19: Cornell vs. Georgetown @ 3 Oct 12:30 PM ET
+NCAAF 20: Vanderbilt vs. #2 Georgia @ 3 Oct 12:45 PM ET
+NCAAF 21: Dayton vs. Drake @ 3 Oct 01:00 PM ET
+NCAAF 22: Western Michigan vs. Buffalo @ 3 Oct 01:00 PM ET
+NCAAF 23: Valparaiso vs. Morehead State @ 3 Oct 01:00 PM ET
+NCAAF 24: Morgan State vs. Villanova @ 3 Oct 01:00 PM ET
+NCAAF 25: Pennsylvania vs. Dartmouth @ 3 Oct 01:30 PM ET
+NCAAF 26: Mercer vs. VMI @ 3 Oct 01:30 PM ET
+NCAAF 27: Murray State vs. North Dakota @ 3 Oct 02:00 PM ET
+NCAAF 28: Toledo vs. Ball State @ 3 Oct 02:00 PM ET
+NCAAF 29: Norfolk State vs. Robert Morris @ 3 Oct 02:00 PM ET
+NCAAF 30: Wofford vs. Furman @ 3 Oct 02:00 PM ET
+NCAAF 31: Kentucky State vs. Edward Waters @ 3 Oct 02:00 PM ET
+NCAAF 32: Lane vs. Miles College (AL) @ 3 Oct 03:00 PM ET
+NCAAF 33: Indiana State vs. South Dakota @ 3 Oct 03:00 PM ET
+NCAAF 34: Old Dominion vs. Georgia State @ 3 Oct 03:30 PM ET
+NCAAF 35: Eastern Michigan vs. Massachusetts @ 3 Oct 03:30 PM ET
+NCAAF 36: Ohio vs. Kent State @ 3 Oct 03:30 PM ET
+NCAAF 37: Samford vs. UAB @ 3 Oct 03:30 PM ET
+NCAAF 38: Wyoming vs. North Dakota State @ 3 Oct 03:30 PM ET
+NCAAF 39: Chattanooga vs. East Tennessee State @ 3 Oct 03:30 PM ET
+NCAAF 40: Holy Cross vs. William & Mary @ 3 Oct 03:30 PM ET
+NCAAF 41: Bowling Green vs. Miami (OH) @ 3 Oct 03:30 PM ET
+NCAAF 42: Akron vs. Central Michigan @ 3 Oct 03:30 PM ET
+NCAAF 43: Louisville vs. NC State @ 3 Oct 03:30 PM ET
+NCAAF 44: Virginia vs. Florida State @ 3 Oct 03:30 PM ET
+NCAAF 45: Auburn vs. #17 Tennessee @ 3 Oct 03:30 PM ET
+NCAAF 46: #8 Florida vs. #25 Missouri @ 3 Oct 03:40 PM ET
+NCAAF 47: No. 5 Ohio State at No. 14 Iowa @ 3 Oct 03:40 PM ET
+NCAAF 48: Cal at UNLV @ 3 Oct 03:40 PM ET
+NCAAF 49: Marshall vs. James Madison @ 3 Oct 03:45 PM ET
+NCAAF 50: Northern Colorado vs. Montana @ 3 Oct 04:00 PM ET
+NCAAF 51: Davidson vs. San Diego @ 3 Oct 04:00 PM ET
+NCAAF 52: Tennessee State vs. Western Illinois @ 3 Oct 04:00 PM ET
+NCAAF 53: FOX College Football - Big Ten: Maryland at Nebraska (FS1) @ 3 Oct 04:00 PM ET
+NCAAF 54: Football - UTEP at New Mexico @ 3 Oct 03:55 PM ET
+NCAAF 55: B1G Football - Purdue at Illinois (Big Ten Network) @ 3 Oct 04:15 PM ET
+NCAAF 56: #24 Kentucky vs. South Carolina @ 3 Oct 04:15 PM ET
+NCAAF 57: Youngstown State vs. Southern Illinois @ 3 Oct 05:00 PM ET
+NCAAF 58: New Haven vs. Austin Peay @ 3 Oct 05:00 PM ET
+NCAAF 59: North Alabama vs. Eastern Kentucky @ 3 Oct 06:00 PM ET
+NCAAF 60: Texas Southern vs. Florida Atlantic @ 3 Oct 06:00 PM ET
+NCAAF 61: Incarnate Word vs. Stephen F. Austin @ 3 Oct 06:00 PM ET
+NCAAF 62: Gardner-Webb vs. Charleston Southern @ 3 Oct 06:00 PM ET
+NCAAF 63: Tennessee Tech vs. Western Carolina @ 3 Oct 06:00 PM ET
+NCAAF 64: Oregon State at Colorado State @ 3 Oct 06:00 PM ET
+NCAAF 65: Chicago State vs. Tarleton State @ 3 Oct 07:00 PM ET
+NCAAF 66: Colgate vs. Harvard @ 3 Oct 07:00 PM ET
+NCAAF 67: Nicholls vs. Houston Christian @ 3 Oct 07:00 PM ET
+NCAAF 68: Morehouse vs. Tuskegee @ 3 Oct 07:00 PM ET
+NCAAF 69: Northwestern State vs. Lamar @ 3 Oct 07:00 PM ET
+NCAAF 70: UT Rio Grande Valley vs. East Texas A&M @ 3 Oct 07:00 PM ET
+NCAAF 71: UL Monroe vs. South Alabama @ 3 Oct 07:00 PM ET
+NCAAF 72: South Dakota State vs. Illinois State @ 3 Oct 07:00 PM ET
+NCAAF 73: UTSA vs. Rice @ 3 Oct 07:00 PM ET
+NCAAF 74: Georgia Southern vs. Coastal Carolina @ 3 Oct 07:00 PM ET
+NCAAF 75: #10 BYU vs. TCU @ 3 Oct 07:00 PM ET
+NCAAF 76: Arkansas vs. Texas A&M @ 3 Oct 07:00 PM ET
+NCAAF 77: Army vs. Louisiana Tech @ 3 Oct 07:30 PM ET
+NCAAF 78: Temple vs. South Florida @ 3 Oct 07:30 PM ET
+NCAAF 79: #4 Miami vs. Clemson @ 3 Oct 07:37 PM ET
+NCAAF 80: FOX College Football - Big 12: Texas Tech at Colorado (FOX Sports) @ 3 Oct 07:30 PM ET
+NCAAF 81: Washington vs. USC @ 3 Oct 07:00 PM ET
+NCAAF 82: Utah State at No. 22 Boise State @ 3 Oct 07:30 PM ET
+NCAAF 83: McNeese vs. #11 LSU @ 3 Oct 07:45 PM ET
+NCAAF 84: Southern Utah vs. Utah Tech @ 3 Oct 08:00 PM ET
+NCAAF 85: West Florida vs. Abilene Christian @ 3 Oct 08:00 PM ET
+NCAAF 86: Northern Arizona vs. Idaho State @ 3 Oct 08:00 PM ET
+NCAAF 87: Weber State vs. Cal Poly @ 3 Oct 08:00 PM ET
+NCAAF 88: Arkansas State vs. Louisiana @ 3 Oct 08:00 PM ET
+NCAAF 89: B1G Football - Indiana at Rutgers (Big Ten Network) @ 3 Oct 08:00 PM ET
+NCAAF 90: Fresno State at Washington State @ 3 Oct 08:00 PM ET
+NCAAF 91: Texas State vs. San Diego State @ 3 Oct 10:30 PM ET
+NCAAF 92: Baylor vs. Arizona State @ 3 Oct 10:30 PM ET
+NCAAF 93: Eastern Washington vs. UC Davis @ 3 Oct 10:30 PM ET
+NCAAF 94: FOX College Football - Big 12: Cincinnati at Arizona (FOX Sports) @ 3 Oct 11:00 PM ET
+NCAAF 95: Football - San José State at Hawai'i @ 3 Oct 11:30 PM ET
+NFL Game Pass 01: Pittsburgh Steelers vs Cleveland Browns @ Oct 01 08:15 PM ET
+NFL Game Pass 02: Buccaneers @ Cowboys (Prime Vision with Next Gen Stats) @ Oct 08 08:15 PM ET
+NFL Game Pass 02: Steelers @ Browns (Prime Vision with Next Gen Stats) @ Oct 01 08:15 PM ET
+NFL Game Pass 03: Pittsburgh Steelers vs Cleveland Browns @ Oct 01 08:15 PM ET - Special Feed
+NFL Game Pass 05: Green Bay Packers vs Tampa Bay Buccaneers @ Oct 04 01:00 PM ET
+NFL Game Pass 06: Jacksonville Jaguars vs Cincinnati Bengals @ Oct 04 01:00 PM ET
+NFL Game Pass 09: New York Jets vs Chicago Bears @ Oct 04 01:00 PM ET
+NFL Game Pass 10: Tennessee Titans vs Baltimore Ravens @ Oct 04 01:00 PM ET
+NFL Game Pass 11: Miami Dolphins vs Minnesota Vikings @ Oct 04 04:05 PM ET
+NFL Game Pass 12: Denver Broncos vs San Francisco 49ers @ Oct 04 04:25 PM ET
+NFL Game Pass 13: Kansas City Chiefs vs Las Vegas Raiders @ Oct 04 04:25 PM ET
+NFL Game Pass 14: Los Angeles Chargers vs Seattle Seahawks @ Oct 04 04:25 PM ET
+NFL Game Pass 15: Detroit Lions vs Carolina Panthers @ Oct 04 08:20 PM ET
+NHL 01: NHL on TNT: Penguins at Capitals @ 7 Oct 06:00 PM ET
+NHL 02: Colorado Avalanche vs. Winnipeg Jets @ 7 Oct 07:00 PM ET
+NHL 02: Seattle Kraken vs. Detroit Red Wings (Red Wings Broadcast) @ 9 Oct 06:30 PM ET
+NHL 03: Pittsburgh Penguins vs. Columbus Blue Jackets (Blue Jackets Broadcast) @ 9 Oct 06:30 PM ET
+NHL 04: Western Kentucky vs. Jacksonville State @ 9 Oct 07:00 PM ET
+NHL 05: Edmonton Oilers vs. Anaheim Ducks (Oilers Broadcast) @ 7 Oct 09:30 PM ET
+NHL 05: New York Rangers vs. Washington Capitals @ 9 Oct 07:00 PM ET
+NHL 06: Anaheim Ducks vs. Winnipeg Jets @ 9 Oct 07:30 PM ET
+NHL 10: Philadelphia Flyers vs. Ottawa Senators (Senators Broadcast) @ 8 Oct 06:30 PM ET
+NHL 10: Utah Mammoth vs. New Jersey Devils (Mammoth Broadcast) @ 6 Oct 06:30 PM ET
+NHL 12: Dallas Stars vs. Buffalo Sabres (Stars Broadcast) @ 8 Oct 06:30 PM ET
+NHL 13: New York Islanders vs. New York Rangers @ 6 Oct 07:30 PM ET
+NHL 16: Colorado Avalanche vs. Calgary Flames @ 8 Oct 08:30 PM ET
+NHL Game Pass 01: Avalanche @ Jets @ 7 Oct 07:30 PM ET
+NHL Game Pass 01: Kraken @ Red Wings @ 9 Oct 07:00 PM ET
+NHL Game Pass 01: Wild @ Sabres @ 6 Oct 07:00 PM ET
+NHL Game Pass 02: Mammoth @ Devils @ 6 Oct 07:00 PM ET
+NHL Game Pass 02: Oilers @ Ducks @ 7 Oct 10:00 PM ET
+NHL Game Pass 02: Penguins @ Blue Jackets @ 9 Oct 07:00 PM ET
+NHL Game Pass 03: Ducks @ Jets @ 9 Oct 08:00 PM ET
+NHL Game Pass 03: Predators @ Maple Leafs @ 6 Oct 07:00 PM ET
+NHL Game Pass 04: Senators @ Red Wings @ 6 Oct 07:00 PM ET
+NHL Game Pass 05: Islanders @ Rangers @ 6 Oct 07:30 PM ET
+NHL Game Pass 06: Blues @ Blackhawks @ 6 Oct 08:00 PM ET
+NHL Game Pass 07: Golden Knights @ Kraken @ 6 Oct 09:40 PM ET
+NHL Game Pass 07: Sharks @ Blues @ 8 Oct 08:00 PM ET
+NHL Game Pass 08: Panthers @ Kings @ 6 Oct 10:00 PM ET

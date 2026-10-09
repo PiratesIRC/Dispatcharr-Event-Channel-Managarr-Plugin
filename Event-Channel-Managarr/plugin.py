@@ -491,10 +491,11 @@ class Plugin:
                 "label": "📡 Channel Name Format",
                 "type": "select",
                 "default": self.DEFAULT_DUMMY_EPG_CHANNEL_FORMAT,
-                "help_text": "Which name layout the dummy EPG parser should expect. US reads 'PPV EVENT 12: Title (MM.DD HH:MM AM/PM TZ)'. SE reads 'PREFIX | Event Title | DDD DD Mon HH:MM TZ | extras | channel name', where the last segment, for example 'SE: VIAPLAY PPV 20', becomes the EPG display name so the guide lists the broadcaster rather than the full stream name. Pick the one your provider uses; the wrong choice means no event is read out of the name.",
+                "help_text": "Which name layout the dummy EPG parser should expect. US reads 'PPV EVENT 12: Title (MM.DD HH:MM AM/PM TZ)'. SE reads 'PREFIX | Event Title | DDD DD Mon HH:MM TZ | extras | channel name', where the last segment, for example 'SE: VIAPLAY PPV 20', becomes the EPG display name so the guide lists the broadcaster rather than the full stream name. AT reads 'NHL 01: Title @ 9 Oct 07:00 PM ET', where the date after the @ may also be written month first, as in '@ Jun 22 07:00 PM ET'. Pick the one your provider uses; the wrong choice means no event is read out of the name.",
                 "options": [
                     {"label": "US:  PPV/LIVE EVENT ##: Title (MM.DD HH:MM AM/PM TZ)",              "value": "US"},
                     {"label": "SE:  PREFIX | Title | DDD DD Mon HH:MM TZ | extras | channel name", "value": "SE"},
+                    {"label": "AT:  PREFIX ##: Title @ DD Mon HH:MM AM/PM TZ",                       "value": "AT"},
                 ]
             },
             {
@@ -3040,6 +3041,16 @@ class Plugin:
                                           self.DEFAULT_DUMMY_EPG_CHANNEL_FORMAT)).strip().upper()
         if channel_format == "SE":
             title_pattern, time_pattern, date_pattern = se_title_pattern, se_time_pattern, se_date_pattern
+        elif channel_format == "AT":
+            # "NHL 01: Title @ 9 Oct 07:00 PM ET". The patterns and the reasons for each
+            # part live in ecm_parsing, where tests/unit/test_at_channel_format.py runs
+            # them against the names they were written for. AT keeps the 12-hour
+            # {starttime}/{endtime} placeholders chosen below, as US does: measured on
+            # Dispatcharr 0.32.0, a 24-hour name ("@ 9 Oct 19:30 ET") still lands at the
+            # right time and only its label reads "6:30 PM CDT".
+            title_pattern = ecm_parsing.AT_TITLE_PATTERN
+            time_pattern = ecm_parsing.AT_TIME_PATTERN
+            date_pattern = ecm_parsing.AT_DATE_PATTERN
         else:
             title_pattern, time_pattern, date_pattern = us_title_pattern, us_time_pattern, us_date_pattern
 
@@ -3166,12 +3177,15 @@ class Plugin:
                               _py_named(_prev_us_title_keyword_required),
                               _prev_us_title_unguarded_clock_time,
                               _py_named(_prev_us_title_unguarded_clock_time),
-                              se_title_pattern, _py_named(se_title_pattern)},
+                              se_title_pattern, _py_named(se_title_pattern),
+                              ecm_parsing.AT_TITLE_PATTERN, _py_named(ecm_parsing.AT_TITLE_PATTERN)},
             "time_pattern": {us_time_pattern, _py_named(us_time_pattern), _orig_time,
                              _prev_us_time_unbounded, _py_named(_prev_us_time_unbounded),
-                             se_time_pattern, _py_named(se_time_pattern)},
+                             se_time_pattern, _py_named(se_time_pattern),
+                             ecm_parsing.AT_TIME_PATTERN, _py_named(ecm_parsing.AT_TIME_PATTERN)},
             "date_pattern": {us_date_pattern, _py_named(us_date_pattern),
-                             se_date_pattern, _py_named(se_date_pattern)},
+                             se_date_pattern, _py_named(se_date_pattern),
+                             ecm_parsing.AT_DATE_PATTERN, _py_named(ecm_parsing.AT_DATE_PATTERN)},
         }
 
         try:
