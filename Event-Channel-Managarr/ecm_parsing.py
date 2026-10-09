@@ -1308,3 +1308,25 @@ def settings_report_lines(settings, defaults=None):
     defaults = defaults or {}
     return [f"  {label}: {_render(sid, kind, settings.get(sid), defaults.get(sid))}"
             for sid, label, kind in SETTINGS_REPORT]
+
+
+BUILTIN_ALL_PROFILE_NAMES = ("all", "all channels", "all profiles")
+BUILTIN_ALL_PROFILE_HINT = (
+    "'All' is Dispatcharr's built-in view of every channel, not a Channel Profile, "
+    "so this plugin cannot hide channels in it. Create a Channel Profile, add your "
+    "channels to it, and enter that profile's name here."
+)
+
+
+def builtin_all_profile_hint(missing_profile_names):
+    """Return the explanation to append when a configured profile is Dispatcharr's "All".
+
+    The picker's "All" entry is a synthetic view, not a ChannelProfile row, so a name
+    that matched no row and reads as "all" can never work. Returns the hint when any
+    of the unmatched names is one of those words (case and surrounding space ignored),
+    otherwise an empty string.
+    """
+    for name in missing_profile_names or ():
+        if str(name).strip().lower() in BUILTIN_ALL_PROFILE_NAMES:
+            return BUILTIN_ALL_PROFILE_HINT
+    return ""

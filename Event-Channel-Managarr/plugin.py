@@ -829,7 +829,10 @@ class Plugin:
                         missing_profiles.append(profile_name)
 
                 if missing_profiles:
-                    validation_results.append(f"❌ Profiles: Not found - {', '.join(missing_profiles)}")
+                    all_hint = ecm_parsing.builtin_all_profile_hint(missing_profiles)
+                    validation_results.append(
+                        f"❌ Profiles: Not found - {', '.join(missing_profiles)}"
+                        + (f" {all_hint}" if all_hint else ""))
                     has_errors = True
 
                 if found_profiles:
@@ -3715,16 +3718,19 @@ class Plugin:
             logger.info(f"Fetching Channel Profile(s): {', '.join(channel_profile_names)}")
             profile_ids = []
             found_profile_names = []
+            missing_profile_names = []
             for profile_name in channel_profile_names:
                 try:
                     profile = ChannelProfile.objects.get(name__iexact=profile_name.strip())
                     profile_ids.append(profile.id)
                     found_profile_names.append(profile_name)
                 except ChannelProfile.DoesNotExist:
+                    missing_profile_names.append(profile_name)
                     logger.warning(f"Channel Profile '{profile_name}' not found")
 
             if not profile_ids:
-                return {"status": "error", "message": f"None of the specified Channel Profiles were found: {channel_profile_names_str}. Please check the profile names in settings."}
+                all_hint = ecm_parsing.builtin_all_profile_hint(missing_profile_names)
+                return {"status": "error", "message": f"None of the specified Channel Profiles were found: {channel_profile_names_str}. Please check the profile names in settings." + (f" {all_hint}" if all_hint else "")}
 
             logger.info(f"Found {len(profile_ids)} profile(s): {', '.join(found_profile_names)}")
 
@@ -4538,6 +4544,7 @@ class Plugin:
             # Get channel profiles using Django ORM
             profile_ids = []
             found_profile_names = []
+            missing_profile_names = []
             for profile_name in channel_profile_names:
                 try:
                     profile = ChannelProfile.objects.get(name__iexact=profile_name.strip())
@@ -4545,12 +4552,14 @@ class Plugin:
                     found_profile_names.append(profile_name)
                     logger.info(f"Found profile: {profile_name} (ID: {profile.id})")
                 except ChannelProfile.DoesNotExist:
+                    missing_profile_names.append(profile_name)
                     logger.warning(f"Channel profile '{profile_name}' not found")
 
             if not profile_ids:
+                all_hint = ecm_parsing.builtin_all_profile_hint(missing_profile_names)
                 return {
                     "status": "error",
-                    "message": f"None of the specified Channel Profiles were found: {channel_profile_names_str}"
+                    "message": f"None of the specified Channel Profiles were found: {channel_profile_names_str}" + (f" {all_hint}" if all_hint else "")
                 }
 
             # Get all channel memberships in these profiles that are disabled
