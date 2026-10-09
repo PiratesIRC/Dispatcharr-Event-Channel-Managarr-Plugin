@@ -145,6 +145,7 @@ def test_the_settings_that_change_what_a_run_does_are_all_reported():
     """A report that omits a setting cannot explain its own behaviour."""
     reported = {sid for sid, _label, _kind in ecm_parsing.SETTINGS_REPORT}
     for required in ("channel_profile_name", "channel_groups", "name_source",
+                     "stream_name_groups",
                      "date_format", "hide_rules_priority",
                      "regex_channels_to_ignore", "regex_mark_inactive",
                      "regex_force_visible", "past_date_grace_hours",

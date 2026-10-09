@@ -21,6 +21,7 @@ Settings are grouped into six sections in the UI.
 | **📺 Channel Profile Names (Required, comma-separated)** | `text` | - | Channel Profile(s) to monitor. Use comma-separated names for multiple profiles. |
 | **📂 Channel Groups (comma-separated)** | `text` | - | Comma-separated group names to monitor. Leave empty for all groups in the profile(s). Matched **case-insensitively** (as of v1.26.1711623). ⚠️ **Separate these with commas, not `\|`.** The `\|` character belongs only in the three regex fields below; using it here glues several group names into one name that matches nothing, silently dropping them from the scan. Any configured group name that matches no channels is now named in the result message and the CSV header on **every** run, not only when the scan finds nothing at all. |
 | **🔤 Name Source** | `select` | `Channel_Name` | Choose the source for rule matching: `Channel_Name` uses the channel name, `Stream_Name` uses the first stream's name in the channel. The three regex fields below are not affected by this setting: they always read the Dispatcharr channel name. |
+| **🔀 Stream Name Groups** | `text` | *(empty)* | Comma-separated channel groups that read the first stream's name whatever **Name Source** says. Each must also be in **Channel Groups**. A group listed here and mapped in **Per-Group EPG Sources** gets a newly created source that reads the stream name for the guide too (Dispatcharr 0.32.0 or later). See [Providers that keep the event in the STREAM name](#providers-that-keep-the-event-in-the-stream-name). |
 
 ### 🎯 Hide Rules
 
@@ -256,16 +257,16 @@ A per-group source created through **Per-Group EPG Sources** is different again,
 on it is yours. See [The source is yours after the plugin creates it](#the-source-is-yours-after-the-plugin-creates-it) below.
 
 
-### ⚠️ Guide titles come from the CHANNEL name, even when Name Source is Stream Name
+### Providers that keep the event in the STREAM name
 
-This catches out anyone whose provider puts the event details in the **stream** name while the **channel** name stays fixed, for example a channel called `NFL : 15 - [1080p]` fed by a stream called `NFL : 15 - 8/22 10pm Cowboys at Cardinals [1080p]`.
+This catches out anyone whose provider puts the event details in the **stream** name while the **channel** name stays fixed, for example a channel called `NFL : 15 - [1080p]` fed by a stream called `NFL : 15 - 8/22 10pm Cowboys at Cardinals [1080p]`, or channels whose names were right last week while the provider has since renamed the streams for this week's games.
 
-Setting **Name Source** to `Stream_Name` changes what **this plugin's hide rules read**, and nothing else. Dispatcharr renders dummy guide entries itself, from the channel's own name, and a stream name is never available to it. So in that setup:
+Two things read a name, and each has its own setting:
 
-* **Hiding and showing work correctly.** The rules see the game, the date and the time.
-* **The guide entry cannot show the game.** The channel name does not match the event title pattern, so the renderer falls back to the channel name plus the static description `Live event. Guide information is currently unavailable.`
+* **This plugin's hide rules** read the text chosen by **Name Source**, which applies to every group in the scan. To make only some groups read the stream name, list them in **🔀 Stream Name Groups** and leave **Name Source** on `Channel_Name`. Use this when one group keeps stale channel names while another group's channel names are more current than their streams.
+* **The guide entry** is rendered by Dispatcharr from a dummy EPG source. Since Dispatcharr 0.32.0 a dummy source can read the stream name: its **Name Source** field in Dispatcharr's EPG source editor. That field belongs to the whole source, so do not switch the shared `ECM Managed Dummy` source unless every group on it should read stream names. Instead, give the group its own source in **Per-Group EPG Sources** and list the group in **Stream Name Groups**: the plugin then creates that source already set to read the stream name. A source that existed before is not changed; set its **Name Source** yourself.
 
-This is a limit of dummy guide data, not a fault, and re-running a scan will not change it. To get event titles into the guide, the **channel** names have to carry the event text, which is a Dispatcharr channel-naming matter rather than a plugin setting.
+On Dispatcharr before 0.32.0 the guide always reads the channel name, so the guide entry shows the channel name plus the static description `Live event. Guide information is currently unavailable.` while hiding and showing still work.
 
 **The guide shows yesterday's game on a channel whose stream now carries today's.** Many providers reuse the same numbered streams every day and rename them. A channel you created by hand keeps the name it was given, so its guide entry, and this plugin's date rules under `Channel_Name`, keep reading the old game. With **Auto Channel Sync** enabled for the group, Dispatcharr renames each channel it created when the stream's name changes (checked in Dispatcharr 0.31.0 and 0.32.0), which keeps the channel name current. If you turn it on, also enable **🔄 Auto-rescan after M3U refresh**, because each sync turns every channel in the group back on.
 

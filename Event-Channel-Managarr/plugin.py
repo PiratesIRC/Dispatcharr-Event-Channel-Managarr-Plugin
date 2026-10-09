@@ -371,6 +371,14 @@ class Plugin:
                 ]
             },
             {
+                "id": "stream_name_groups",
+                "label": "🔀 Stream Name Groups (comma-separated)",
+                "type": "text",
+                "default": "",
+                "placeholder": "e.g. US: NFL",
+                "help_text": "Channel groups that read the stream name whatever Name Source says, for a provider that keeps the channel names fixed and puts each week's events in the stream names. Separate several groups with commas; capitalisation does not have to match. Each group must also be in Channel Groups. If such a group is mapped to its own source in Per-Group EPG Sources, the plugin creates that source set to read the stream name, so the guide follows the stream too (Dispatcharr 0.32.0 or later). A source that already exists is not changed: set its Name Source to Stream Name in Dispatcharr's EPG source editor. Leave blank to change nothing.",
+            },
+            {
                 "id": "date_format",
                 "label": "📅 Date Format in Channel Names",
                 "type": "select",
@@ -970,6 +978,12 @@ class Plugin:
                 except Exception as e:
                     notes.append(f"could not be checked ({e})")
 
+            # A source shared by a Stream Name Groups group and a group not in that
+            # list is seeded to parse channel names (ecm_profiles.build_group_profiles).
+            for problem in ecm_profiles.mixed_name_source_problems(settings):
+                notes.append(problem)
+                logger.warning(f"{LOG_PREFIX} Group mapping problem: {problem}")
+
             # Print what the plugin ACTUALLY read. An omitted form field keeps the
             # value cached on disk, so clearing the box may not appear to take
             # effect, and this line is how the operator sees which value won.
@@ -986,6 +1000,21 @@ class Plugin:
             logger.info(f"{LOG_PREFIX} Group EPG map in use: {effective}")
         else:
             validation_results.append("ℹ️ Group EPG map: Not set (optional)")
+
+        # Stream Name Groups: a listed group outside Channel Groups is never scanned,
+        # so the setting would do nothing for it.
+        stream_keys = ecm_profiles.stream_name_group_keys(settings.get("stream_name_groups"))
+        if stream_keys:
+            scoped = {g.strip().casefold() for g in channel_groups_str.split(',') if g.strip()}
+            unscanned = sorted(stream_keys - scoped) if scoped else []
+            if unscanned:
+                validation_results.append(
+                    f"⚠️ Stream Name Groups: {', '.join(unscanned)} not in Channel Groups, "
+                    f"so never scanned")
+                has_errors = True
+            else:
+                validation_results.append(
+                    f"✅ Stream Name Groups: {', '.join(sorted(stream_keys))} read the stream name")
 
         # 6. Validate schedule
         scheduled_times = settings.get("scheduled_times", "").strip()
@@ -1915,7 +1944,13 @@ class Plugin:
         """
 
         try:
-            name_source = settings.get("name_source", "Channel_Name")
+            # A group listed in Stream Name Groups reads the stream name whatever the
+            # global setting says; the decision is ecm_profiles.name_source_for_group.
+            group = getattr(channel, "channel_group", None)
+            name_source = ecm_profiles.name_source_for_group(
+                settings.get("name_source", "Channel_Name"),
+                getattr(group, "name", None),
+                ecm_profiles.stream_name_group_keys(settings.get("stream_name_groups")))
             effective_name = channel.name or ""
 
             if name_source == "Stream_Name":

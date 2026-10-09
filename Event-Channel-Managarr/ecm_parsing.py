@@ -1147,6 +1147,7 @@ SETTINGS_REPORT = (
     ("channel_profile_name", "Channel Profile Names", "plain"),
     ("channel_groups", "Channel Groups", "plain"),
     ("name_source", "Name Source", "plain"),
+    ("stream_name_groups", "Stream Name Groups", "plain"),
     ("date_format", "Date Format in Channel Names", "plain"),
     ("hide_rules_priority", "Hide Rules Priority", "plain"),
     ("regex_channels_to_ignore", "Regex: Channel Names to Ignore", "plain"),

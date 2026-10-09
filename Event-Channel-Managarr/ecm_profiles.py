@@ -75,6 +75,11 @@ class Profile:
     # Casefolded channel group names routed to this profile. Empty on the two
     # profiles defined in code, which select by a regex on the channel NAME.
     group_names: tuple = ()
+    # "stream" when every group routed to this source is listed in the Stream Name
+    # Groups setting: the source is then seeded to make Dispatcharr's dummy EPG
+    # renderer parse the stream name (custom_properties name_source, Dispatcharr
+    # 0.32.0 and later). "channel" writes no key at all, see profile_props.
+    name_source: str = "channel"
 
 
 def to_python_named(pattern):
@@ -105,7 +110,7 @@ def compile_pattern(pattern, engine=None, convert=None):
 
 def profile_props(profile):
     """The EPGSource.custom_properties payload for this profile. Pure."""
-    return {
+    props = {
         "timezone": profile.timezone,
         "output_timezone": profile.output_timezone,
         "title_pattern": profile.title_pattern,
@@ -119,6 +124,13 @@ def profile_props(profile):
         "fallback_title_template": profile.fallback_title_template,
         "fallback_description_template": profile.fallback_description_template,
     }
+    # Only a stream-reading source carries the two keys. Dispatcharr treats an absent
+    # name_source as "channel", so writing it on every other source would only add a
+    # key to sources the plugin rewrites on each run.
+    if getattr(profile, "name_source", "channel") == "stream":
+        props["name_source"] = "stream"
+        props["stream_index"] = 1
+    return props
 
 
 def route(names, profiles=None):
@@ -468,6 +480,62 @@ def group_profile_key(source_name):
     return GROUP_PROFILE_KEY_PREFIX + str(source_name).casefold()
 
 
+def stream_name_group_keys(raw):
+    """The Stream Name Groups setting as a frozenset of casefolded group names. Pure.
+
+    Comma-separated like Channel Groups, and matched case-insensitively like every
+    other group name in this plugin. Never raises: it runs on the scan path.
+    """
+    if raw is None:
+        return frozenset()
+    try:
+        text = str(raw)
+    except Exception:
+        return frozenset()
+    return frozenset(part.strip().casefold() for part in text.split(",") if part.strip())
+
+
+def name_source_for_group(global_name_source, group_name, stream_group_keys):
+    """Which text the hide rules read for a channel in `group_name`. Pure.
+
+    A group listed in Stream Name Groups reads the stream name whatever the global
+    Name Source says; every other group follows the global setting. The global
+    setting cannot do this job alone, because one scan can cover a group whose
+    channel names go stale (US: NFL) and one whose channel names run ahead of their
+    streams (US: PPV).
+    """
+    if group_name and stream_group_keys and str(group_name).strip().casefold() in stream_group_keys:
+        return "Stream_Name"
+    return global_name_source
+
+
+def mixed_name_source_problems(settings):
+    """Mapped sources shared by a listed and an unlisted group. Returns a list of strings.
+
+    One EPG source has one name_source, so such a source is seeded to parse channel
+    names, and the listed group gets correct hide decisions but a guide read from
+    its channel names. Validate Configuration reports it.
+    """
+    settings = settings or {}
+    mapping, _problems = parse_group_source_map(settings.get("group_epg_source_map"))
+    keys = stream_name_group_keys(settings.get("stream_name_groups"))
+    if not mapping or not keys:
+        return []
+    groups_by_source = {}
+    for group_key, source_name in mapping.items():
+        groups_by_source.setdefault(source_name, []).append(group_key)
+    problems = []
+    for source_name, group_keys in groups_by_source.items():
+        listed = [g for g in group_keys if g in keys]
+        if listed and len(listed) != len(group_keys):
+            problems.append(
+                f"EPG source {source_name!r} serves {', '.join(sorted(listed))} from Stream "
+                f"Name Groups and {', '.join(sorted(set(group_keys) - set(listed)))} not in "
+                f"it, so its guide reads channel names. Give the listed group a source "
+                f"of its own.")
+    return problems
+
+
 def build_group_profiles(settings):
     """Build one profile per mapped EPG source. Returns (profiles, problems).
 
@@ -501,6 +569,7 @@ def build_group_profiles(settings):
     for group_key, source_name in mapping.items():
         groups_by_source.setdefault(source_name, []).append(group_key)
 
+    stream_keys = stream_name_group_keys(settings.get("stream_name_groups"))
     profiles = []
     keys_used = set()
     for source_name, group_keys in groups_by_source.items():
@@ -518,7 +587,9 @@ def build_group_profiles(settings):
             selector="",
             is_default=False,
             user_managed=True,
-            group_names=tuple(group_keys)))
+            group_names=tuple(group_keys),
+            name_source=("stream" if all(g in stream_keys for g in group_keys)
+                         else "channel")))
     return tuple(profiles), problems
 
 
