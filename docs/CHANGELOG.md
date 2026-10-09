@@ -7,6 +7,33 @@ they are the authoritative record; this page is an index.
 Versions are calendar-based: `Major.YY.DDDHHMM`, where `DDD` is the day of the year
 and `HHMM` the UTC time of the version bump. A higher version is always later.
 
+## 1.26.2821323 (2026-10-09)
+
+### Fixed
+
+- Setting **Channel Profile Name** to `All` now says why it cannot work. `All` in
+  Dispatcharr's channel list is a built-in view of every channel, not a Channel
+  Profile, so this plugin has no profile to hide channels in. **Validate
+  Configuration**, **Run Now**, **Dry Run** and **Remove EPG from Hidden** used to
+  report only that the profile was not found; they now also ask you to create a
+  Channel Profile and enter its name (issue 32).
+- **Remove EPG from Hidden** now matches profile names regardless of letter case,
+  as the scan always has. A profile entered as `sports` for a profile named
+  `Sports` used to work for the scan and fail here.
+- **Keep Lowest Channel Number** and **Keep Highest Channel Number** now compare
+  the channel number Dispatcharr shows, which is the number from a channel
+  override when one is set. The CSV export shows the same number. Before this
+  version both used the channel's own number, so with a number override the
+  plugin could keep a different channel from the one the channel list suggests.
+
+### Changed
+
+- Checked against Dispatcharr 0.32.0. `docs/USER-GUIDE.md` now notes that, from
+  Dispatcharr 0.32.0, a dateless event still running after midnight in the guide
+  source's timezone shows as upcoming in the guide grid. That comes from
+  Dispatcharr's guide generation and does not change which channels this plugin
+  shows or hides.
+
 ## 1.26.2631853 (2026-09-20)
 
 ### Fixed
