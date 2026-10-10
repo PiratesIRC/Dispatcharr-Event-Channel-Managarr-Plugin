@@ -102,7 +102,11 @@ class _Manager:
         for row in self._store:
             ok = True
             for key, wanted in lookups.items():
-                if key.endswith("__in"):
+                if key.endswith("__isnull"):
+                    if (getattr(row, key[:-8]) is None) != wanted:
+                        ok = False
+                        break
+                elif key.endswith("__in"):
                     if getattr(row, key[:-4]) not in wanted:
                         ok = False
                         break
@@ -112,6 +116,10 @@ class _Manager:
             if ok:
                 matched.append(row)
         return _Rows(matched)
+
+    def bulk_update(self, objs, fields):
+        """The rows are mutated in place by the caller, so there is nothing to write back."""
+        return len(objs)
 
 
 def _profile_manager(store):
@@ -183,6 +191,7 @@ def ledger_world(plugin_module, bare_plugin, monkeypatch, tmp_path):
         "hide_rules_priority": "[BlankName]",
         "duplicate_strategy": "lowest_number",
         "keep_duplicates": False,
+        "auto_set_dummy_epg_on_hide": True,
     }
 
     def scan():
@@ -198,7 +207,8 @@ def ledger_world(plugin_module, bare_plugin, monkeypatch, tmp_path):
         return {m.channel_id: m.enabled for m in memberships}
 
     return SimpleNamespace(set_loser_state=set_loser_state, scan=scan,
-                           ledger_lines=ledger_lines, enabled=enabled)
+                           ledger_lines=ledger_lines, enabled=enabled,
+                           channels=channels, memberships=memberships)
 
 
 def test_scan_loser_already_hidden_writes_no_ledger_line_on_either_run(ledger_world):
@@ -223,16 +233,39 @@ def test_scan_loser_starts_visible_is_hidden_once_then_writes_nothing(ledger_wor
 
     first = ledger_world.scan()
     assert first["status"] == "success", first
-    assert ledger_world.ledger_lines() == [{
-        "ts": ledger_world.ledger_lines()[0]["ts"],
-        "version": "test",
-        "shown": 0,
-        "hidden": 1,
-        "scheduled": False,
-    }]
+    lines = ledger_world.ledger_lines()
+    assert len(lines) == 1, lines
+    # The timestamp is a real clock reading, so check that it parses rather than its value.
+    record = dict(lines[0])
+    datetime.fromisoformat(record.pop("ts"))
+    assert record == {"version": "test", "shown": 0, "hidden": 1, "scheduled": False}
     assert ledger_world.enabled() == {1: True, 2: False}
 
     second = ledger_world.scan()
     assert second["status"] == "success", second
     assert len(ledger_world.ledger_lines()) == 1, "run 2 wrote a second ledger line for a no-op"
     assert ledger_world.enabled() == {1: True, 2: False}
+
+
+def test_scan_already_hidden_duplicate_keeps_its_epg(ledger_world):
+    """Auto-Remove EPG clears channels this run hides. An already-hidden loser is not one of
+    them, so its guide link is left exactly as it was."""
+    ledger_world.set_loser_state(loser_enabled=False)
+    epg = SimpleNamespace(id=7, name="Guide")
+    ledger_world.channels[1].epg_data = epg
+
+    result = ledger_world.scan()
+    assert result["status"] == "success", result
+    assert ledger_world.channels[1].epg_data is epg, "an already-hidden loser lost its EPG"
+    assert ledger_world.enabled() == {1: True, 2: False}
+
+
+def test_scan_visible_duplicate_loser_is_hidden_and_loses_its_epg(ledger_world):
+    """Control for the case above: a loser this run hides has its EPG cleared."""
+    ledger_world.set_loser_state(loser_enabled=True)
+    ledger_world.channels[1].epg_data = SimpleNamespace(id=7, name="Guide")
+
+    result = ledger_world.scan()
+    assert result["status"] == "success", result
+    assert ledger_world.enabled() == {1: True, 2: False}
+    assert ledger_world.channels[1].epg_data is None
