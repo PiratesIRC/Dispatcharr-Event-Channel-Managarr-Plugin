@@ -379,6 +379,14 @@ class Plugin:
                 "help_text": "Channel groups that read the stream name whatever Name Source says, for a provider that keeps the channel names fixed and puts each week's events in the stream names. Separate several groups with commas; capitalisation does not have to match. Each group must also be in Channel Groups. If such a group is mapped to its own source in Per-Group EPG Sources, the plugin creates that source set to read the stream name, so the guide follows the stream too (Dispatcharr 0.32.0 or later). A source that already exists is not changed: set its Name Source to Stream Name in Dispatcharr's EPG source editor. Leave blank to change nothing.",
             },
             {
+                "id": "group_default_event_day",
+                "label": "📆 Default Event Day by Group (one per line)",
+                "type": "text",
+                "default": "",
+                "placeholder": "US: NFL = Sunday",
+                "help_text": "For a group whose names carry a kickoff time but no date and no day word, the day its events are on, written one per line as Group Name = Day, for example: US: NFL = Sunday. [WrongDayOfWeek] then hides those channels on other days, so the guide does not show them as on today. A day word in the name, including MNF, TNF and SNF, still wins. Pair it with [WrongDayOfWeek:0] in Hide Rules Priority to show them on that day only; plain [WrongDayOfWeek] allows one day either side. The day is judged in Dispatcharr's own timezone. Leave blank to change nothing.",
+            },
+            {
                 "id": "date_format",
                 "label": "📅 Date Format in Channel Names",
                 "type": "select",
@@ -402,7 +410,7 @@ class Plugin:
                 "type": "text",
                 "default": self.DEFAULT_HIDE_RULES,
                 "placeholder": "[BlankName],[NoEventPattern],[EmptyPlaceholder],[PastDate:0],[FutureDate:2],[UndatedAge:2],[ShortDescription],[ShortChannelName]",
-                "help_text": "The rules that hide a channel, written as comma-separated tags. They are read left to right and the first tag that matches hides the channel, so put the rules you trust most first. A tag left out of this list is never applied. Some tags take a number after a colon, for example [PastDate:0] or [UndatedAge:2]. Available tags: [NoEPG], [BlankName], [WrongDayOfWeek], [NoEventPattern], [EmptyPlaceholder], [ShortDescription], [ShortDescription:chars], [ShortChannelName], [ShortChannelName:chars], [NumberOnly], [PastDate:days], [PastDate:days:Xh], [FutureDate:days], [UndatedAge:days], [UndatedEnded], [UndatedEnded:hours], [InactiveRegex]. [UndatedEnded] applies to a name that carries a clock time but no date: it hides the channel once the first-seen date plus that time plus the event duration plus the grace period has passed, and uses the Undated Event Grace Period setting unless you give it a number of hours. [ShortDescription] uses 15 characters and [ShortChannelName] 25 unless you give them a number.",
+                "help_text": "The rules that hide a channel, written as comma-separated tags. They are read left to right and the first tag that matches hides the channel, so put the rules you trust most first. A tag left out of this list is never applied. Some tags take a number after a colon, for example [PastDate:0] or [UndatedAge:2]. Available tags: [NoEPG], [BlankName], [WrongDayOfWeek], [WrongDayOfWeek:days], [NoEventPattern], [EmptyPlaceholder], [ShortDescription], [ShortDescription:chars], [ShortChannelName], [ShortChannelName:chars], [NumberOnly], [PastDate:days], [PastDate:days:Xh], [FutureDate:days], [UndatedAge:days], [UndatedEnded], [UndatedEnded:hours], [InactiveRegex]. [UndatedEnded] applies to a name that carries a clock time but no date: it hides the channel once the first-seen date plus that time plus the event duration plus the grace period has passed, and uses the Undated Event Grace Period setting unless you give it a number of hours. [ShortDescription] uses 15 characters and [ShortChannelName] 25 unless you give them a number. [WrongDayOfWeek] allows one day either side of the named day unless you give it a number; [WrongDayOfWeek:0] means that day only.",
             },
             {
                 "id": "regex_channels_to_ignore",
@@ -1016,6 +1024,24 @@ class Plugin:
                 validation_results.append(
                     f"✅ Stream Name Groups: {', '.join(sorted(stream_keys))} read the stream name")
 
+        # Default Event Day by Group: report lines that were skipped, and groups that
+        # are never scanned because they are not in Channel Groups.
+        raw_days = settings.get("group_default_event_day")
+        if str(raw_days or "").strip():
+            day_map, day_problems = ecm_parsing.parse_group_default_days(raw_days)
+            scoped = {g.strip().casefold() for g in channel_groups_str.split(',') if g.strip()}
+            unscanned = sorted(set(day_map) - scoped) if scoped else []
+            for problem in day_problems:
+                logger.warning(f"{LOG_PREFIX} Default event day problem: {problem}")
+            if day_problems or unscanned:
+                first = day_problems[0] if day_problems else (
+                    f"{', '.join(unscanned)} not in Channel Groups, so never scanned")
+                validation_results.append(f"⚠️ Default Event Day: {first}")
+                has_errors = True
+            else:
+                validation_results.append("✅ Default Event Day: " + ", ".join(
+                    f"{g} = {ecm_parsing.WEEKDAY_NAMES[d]}" for g, d in day_map.items()))
+
         # 6. Validate schedule
         scheduled_times = settings.get("scheduled_times", "").strip()
         if scheduled_times:
@@ -1538,39 +1564,42 @@ class Plugin:
             return False, None
 
         elif rule_name == "WrongDayOfWeek":
-            # Hide if channel name contains a day of week that is NOT today
+            # The day comes from the name, or failing that from the channel group's
+            # Default Event Day. The rule's number is the tolerance in days either
+            # side: plain [WrongDayOfWeek] allows one, because a day named in one
+            # country can be the next day on another viewer's calendar, while
+            # [WrongDayOfWeek:0] means the named day only. The decision is
+            # ecm_parsing.wrong_day_hides.
             extracted_day = self._extract_day_of_week_from_channel_name(channel_name, logger)
+            default_day = None
             if extracted_day is None:
-                return False, None  # Skip rule if no day found
+                default_days, _problems = ecm_parsing.parse_group_default_days(
+                    settings.get("group_default_event_day"))
+                group = getattr(getattr(channel, "channel_group", None), "name", None)
+                if group and default_days:
+                    default_day = default_days.get(str(group).strip().casefold())
+                if default_day is None:
+                    return False, None  # no day in the name and no group default
 
-            # Get today's day of week using user's timezone (0 = Monday, 6 = Sunday)
+            # Today's day of week in Dispatcharr's own timezone (0 = Monday, 6 = Sunday)
             tz_str = self._get_system_timezone(settings)
             try:
                 local_tz = pytz.timezone(tz_str)
             except pytz.exceptions.UnknownTimeZoneError:
                 local_tz = pytz.timezone(self.DEFAULT_TIMEZONE)
+            today_day = datetime.now(local_tz).weekday()
 
-            now_in_tz = datetime.now(local_tz)
-            today_day = now_in_tz.weekday()
-
-            # ±1 day tolerance: a channel named for a US/EU day can roll over the
-            # viewer's local calendar (e.g. "Monday Night Football" is Tuesday in
-            # Australia). Earth's TZ span is UTC-12..UTC+14, so the named day will
-            # always be within ±1 of the viewer's day for any live event.
-            allowed_days = {(today_day - 1) % 7, today_day, (today_day + 1) % 7}
-
-            day_names = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday']
-            extracted_day_name = day_names[extracted_day]
-            today_day_name = day_names[today_day]
-
-            if extracted_day not in allowed_days:
-                return True, f"[WrongDayOfWeek] Channel is for {extracted_day_name}, but today is {today_day_name}"
-
-            if extracted_day != today_day:
+            hide, day, source = ecm_parsing.wrong_day_hides(
+                extracted_day, default_day, today_day, rule_param)
+            day_name = ecm_parsing.WEEKDAY_NAMES[day]
+            today_day_name = ecm_parsing.WEEKDAY_NAMES[today_day]
+            if hide:
+                origin = " (group default day)" if source == "group default" else ""
+                return True, f"[WrongDayOfWeek] Channel is for {day_name}{origin}, but today is {today_day_name}"
+            if day != today_day:
                 logger.debug(
-                    f"[WrongDayOfWeek] allowing '{channel_name}': named day {extracted_day_name} "
-                    f"is within ±1 of today ({today_day_name}) in {tz_str}, cross-TZ rollover tolerance"
-                )
+                    f"[WrongDayOfWeek] allowing '{channel_name}': {day_name} is within the "
+                    f"tolerance of today ({today_day_name}) in {tz_str}")
             return False, None
 
         elif rule_name == "NoEventPattern":

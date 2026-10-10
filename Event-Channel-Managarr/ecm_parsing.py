@@ -1148,6 +1148,7 @@ SETTINGS_REPORT = (
     ("channel_groups", "Channel Groups", "plain"),
     ("name_source", "Name Source", "plain"),
     ("stream_name_groups", "Stream Name Groups", "plain"),
+    ("group_default_event_day", "Default Event Day by Group", "plain"),
     ("date_format", "Date Format in Channel Names", "plain"),
     ("hide_rules_priority", "Hide Rules Priority", "plain"),
     ("regex_channels_to_ignore", "Regex: Channel Names to Ignore", "plain"),
@@ -1380,3 +1381,79 @@ def builtin_all_profile_hint(missing_profile_names):
         if str(name).strip().lower() in BUILTIN_ALL_PROFILE_NAMES:
             return BUILTIN_ALL_PROFILE_HINT
     return ""
+
+
+# --- Default Event Day by Group, and the [WrongDayOfWeek] tolerance -----------------
+#
+# A provider can name a weekly slate with a kickoff time and no date or day word
+# ("NFL  | 10 - 1pm Giants at Commanders"). Nothing then knows which day the game is
+# on, so the channel shows, and Dispatcharr's dummy guide draws the game, on every
+# day. A group's default day supplies the missing day to [WrongDayOfWeek], and the
+# rule's number sets how many days either side still count: [WrongDayOfWeek:0] is the
+# named day only, while plain [WrongDayOfWeek] keeps the historical one day either
+# side for names whose day can roll over another viewer's calendar.
+
+WEEKDAY_WORDS = {
+    "monday": 0, "mon": 0, "tuesday": 1, "tue": 1, "tues": 1, "wednesday": 2, "wed": 2,
+    "thursday": 3, "thu": 3, "thur": 3, "thurs": 3, "friday": 4, "fri": 4,
+    "saturday": 5, "sat": 5, "sunday": 6, "sun": 6,
+}
+WEEKDAY_NAMES = ("Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday")
+WRONG_DAY_DEFAULT_TOLERANCE = 1
+WRONG_DAY_MAX_TOLERANCE = 3
+
+
+def parse_group_default_days(raw):
+    """Parse 'Group = Day' lines. Returns (mapping, problems). Pure, never raises.
+
+    `mapping` is casefolded group name -> weekday number (0 Monday .. 6 Sunday).
+    `problems` holds one plain-language string per line that was skipped.
+    """
+    mapping, problems = {}, []
+    if raw is None:
+        return mapping, problems
+    try:
+        text = str(raw)
+    except Exception:
+        return mapping, ["the default event day setting could not be read as text"]
+    for number, line in enumerate(text.splitlines(), start=1):
+        line = line.strip()
+        if not line:
+            continue
+        group, sep, day = line.partition("=")
+        group, day = group.strip(), day.strip()
+        if not sep or not group or not day:
+            problems.append(f"line {number} {line!r} is not written as Group Name = Day")
+            continue
+        weekday = WEEKDAY_WORDS.get(day.casefold())
+        if weekday is None:
+            problems.append(f"line {number}: {day!r} is not a day of the week")
+            continue
+        key = group.casefold()
+        if key in mapping:
+            problems.append(f"line {number}: {group!r} is already given a day above; "
+                            f"keeping {WEEKDAY_NAMES[mapping[key]]}")
+            continue
+        mapping[key] = weekday
+    return mapping, problems
+
+
+def wrong_day_hides(named_day, default_day, today, tolerance):
+    """[WrongDayOfWeek]: should the channel hide today? Returns (hide, day, source). Pure.
+
+    `named_day` is the day read from the name, `default_day` the group's default day,
+    both 0 Monday .. 6 Sunday or None. The name wins. `tolerance` is the rule's
+    number: None keeps the historical 1, and anything else is clamped to 0..3, since 3
+    either side already allows every day. `source` is "name", "group default" or None.
+    """
+    if named_day is not None:
+        day, source = named_day, "name"
+    elif default_day is not None:
+        day, source = default_day, "group default"
+    else:
+        return False, None, None
+    if tolerance is None:
+        tolerance = WRONG_DAY_DEFAULT_TOLERANCE
+    tolerance = max(0, min(WRONG_DAY_MAX_TOLERANCE, int(tolerance)))
+    distance = min((day - today) % 7, (today - day) % 7)
+    return distance > tolerance, day, source
