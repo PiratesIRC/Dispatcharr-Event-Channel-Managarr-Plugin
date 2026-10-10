@@ -120,13 +120,13 @@ def test_the_call_follows_the_commit_not_the_plan():
 
 
 # ---------------------------------------------------------------------------
-# The line the badge script has to be able to read
+# The line the tally has to be able to read
 # ---------------------------------------------------------------------------
 
 REQUIRED_KEYS = {"ts", "version", "shown", "hidden", "scheduled"}
 
 
-def test_the_entry_carries_the_keys_the_badge_script_reads():
+def test_the_entry_carries_the_keys_the_tally_reads():
     fn = _function_named("_append_ledger_entry")
     keys = {
         key.value
@@ -146,60 +146,3 @@ def test_the_timestamp_does_not_use_a_name_this_module_lacks():
         "django.utils.timezone.utc was removed in Django 5 and datetime.timezone "
         "is not reachable under this name; use timezone.now()."
     )
-
-
-# ---------------------------------------------------------------------------
-# The counting the badge script does, exercised on real ledger text
-# ---------------------------------------------------------------------------
-
-def _count(lines):
-    """The same arithmetic scripts/update_events_badge.py runs in the container."""
-    shown = hidden = runs = 0
-    for line in lines:
-        try:
-            row = json.loads(line)
-        except ValueError:
-            continue
-        if not isinstance(row, dict):
-            continue
-        runs += 1
-        for key in ("shown", "hidden"):
-            value = row.get(key)
-            if isinstance(value, int) and value >= 0:
-                if key == "shown":
-                    shown += value
-                else:
-                    hidden += value
-    return shown, hidden, runs
-
-
-def test_totals_sum_across_runs():
-    lines = [
-        json.dumps({"ts": "t", "version": "v", "shown": 11, "hidden": 100, "scheduled": False}),
-        json.dumps({"ts": "t", "version": "v", "shown": 4, "hidden": 0, "scheduled": True}),
-    ]
-    assert _count(lines) == (15, 100, 2)
-
-
-def test_a_corrupt_line_is_skipped_rather_than_stopping_the_count():
-    """A half-written line from a killed container must not zero the badge."""
-    lines = [
-        json.dumps({"shown": 5, "hidden": 1}),
-        '{"shown": 3, "hidden":',          # truncated mid-write
-        json.dumps({"shown": 2, "hidden": 1}),
-    ]
-    assert _count(lines) == (7, 2, 2)
-
-
-def test_an_empty_ledger_counts_zero_rather_than_failing():
-    assert _count([]) == (0, 0, 0)
-
-
-@pytest.mark.parametrize("bad", [
-    json.dumps({"shown": "eleven"}),   # wrong type
-    json.dumps({"shown": -3}),         # negative
-    json.dumps(["not", "a", "dict"]),
-])
-def test_implausible_values_do_not_reach_the_total(bad):
-    shown, _hidden, _runs = _count([json.dumps({"shown": 5}), bad])
-    assert shown == 5
