@@ -1254,6 +1254,7 @@ class Plugin:
             returned = True
             return result
         finally:
+            # on_m3u_refresh_action returns None only on its disabled path (auto-rescan off); that path did no work, so it sends no usage report.
             skipped = returned and action == "on_m3u_refresh" and result is None
             if not skipped:
                 self._report_usage(settings, logger)
@@ -2664,9 +2665,10 @@ class Plugin:
                 if dup['id'] in channels_to_show:
                     channels_to_show.remove(dup['id'])
 
-                # Add to hide list only if it is visible now and not already there. A duplicate
-                # that is already hidden changes nothing, and the run ledger counts this list.
-                if dup['current_visible'] and dup['id'] not in channels_to_hide:
+                # Add to hide list unless it is known to be hidden now (current_visible False) and
+                # not already there. A duplicate that is already hidden changes nothing, and the run
+                # ledger counts this list. A read that failed (None) is treated as possibly visible.
+                if dup['current_visible'] is not False and dup['id'] not in channels_to_hide:
                     channels_to_hide.append(dup['id'])
 
         return duplicate_hide_list
@@ -3719,7 +3721,8 @@ class Plugin:
         return ecm_parsing.effective_channel_number(raw_number, override_number)
 
     def _get_channel_visibility(self, channel_id, profile_ids, logger):
-        """Get current visibility status for a channel in profiles - returns True if enabled in ANY profile"""
+        """Get current visibility status for a channel in profiles - returns True if enabled in ANY profile,
+        False if it is enabled in none, and None when the read raised (unknown, and falsy)."""
         try:
             # Check if channel is enabled in any of the profiles
             membership = ChannelProfileMembership.objects.filter(
@@ -3731,7 +3734,7 @@ class Plugin:
             return membership is not None
         except Exception as e:
             logger.warning(f"Error getting visibility for channel {channel_id}: {e}")
-            return False
+            return None
 
     def _acquire_scan_lock(self, logger):
         """Acquire the cross-worker scan flock, breaking a stale/leaked lock.

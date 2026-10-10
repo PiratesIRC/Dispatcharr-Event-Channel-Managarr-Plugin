@@ -270,3 +270,23 @@ def test_scan_visible_duplicate_loser_is_hidden_and_loses_its_epg(ledger_world):
     assert result["status"] == "success", result
     assert ledger_world.enabled() == {1: True, 2: False}
     assert ledger_world.channels[1].epg_data is None
+
+
+def test_scan_loser_whose_visibility_read_fails_is_still_hidden(ledger_world, plugin_module, monkeypatch):
+    """A duplicate loser whose visibility read raises has an unknown state. It must still be
+    hidden, as it was before the ledger change: only a loser KNOWN to be hidden is skipped."""
+    ledger_world.set_loser_state(loser_enabled=True)
+    real_filter = plugin_module.ChannelProfileMembership.objects.filter
+
+    def failing_read(**lookups):
+        if lookups.get("channel_id") == 2 and lookups.get("enabled") is True:
+            raise RuntimeError("visibility read failed")
+        return real_filter(**lookups)
+
+    monkeypatch.setattr(plugin_module.ChannelProfileMembership.objects, "filter", failing_read)
+
+    result = ledger_world.scan()
+    assert result["status"] == "success", result
+    assert ledger_world.enabled() == {1: True, 2: False}, "a loser whose read failed was not hidden"
+    lines = ledger_world.ledger_lines()
+    assert len(lines) == 1 and lines[0]["hidden"] == 1, lines
