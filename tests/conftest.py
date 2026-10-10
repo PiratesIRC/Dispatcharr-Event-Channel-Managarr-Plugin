@@ -72,3 +72,19 @@ def bare_plugin(plugin_module):
 def plugin_source():
     """plugin.py's text, for the structural tests that read it with ast."""
     return PLUGIN_PY.read_text(encoding="utf-8")
+
+
+@pytest.fixture(autouse=True)
+def _no_usage_report_leaves_the_test(plugin_module, monkeypatch, tmp_path):
+    """No test may send a usage report or write /data/plugin_stats.
+
+    The reporter swallows every exception, so a leak is recorded here and failed at
+    teardown rather than raised where it happened.
+    """
+    usage = plugin_module.USAGE
+    started = []
+    monkeypatch.setattr(usage, "data_dir", str(tmp_path / "plugin_stats"), raising=False)
+    monkeypatch.setattr(usage, "directory", str(tmp_path / "plugin_stats" / "event-channel-managarr"), raising=False)
+    monkeypatch.setattr(usage, "_start", lambda *a, **k: started.append(a), raising=False)
+    yield
+    assert started == [], "a test started a real usage send"

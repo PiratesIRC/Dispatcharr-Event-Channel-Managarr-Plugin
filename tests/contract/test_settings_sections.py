@@ -36,6 +36,7 @@ SECTION_BOUNDARIES = [
     ("_section_epg", "auto_set_dummy_epg_on_hide"),
     ("_section_scheduling", "scheduled_times"),
     ("_section_advanced", "rate_limiting"),
+    ("_section_usage", "share_usage_counts"),
 ]
 
 

@@ -40,6 +40,10 @@ if _PLUGIN_DIR not in _sys.path:
     _sys.path.insert(0, _PLUGIN_DIR)
 import ecm_parsing
 import ecm_profiles
+try:
+    from .usage_client import UsageReporter, jsonl_sum, load_plugin_settings, with_usage_field
+except ImportError:  # loaded as a top-level module by tests/conftest.py, which has no parent package
+    from usage_client import UsageReporter, jsonl_sum, load_plugin_settings, with_usage_field
 
 # Backwards-compatible aliases: existing references to these names elsewhere in
 # plugin.py (e.g. the [PastDate] stop-time check) keep working, now backed by the
@@ -151,6 +155,19 @@ class PluginConfig:
 
 _LAST_RUN_FILE = PluginConfig.LAST_RUN_FILE
 _SCAN_LOCK_FILE = PluginConfig.SCAN_LOCK_FILE
+
+# Reports the Visibility Changes total and a random install id to the plugin-stats Worker, so
+# the README badges count each install that keeps the setting ticked and runs (README,
+# "Anonymous usage counts"). report() never raises; only the network send runs on a
+# background thread.
+USAGE = UsageReporter(
+    plugin="event-channel-managarr",
+    counter="visibility_changes",
+    label="Visibility Changes",
+    total_fn=lambda: jsonl_sum(PluginConfig.LEDGER_FILE + "*", fields=["shown", "hidden"]),
+    settings_fn=lambda: load_plugin_settings("event-channel-managarr"),
+)
+_USAGE_HELP = with_usage_field([], USAGE)[0]["help_text"]
 
 
 class ProgressTracker:
@@ -593,6 +610,19 @@ class Plugin:
             },
         ]
 
+        fields_list.append({
+            "id": "_section_usage",
+            "label": "📊 Anonymous Usage Counts",
+            "type": "info",
+            "description": "The setting below sends this plugin's Visibility Changes total and a random id to the plugin author's counter so the public badges can count installs. No names, channels, streams, URLs, providers or settings are sent. Untick it to stop; the README section Anonymous usage counts has the details.",
+        })
+        fields_list.append({
+            "id": "share_usage_counts",
+            "label": "Share anonymous usage counts",
+            "type": "boolean",
+            "default": True,
+            "help_text": _USAGE_HELP,
+        })
         return fields_list
 
     # Actions for Dispatcharr UI
@@ -743,7 +773,7 @@ class Plugin:
                 }
 
             logger.info(f"{LOG_PREFIX} Action triggered: {action}")
-            result = handler(merged_settings, logger)
+            result = self._call_action(action, handler, merged_settings, logger)
 
             # Send WebSocket notification for completed actions
             if isinstance(result, dict):
@@ -1214,6 +1244,35 @@ class Plugin:
             tracker[key] = entry
         return entry
 
+    def _call_action(self, action, handler, settings, logger):
+        """Run one action's handler and report usage once when it ends, whatever it returns or
+        raises. A disabled M3U refresh returns None without scanning, so it sends nothing."""
+        returned = False
+        result = None
+        try:
+            result = handler(settings, logger)
+            returned = True
+            return result
+        finally:
+            skipped = returned and action == "on_m3u_refresh" and result is None
+            if not skipped:
+                self._report_usage(settings, logger)
+
+    def _report_usage(self, settings, logger, force=False):
+        """Report the visibility total to the plugin-stats counter. Never raises."""
+        try:
+            USAGE.report(settings, logger, force=force)
+        except Exception:
+            pass
+
+    def _run_scheduled_scan(self, settings, logger):
+        """The scheduler's scan, reported once when it ends on every path. Consent is read from
+        the database (settings None), not from the settings dict the scheduler holds."""
+        try:
+            return self._scan_and_update_channels(settings, logger, dry_run=False, is_scheduled_run=True)
+        finally:
+            self._report_usage(None, logger)
+
     def _append_ledger_entry(self, shown, hidden, is_scheduled_run, logger):
         """Record what one applied run changed. Never raises.
 
@@ -1255,6 +1314,8 @@ class Plugin:
             }
             with open(path, "a", encoding="utf-8") as handle:
                 handle.write(json.dumps(entry) + "\n")
+            if int(shown) + int(hidden) > 0:
+                self._report_usage(None, logger, force=True)
         except Exception as e:
             logger.warning(f"{LOG_PREFIX} Could not append to the run ledger ({e}); "
                            f"the scan itself is unaffected.")
@@ -2379,7 +2440,7 @@ class Plugin:
 
                                     LOGGER.info(f"[{thread_id}] Using current settings for scheduled run")
 
-                                    result = self._scan_and_update_channels(current_settings, LOGGER, dry_run=False, is_scheduled_run=True)
+                                    result = self._run_scheduled_scan(current_settings, LOGGER)
                                     LOGGER.info(f"[{thread_id}] Scheduled scan completed: {result.get('message', 'Done')}")
 
                                     # Trigger frontend refresh if changes were made
