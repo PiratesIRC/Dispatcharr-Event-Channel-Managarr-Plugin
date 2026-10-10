@@ -2563,7 +2563,8 @@ class Plugin:
                 'id': channel_id,
                 'name': channel_name,
                 'number': channel_number,
-                'name_length': len(channel_name)
+                'name_length': len(channel_name),
+                'current_visible': channel_info['current_visible'],
             })
 
         # Process each group of duplicates
@@ -2602,8 +2603,9 @@ class Plugin:
                 if dup['id'] in channels_to_show:
                     channels_to_show.remove(dup['id'])
 
-                # Add to hide list if not already there
-                if dup['id'] not in channels_to_hide:
+                # Add to hide list only if it is visible now and not already there. A duplicate
+                # that is already hidden changes nothing, and the run ledger counts this list.
+                if dup['current_visible'] and dup['id'] not in channels_to_hide:
                     channels_to_hide.append(dup['id'])
 
         return duplicate_hide_list
