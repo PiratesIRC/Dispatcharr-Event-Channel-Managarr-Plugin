@@ -12,7 +12,6 @@ same source, and the file's structure is checked with ast.
 """
 
 import ast
-import json
 from pathlib import Path
 
 import pytest
