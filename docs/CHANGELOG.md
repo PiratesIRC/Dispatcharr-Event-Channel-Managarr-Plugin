@@ -7,6 +7,20 @@ they are the authoritative record; this page is an index.
 Versions are calendar-based: `Major.YY.DDDHHMM`, where `DDD` is the day of the year
 and `HHMM` the UTC time of the version bump. A higher version is always later.
 
+## 1.26.2832019 (2026-10-10)
+
+### Fixed
+
+- **The run ledger counts only real visibility changes.** A duplicate channel that was already hidden was counted as hidden again on every applied scan, so the Visibility Changes total grew without anything changing. Now only channels whose visibility actually changes are counted. What users see: the "to hide" count in scan results, notifications and the CSV header no longer includes already-hidden duplicates; a run that changes nothing skips the apply step and writes no ledger line; and Auto-Remove EPG no longer clears the guide of a duplicate that was already hidden (it acts at the moment the plugin hides a channel, as its help text says). A duplicate whose visibility could not be read is still hidden, as before.
+
+### Added
+
+- **Anonymous usage counts.** A new setting, Share anonymous usage counts, in its own section at the end of the settings and on by default, sends this plugin's Visibility Changes total and a random install id to the plugin author's counter at plugin-stats.dpas.workers.dev, so the README badges count every install, not only the author's. It sends when an action or a scheduled scan finishes, at most once an hour after a successful send, or ten minutes after the last successful send when a run has just changed channel visibility. An M3U refresh sends nothing unless Auto-rescan after M3U refresh is on. No names, channels, URLs or settings are sent. Untick it to stop; this install's figures are deleted from the server the next time an action runs. Installs upgraded to this version start sending on their next action unless the setting is unticked. Details: README, Anonymous usage counts.
+
+### Changed
+
+- The README and developer notes now name this one HTTPS request and the /data/plugin_stats/event-channel-managarr/ folder; they previously said the plugin made no outbound request. The README badges read the plugin-stats counter.
+
 ## 1.26.2831317 (2026-10-10)
 
 ### Added
