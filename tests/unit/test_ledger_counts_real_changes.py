@@ -11,7 +11,8 @@ stand-in for the ORM.
 import json
 import logging
 import threading
-from datetime import datetime, timezone as dt_timezone
+from datetime import datetime
+from datetime import timezone as dt_timezone
 from types import SimpleNamespace
 
 import pytest
