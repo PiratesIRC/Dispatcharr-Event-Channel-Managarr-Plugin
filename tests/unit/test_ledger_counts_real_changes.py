@@ -166,6 +166,8 @@ def ledger_world(plugin_module, bare_plugin, monkeypatch, tmp_path):
     ledger_file = tmp_path / "ledger.jsonl"
     monkeypatch.setattr(plugin_module.PluginConfig, "LEDGER_FILE", str(ledger_file))
     monkeypatch.setattr(plugin_module.PluginConfig, "UNDATED_FIRST_SEEN_FILE", str(tmp_path / "undated.json"))
+    # The scan takes a cross-worker flock on this file; on Linux the default path under /data is not writable.
+    monkeypatch.setattr(plugin_module.PluginConfig, "SCAN_LOCK_FILE", str(tmp_path / "scan.lock"))
     # conftest stubs django.utils.timezone as a MagicMock, so timezone.now() would make the
     # ledger json.dumps fail and the writer would swallow it. Use a real clock.
     monkeypatch.setattr(plugin_module, "timezone", SimpleNamespace(
