@@ -91,6 +91,7 @@ Two exports are covered, because the plugin writes two kinds: the scan reports n
 | Setting | Type | Default | Description |
 | :--- | :--- | :--- | :--- |
 | **🐢 Rate Limiting** | `select` | `none` | Pause between per-channel ORM operations. Options: `None (fastest)` / `Low (~0.05s)` / `Medium (~0.2s)` / `High (~0.5s)` per channel. Useful for very large profiles or constrained databases. |
+| **📊 Share Anonymous Usage Counts** | `boolean` | on | Sends this plugin's Visibility Changes total and a random id to the plugin author's counter. See [Anonymous Usage Counts](#anonymous-usage-counts). |
 
 ## Usage Guide
 
@@ -435,7 +436,7 @@ An append-only record of what applied runs actually **changed**, one JSON line e
 
 A line is written only after the database transaction that applied the changes has committed. **Dry runs never write a line**, and neither does an applied run that found nothing to change, so every line represents real work. A failure to write the ledger is logged as a warning and never fails a scan.
 
-Nothing in the plugin reads this file; it exists so a running total can be reported without re-deriving it from the CSV exports, which the **🗑️ Clear CSV Exports** action deletes and which scheduled runs write only when **📄 Enable Scheduled CSV Export** is enabled.
+The plugin reads this file only to compute the total sent for the anonymous usage counts (see Anonymous Usage Counts below). Nothing in the plugin displays it, and the **🗑️ Clear CSV Exports** action does not change it.
 
 ## CSV Export Format
 
@@ -519,6 +520,46 @@ The hides exist only in Dispatcharr's own profile-scoped outputs. If a plugin or
 ### Checking your work inside Dispatcharr
 
 Dispatcharr's own **TV Guide** page has a profile filter. With it set to **All Profiles** the page deliberately shows every channel, hidden or not, so a correctly hidden channel still appears there. Select the managed profile to see what your clients actually receive.
+
+## Anonymous Usage Counts
+
+The full wording is also in the [README](../README.md#anonymous-usage-counts).
+
+The Visibility Changes and Active Installs badges count every install that leaves
+the "Share anonymous usage counts" setting (on by default) ticked and runs at
+least one action or scheduled scan. Visibility Changes counts the channels this
+plugin switched on or off in applied runs, the same transition count the run
+ledger records (see the user guide's Run Ledger section). Dry runs and runs that
+change no channel are not counted. An M3U refresh sends nothing unless Auto-rescan after M3U refresh is on.
+
+When an action or a scheduled scan finishes, the plugin sends this plugin's
+Visibility Changes total and a random id for this plugin on this install to the
+plugin author's counter at plugin-stats.dpas.workers.dev. It sends at most once an hour, or ten minutes after the last successful send when a run has just changed channel visibility. A run that finishes inside that gap is not sent later: the total goes out with the first later action or scheduled scan that is an hour past the last successful send, or with a later run that changes visibility once ten minutes have passed.
+
+The server stores that id with the total and the date of the last report, and
+keeps them until this install unticks the setting and the delete succeeds, or
+until the plugin author removes them by hand. An install that stops reporting
+still counts toward Visibility Changes. The connection shows the server your
+public IP address; the server uses it only to limit abuse and does not store it
+in its database, though when an install first registers it keeps a salted
+one-way hash of it (of its /64 block for IPv6) for up to three days. Cloudflare,
+which hosts the server, keeps its own request logs. No names, channels, streams,
+URLs, providers or settings are sent. The figures are self-reported by installs
+and capped by the server, not verified.
+
+What counts as an active install: an install that sent at least one report in
+the last 30 UTC days. A badge changes after the server's hourly recount, which
+runs at the start of each UTC hour, and Shields may cache the badge for up to an
+hour more, so a new report can take up to about two hours to show.
+
+The setting is the last one in the settings form, in its own section. Unticking
+it takes effect when the next action or scheduled scan finishes; the plugin then
+asks the server to delete this install's figures. Once the server confirms the
+delete, the plugin forgets its id, and ticking the setting again later starts a
+new one; if the delete could not reach the server, the plugin keeps the id and
+retries. The plugin keeps that id and the timing of its reports in
+/data/plugin_stats/event-channel-managarr/ (install_id, sent, backoff, disabled,
+delete_backoff, lock). To start a new id, untick the setting and let an action run so the server deletes this install's figures; deleting that folder while the setting is ticked leaves the old figures on the server, and the new id then sends the full total again, so the badge counts it twice.
 
 ## Troubleshooting
 
