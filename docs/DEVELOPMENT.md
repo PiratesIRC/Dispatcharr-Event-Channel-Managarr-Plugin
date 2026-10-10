@@ -84,7 +84,8 @@ ECM state files (inside the container at `/data/`):
 - `event_channel_managarr_settings.json`: saved settings (on-disk cache)
 - `event_channel_managarr_last_run.json`: last-run timestamp
 - `event_channel_managarr_undated_first_seen.json`: per-channel first-seen record for channels whose names carry no date. Each entry holds the channel name, the date it was first seen and, for entries written by version `1.26.2450117` or later, the exact moment. `[UndatedAge:days]` uses the date; `[UndatedEnded]` uses the moment as well, to reject an inferred event window that closed before the channel existed.
-- `event_channel_managarr_ledger.jsonl`: one line per applied run, recording how many channels changed visibility. The README badge publishes the running total.
+- `event_channel_managarr_ledger.jsonl`: one line per applied run, recording how many channels changed visibility. The anonymous usage count sums it. The README badges read the plugin-stats Worker, which sums every opted-in install; the gist and its update script still exist until the operator retires them.
+- `/data/plugin_stats/event-channel-managarr/`: anonymous usage count state (install_id, sent, backoff, disabled, delete_backoff, lock)
 - `event_channel_managarr_scan.lock`: guards against two scans running at once
 - `event_channel_managarr_version_check.json`: cache for the version check
 

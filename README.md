@@ -155,7 +155,7 @@ it never reads a stream URL. **Its only outbound network request is the anonymou
 once called the GitHub releases API was removed in `1.26.2251616`, along with the code behind it.
 
 What it writes is confined to your own Dispatcharr database and its data directory: channel
-visibility in the profiles you select, bindings to a dummy EPG source it manages, and CSV exports.
+visibility in the profiles you select, bindings to a dummy EPG source it manages, and CSV exports, plus one small folder for the anonymous usage count, /data/plugin_stats/event-channel-managarr/ (see [Anonymous usage counts](#anonymous-usage-counts)).
 The main scan has a **Dry Run** that writes nothing and exports what it *would* do to CSV. Run that
 first. The other actions that change data (**Run Now**, **Remove EPG from Hidden Channels**, **Clear
 CSV Exports**, **Cleanup Orphaned Tasks**) each ask for confirmation before they act.
