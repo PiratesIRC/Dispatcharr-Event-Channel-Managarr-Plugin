@@ -7,6 +7,22 @@ they are the authoritative record; this page is an index.
 Versions are calendar-based: `Major.YY.DDDHHMM`, where `DDD` is the day of the year
 and `HHMM` the UTC time of the version bump. A higher version is always later.
 
+## 1.26.2831317 (2026-10-10)
+
+### Added
+
+- A new setting, **Default Event Day by Group**, for groups whose channel names
+  carry a kickoff time but no date and no day word, such as
+  `NFL  | 10 - 1pm Giants at Commanders`. Write one line per group, for example
+  `US: NFL = Sunday`. **[WrongDayOfWeek]** then treats those events as on that day
+  and hides the channels on other days, so the guide no longer shows Sunday's games
+  as on Saturday. A day word in the name, including MNF, TNF and SNF, still wins.
+- **[WrongDayOfWeek]** takes a number: the days either side of the named day that
+  still count. `[WrongDayOfWeek:0]` shows a channel on its day only. Plain
+  `[WrongDayOfWeek]` behaves as before and allows one day either side.
+- **Validate Configuration** reports a default-day line it could not read and a
+  group that is not in **Channel Groups**.
+
 ## 1.26.2821924 (2026-10-09)
 
 ### Added
