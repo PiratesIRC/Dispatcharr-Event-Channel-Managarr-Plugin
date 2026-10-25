@@ -80,6 +80,11 @@ class Profile:
     # renderer parse the stream name (custom_properties name_source, Dispatcharr
     # 0.32.0 and later). "channel" writes no key at all, see profile_props.
     name_source: str = "channel"
+    # True sends a channel on this profile's source back to the shared source once
+    # its name stops matching the selector. Needed where the provider reuses one
+    # slot for events in different timezones ("Boxing 1"): without it a later
+    # Eastern-timed name on that slot would be read in this profile's zone.
+    release_unclaimed: bool = False
 
 
 def to_python_named(pattern):
@@ -270,7 +275,35 @@ US_ET = Profile(
     is_default=True,
 )
 
-PROFILES = (DAZN_GMT, US_ET)
+_UK_CLOCK = r"\d{1,2}(?::\d{2})?\s*[AaPp][Mm]"
+
+UK_LONDON = Profile(
+    key="uk_london",
+    source_name="ECM UK Dummy",
+    # "UK" must sit next to a clock time, on either side, as the provider writes
+    # both "UK 5:00pm" and "6:30pm uk". A bare UK is Kentucky in college football
+    # stream names ("VAN vs. #12 UK").
+    selector=(rf"\b[Uu][Kk]\s+{_UK_CLOCK}(?![A-Za-z])"
+              rf"|(?<![\d:]){_UK_CLOCK}\s+[Uu][Kk]\b"),
+    # Drops an optional "Boxing 1 |" slot label and the zone and time at the end.
+    title_pattern=(rf"^(?:[^|]*\|\s*)?(?<title>.+?)\s+"
+                   rf"(?:[Uu][Kk]\s+{_UK_CLOCK}|{_UK_CLOCK}\s+[Uu][Kk])(?![A-Za-z])"),
+    date_pattern=US_ET.date_pattern,
+    time_pattern=US_ET.time_pattern,
+    timezone="Europe/London",
+    output_timezone="America/Chicago",
+    program_duration_minutes=240,
+    include_date=False,
+    title_template="{title}",
+    upcoming_title_template="Upcoming at {starttime}: {title}",
+    ended_title_template="Ended at {endtime}: {title}",
+    fallback_title_template="",
+    fallback_description_template=_FALLBACK_DESCRIPTION,
+    is_default=False,
+    release_unclaimed=True,
+)
+
+PROFILES = (DAZN_GMT, UK_LONDON, US_ET)
 
 
 # --- settings and timezone resolution (pure) ------------------------------------
@@ -384,7 +417,7 @@ def claimed_targets(names, profiles):
 # lifecycle a mapped source gets) would strand every group that is NOT mapped.
 # The second is owned by the code profile above and is selected by a channel-name
 # regex, so pointing a group at it would give one source two different owners.
-RESERVED_SOURCE_NAMES = ("ECM Managed Dummy", "DAZN PPV Dummy (GMT)")
+RESERVED_SOURCE_NAMES = ("ECM Managed Dummy", "DAZN PPV Dummy (GMT)", "ECM UK Dummy")
 
 
 def parse_group_source_map(raw):
@@ -785,6 +818,10 @@ def routing_destinations(bindings, group_profiles, code_profiles,
 
     named = [(p, compile_pattern(p.selector))
              for p in (code_profiles or ()) if not p.is_default]
+    # Sources whose profile asks for its channels back once the name stops
+    # matching. Treated exactly like a plugin-created source below.
+    releasing = {p.source_name for p in (code_profiles or ())
+                 if getattr(p, "release_unclaimed", False)}
 
     destinations = {}
     for binding in bindings:
@@ -799,7 +836,9 @@ def routing_destinations(bindings, group_profiles, code_profiles,
         if desired is None:
             # Nothing claims it. It returns to the shared source only if the plugin
             # put it where it is, and only if the mapping can be trusted this run.
-            if (mapping_is_clean and binding.source_is_plugin_created
+            if (mapping_is_clean
+                    and (binding.source_is_plugin_created
+                         or binding.source_name in releasing)
                     and default_source_name):
                 desired = default_source_name
             else:
