@@ -7,6 +7,16 @@ they are the authoritative record; this page is an index.
 Versions are calendar-based: `Major.YY.DDDHHMM`, where `DDD` is the day of the year
 and `HHMM` the UTC time of the version bump. A higher version is always later.
 
+## 1.26.2981408 (2026-10-25)
+
+### Added
+
+- **A new hide rule, `[PreEvent:minutes]`** (issue #33). It hides a channel whose name carries a date and a clock time until that many minutes before the event starts, 15 when no number is given, so a channel for a 1:00 PM game appears at 12:45 PM with `[PreEvent:15]`. The start is read the same way `[PastDate]` reads it, in the Channel Name Event Timezone. A name with no date or no clock time is never hidden by this rule. It is not in the default list: add it to Hide Rules Priority yourself. It controls visibility only; the guide entry before the event still comes from Dispatcharr. The channel appears on the first scan after the cutoff, so schedule scans often enough for the margin you choose. One value applies to every group.
+
+### Fixed
+
+- **The Past Date reason in the CSV names the end time.** For a channel name with a clock time, the reason printed the start time after "Event ended", so a 2:00 PM ET game read "Event ended 10/24 02:00 PM EDT" when it ended at 5:00 PM. It now prints the start plus Event Duration as the end and names the start separately, for example `Event ended 10/24 05:00 PM EDT (started 10/24 02:00 PM EDT, +3h dur, 0d/4h grace)`. When a channel is hidden is unchanged.
+
 ## 1.26.2832019 (2026-10-10)
 
 ### Fixed
