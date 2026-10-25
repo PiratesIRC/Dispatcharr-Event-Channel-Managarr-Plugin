@@ -7,6 +7,12 @@ they are the authoritative record; this page is an index.
 Versions are calendar-based: `Major.YY.DDDHHMM`, where `DDD` is the day of the year
 and `HHMM` the UTC time of the version bump. A higher version is always later.
 
+## 1.26.2981641 (2026-10-25)
+
+### Fixed
+
+- **Channel names with a UK time show the right time in the guide.** A name such as `Boxing 1 | SMITH vs PUELLO UK 5:00pm` did not match the title pattern of `ECM Managed Dummy`, so the guide showed the channel name in four-hour blocks with no start time, and that source reads every time as the Channel Name Event Timezone in any case. Names that state `UK 5:00pm` or `6:30pm uk` now move to a new source, `ECM UK Dummy`, which reads the time in London time: that name now shows `SMITH vs PUELLO` from 12:00 PM Central on a day when the UK is on GMT and Chicago on CDT, with the usual upcoming and ended titles around it. The word UK must be next to the time, so a team name such as `#12 UK` is not read as a time zone. A channel whose name no longer states a UK time returns to `ECM Managed Dummy` on the next applied run, because providers reuse slots such as `Boxing 1` for events in other time zones. The new source is created on the first applied run with Manage Dummy EPG on.
+
 ## 1.26.2981408 (2026-10-25)
 
 ### Added
