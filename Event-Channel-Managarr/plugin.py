@@ -1823,9 +1823,14 @@ class Plugin:
                 if duration_hours <= 0:
                     duration_hours = int(self.DEFAULT_EVENT_DURATION_HOURS)
                 start_aware = event_tz.localize(naive_extracted)
+                # The name carries the START; the reason names the end (start + duration)
+                # so the CSV does not show a start time labelled as the end.
+                end_aware = event_tz.normalize(start_aware + timedelta(hours=duration_hours))
                 cutoff = start_aware + timedelta(hours=duration_hours, days=days_threshold) + timedelta(hours=grace_hours)
                 if now_in_tz > cutoff:
-                    return True, f"[PastDate:{days_threshold}] Event ended {start_aware.strftime('%m/%d %I:%M %p %Z')} (+{duration_hours}h dur, {days_threshold}d/{grace_hours}h grace)"
+                    return True, (f"[PastDate:{days_threshold}] Event ended {end_aware.strftime('%m/%d %I:%M %p %Z')} "
+                                  f"(started {start_aware.strftime('%m/%d %I:%M %p %Z')}, +{duration_hours}h dur, "
+                                  f"{days_threshold}d/{grace_hours}h grace)")
                 return False, None
 
             now_adjusted = now_in_tz - timedelta(hours=grace_hours)
