@@ -648,6 +648,52 @@ def undated_event_has_ended(now, hide_after, first_seen_at=None):
     return now > hide_after
 
 
+# --- [PreEvent:N]: hide a dated, timed event until N minutes before it starts ---
+
+PRE_EVENT_DEFAULT_MINUTES = 15
+
+
+def pre_event_window(naive_start, tz_name, minutes):
+    """Build (start, visible_from) for the [PreEvent:N] rule (issue #33).
+
+    `naive_start` is the date and time the channel name gives, as returned by the
+    date extractor, read in `tz_name` (the Channel Name Event Timezone). `visible_from`
+    is that start less `minutes`.
+
+    Returns None, so the rule does not apply and the channel stays visible, when the
+    name gave no date, when it gave no clock time (the extractor returns midnight for a
+    date-only name, the same test [PastDate] uses), when the timezone is unknown, or
+    when `minutes` is not a whole number of zero or more. A typo in the tag hides
+    nothing rather than hiding every event.
+    """
+    if naive_start is None:
+        return None
+    if naive_start.hour == 0 and naive_start.minute == 0:
+        return None
+    try:
+        minutes = int(minutes)
+    except (TypeError, ValueError):
+        return None
+    if minutes < 0:
+        return None
+    try:
+        import pytz
+        event_tz = pytz.timezone(str(tz_name).strip())
+    except ImportError:
+        return None
+    except (pytz.exceptions.UnknownTimeZoneError, AttributeError, TypeError, ValueError):
+        return None
+    start = event_tz.localize(naive_start.replace(tzinfo=None))
+    return start, start - timedelta(minutes=minutes)
+
+
+def pre_event_hides(now, visible_from):
+    """True while `now` is before `visible_from`; False when there is no window."""
+    if now is None or visible_from is None:
+        return False
+    return now < visible_from
+
+
 # --- regex settings fields: alternatives that do not mean what they look like ----
 
 _MAX_REGEX_ALTERNATIVE_PROBLEMS = 10

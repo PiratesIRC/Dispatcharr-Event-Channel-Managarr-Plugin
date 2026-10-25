@@ -427,7 +427,7 @@ class Plugin:
                 "type": "text",
                 "default": self.DEFAULT_HIDE_RULES,
                 "placeholder": "[BlankName],[NoEventPattern],[EmptyPlaceholder],[PastDate:0],[FutureDate:2],[UndatedAge:2],[ShortDescription],[ShortChannelName]",
-                "help_text": "The rules that hide a channel, written as comma-separated tags. They are read left to right and the first tag that matches hides the channel, so put the rules you trust most first. A tag left out of this list is never applied. Some tags take a number after a colon, for example [PastDate:0] or [UndatedAge:2]. Available tags: [NoEPG], [BlankName], [WrongDayOfWeek], [WrongDayOfWeek:days], [NoEventPattern], [EmptyPlaceholder], [ShortDescription], [ShortDescription:chars], [ShortChannelName], [ShortChannelName:chars], [NumberOnly], [PastDate:days], [PastDate:days:Xh], [FutureDate:days], [UndatedAge:days], [UndatedEnded], [UndatedEnded:hours], [InactiveRegex]. [UndatedEnded] applies to a name that carries a clock time but no date: it hides the channel once the first-seen date plus that time plus the event duration plus the grace period has passed, and uses the Undated Event Grace Period setting unless you give it a number of hours. [ShortDescription] uses 15 characters and [ShortChannelName] 25 unless you give them a number. [WrongDayOfWeek] allows one day either side of the named day unless you give it a number; [WrongDayOfWeek:0] means that day only.",
+                "help_text": "The rules that hide a channel, written as comma-separated tags. They are read left to right and the first tag that matches hides the channel, so put the rules you trust most first. A tag left out of this list is never applied. Some tags take a number after a colon, for example [PastDate:0] or [UndatedAge:2]. Available tags: [NoEPG], [BlankName], [WrongDayOfWeek], [WrongDayOfWeek:days], [NoEventPattern], [EmptyPlaceholder], [ShortDescription], [ShortDescription:chars], [ShortChannelName], [ShortChannelName:chars], [NumberOnly], [PastDate:days], [PastDate:days:Xh], [FutureDate:days], [PreEvent], [PreEvent:minutes], [UndatedAge:days], [UndatedEnded], [UndatedEnded:hours], [InactiveRegex]. [PreEvent] applies to a name that carries a date and a clock time: it hides the channel until that many minutes before the event starts, 15 unless you give it a number, read in the Channel Name Event Timezone. It is not in the default list. [UndatedEnded] applies to a name that carries a clock time but no date: it hides the channel once the first-seen date plus that time plus the event duration plus the grace period has passed, and uses the Undated Event Grace Period setting unless you give it a number of hours. [ShortDescription] uses 15 characters and [ShortChannelName] 25 unless you give them a number. [WrongDayOfWeek] allows one day either side of the named day unless you give it a number; [WrongDayOfWeek:0] means that day only.",
             },
             {
                 "id": "regex_channels_to_ignore",
@@ -1862,6 +1862,31 @@ class Plugin:
             if days_diff > days_threshold:
                 return True, f"[FutureDate:{days_threshold}] Event date {extracted_date.strftime('%m/%d/%Y')} is {days_diff} days in the future"
 
+            return False, None
+
+        elif rule_name == "PreEvent":
+            # Issue #33: hide a dated, timed event until N minutes before its start.
+            # The decision is ecm_parsing.pre_event_window/pre_event_hides; a
+            # two-part tag such as [PreEvent:15:2h] is not this rule's form.
+            if isinstance(rule_param, tuple):
+                return False, None
+            minutes = ecm_parsing.PRE_EVENT_DEFAULT_MINUTES if rule_param is None else rule_param
+            extracted_date = self._extract_date_from_channel_name(channel_name, logger, settings)
+            window = ecm_parsing.pre_event_window(
+                extracted_date,
+                settings.get("dummy_epg_event_timezone", self.DEFAULT_DUMMY_EPG_TIMEZONE),
+                minutes)
+            if window is None:
+                return False, None
+            start_aware, visible_from = window
+            tz_str = self._get_system_timezone(settings)
+            try:
+                local_tz = pytz.timezone(tz_str)
+            except pytz.exceptions.UnknownTimeZoneError:
+                local_tz = pytz.timezone(self.DEFAULT_TIMEZONE)
+            if ecm_parsing.pre_event_hides(datetime.now(local_tz), visible_from):
+                return True, (f"[PreEvent:{minutes}] Event starts {start_aware.strftime('%m/%d %I:%M %p %Z')}, "
+                              f"visible from {visible_from.strftime('%I:%M %p %Z')}")
             return False, None
 
         elif rule_name == "UndatedAge":
