@@ -312,7 +312,7 @@ class Plugin:
             timezone_file = "/usr/share/zoneinfo/zone1970.tab"
             timezones = []
 
-            with open(timezone_file, 'r') as f:
+            with open(timezone_file, 'r', encoding='utf-8') as f:
                 for line in f:
                     # Skip comments and empty lines
                     if line.startswith('#') or not line.strip():
