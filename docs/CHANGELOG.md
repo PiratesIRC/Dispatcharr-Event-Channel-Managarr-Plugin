@@ -7,6 +7,12 @@ they are the authoritative record; this page is an index.
 Versions are calendar-based: `Major.YY.DDDHHMM`, where `DDD` is the day of the year
 and `HHMM` the UTC time of the version bump. A higher version is always later.
 
+## 1.26.3111512 (2026-11-07)
+
+### Fixed
+
+- **The timezone list loads every zone when Dispatcharr runs under an ASCII locale.** The plugin read `/usr/share/zoneinfo/zone1970.tab` with the system default encoding. Newer tzdata releases put curly quotes in that file's comments, so under an ASCII locale the read failed, the log showed `Could not load timezones from zone1970.tab`, and the timezone dropdown offered only seven zones. The file is now read as UTF-8 and all 312 zones load. Thanks to nagelm (#35).
+
 ## 1.26.2981641 (2026-10-25)
 
 ### Fixed
