@@ -277,6 +277,27 @@ def coerce_timezone(value):
     return candidate
 
 
+def timezone_options_with(options, *values):
+    """Return a copy of ``options`` that also offers each name in ``values``.
+
+    The timezone dropdown is read from zone1970.tab, which lists canonical names
+    only, so the setting's own default ("US/Eastern") was not selectable. Blank and
+    non-string values are skipped, a value already offered is not repeated, and the
+    result stays sorted by label. ``options`` itself is not modified.
+    """
+    result = list(options)
+    offered = {option.get("value") for option in result}
+    for value in values:
+        if not isinstance(value, str) or not value.strip():
+            continue
+        name = value.strip()
+        if name not in offered:
+            result.append({"label": name, "value": name})
+            offered.add(name)
+    result.sort(key=lambda option: option["label"])
+    return result
+
+
 def lock_is_stale(mtime, now, max_age_seconds):
     """Return True if a lock acquired at ``mtime`` is older than ``max_age_seconds``.
 
@@ -947,6 +968,82 @@ def hide_rule_tag(reason):
     return reason[1:end]
 
 
+def kept_guide_summary(rows, dummy_source_names):
+    """Count the channels that stay visible on a guide this plugin does not manage.
+
+    ``rows`` are the per-channel result rows of a scan. A row counts when the
+    channel is visible after the run (action ``Visible`` or ``Show``), is linked
+    to a guide, was not taken over by the managed source in this run, and its
+    source is not one of ``dummy_source_names`` (every dummy source, whoever
+    made it). Returns ``[(source_name, count)]``, largest count first and then
+    by name.
+
+    The plugin never replaces a guide that has programmes in it, which is the
+    right behaviour and used to be silent: a provider guide that titles every
+    block "No EVENT Today" kept 39 visible event channels and the run reported
+    only "Managed EPG: 0 attached" (support case, 2026-11-14).
+    """
+    dummy = set(dummy_source_names or ())
+    counts = {}
+    for row in rows or ():
+        if row.get("action") not in ("Visible", "Show"):
+            continue
+        if row.get("has_epg") != "Yes" or row.get("managed_epg_assigned"):
+            continue
+        source = row.get("epg_source") or ""
+        if not source or source in dummy:
+            continue
+        counts[source] = counts.get(source, 0) + 1
+    return sorted(counts.items(), key=lambda item: (-item[1], item[0]))
+
+
+def kept_guide_line(summary, max_sources=3):
+    """One line of text for ``kept_guide_summary`` output, or None when it is empty."""
+    if not summary:
+        return None
+    total = sum(count for _, count in summary)
+    named = ", ".join(f"{name}: {count}" for name, count in summary[:max_sources])
+    if len(summary) > max_sources:
+        named += f", +{len(summary) - max_sources} more"
+    return (f"{total} visible channel(s) kept another guide ({named}); the "
+            f"plugin's guide was not attached to them. Clear their EPG to use it.")
+
+
+def kept_guide_short(summary, max_sources=2):
+    """The toast-sized form of ``kept_guide_line``, or None when it is empty.
+
+    Dry Run and Run Now show a one-line summary, not the full message, so a
+    notice that is only in the full message never reaches the person who
+    pressed the button.
+    """
+    if not summary:
+        return None
+    total = sum(count for _, count in summary)
+    named = ", ".join(f"{name}: {count}" for name, count in summary[:max_sources])
+    if len(summary) > max_sources:
+        named += f", +{len(summary) - max_sources} more"
+    return f"{total} kept another guide ({named})"
+
+
+def placeholder_only_epg_ids(title_rows, pattern):
+    """Return the guide ids whose every upcoming programme title matches ``pattern``.
+
+    ``title_rows`` is an iterable of ``(epg_id, title)``, one per upcoming
+    programme. ``pattern`` is a compiled regular expression or None. A guide
+    with one title that does not match, or with a missing title, is a real
+    guide and is left out. With no pattern nothing qualifies.
+    """
+    if pattern is None:
+        return set()
+    seen = set()
+    real = set()
+    for epg_id, title in title_rows or ():
+        seen.add(epg_id)
+        if not isinstance(title, str) or not pattern.search(title):
+            real.add(epg_id)
+    return seen - real
+
+
 def rule_effectiveness(results):
     """Count hidden channels per rule tag. Returns [(label, count)], largest first.
 
@@ -1206,7 +1303,8 @@ SETTINGS_REPORT = (
     ("keep_duplicates", "Keep Duplicate Channels", "yesno"),
     ("auto_set_dummy_epg_on_hide", "Auto-Remove EPG on Hide", "yesno"),
     ("manage_dummy_epg", "Manage Dummy EPG", "yesno"),
-    ("override_existing_epg", "Override Empty Existing EPG", "yesno"),
+    ("override_existing_epg", "Replace Guides That Have No Programmes", "yesno"),
+    ("placeholder_guide_titles", "Regex: Placeholder Guide Titles", "plain"),
     ("dummy_epg_channel_format", "Channel Name Format", "plain"),
     ("dummy_epg_event_duration_hours", "Event Duration", "hours"),
     ("dummy_epg_event_timezone", "Channel Name Event Timezone", "plain"),

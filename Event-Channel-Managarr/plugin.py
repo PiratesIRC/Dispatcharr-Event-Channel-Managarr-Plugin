@@ -510,14 +510,22 @@ class Plugin:
                 "label": "🗓️ Manage Dummy EPG",
                 "type": "boolean",
                 "default": self.DEFAULT_MANAGE_DUMMY_EPG,
-                "help_text": "Attaches a dummy EPG source, managed by this plugin, to every visible channel that has no EPG assigned. The guide then shows the event read out of the channel name during its time window and 'Offline' outside it. When no time can be read from the name, the guide shows the channel name for the whole day instead. This is the setting that CREATES guide data. '🔌 Auto-Remove EPG on Hide' above only clears it.",
+                "help_text": "Attaches a dummy EPG source, managed by this plugin, to every visible channel that has no EPG assigned. The guide then shows the event read out of the channel name during its time window, 'Upcoming at <time>: <event>' before it, and 'Ended at <time>: <event>' after it. When no time can be read from the name, the guide shows the channel name for the whole day instead. This is the setting that CREATES guide data. '🔌 Auto-Remove EPG on Hide' above only clears it.",
             },
             {
                 "id": "override_existing_epg",
-                "label": "♻️ Override Empty Existing EPG",
+                "label": "♻️ Replace Guides That Have No Programmes",
                 "type": "boolean",
                 "default": self.DEFAULT_OVERRIDE_EXISTING_EPG,
-                "help_text": "Requires '🗓️ Manage Dummy EPG'. By default the managed dummy is attached only to visible channels that have NO EPG at all. Turn this on to ALSO take over a visible channel that is linked to a real EPG source carrying no programmes, which shows as a blank guide. A common cause is an event channel the provider mapped to an empty tvg-id. A channel whose linked EPG does have upcoming programmes is never touched. Off by default.",
+                "help_text": "Requires '🗓️ Manage Dummy EPG'. By default the plugin's guide is attached only to visible channels that have NO EPG at all. Turn this on to ALSO replace the guide on a visible channel whose linked EPG source has no programmes in the next 24 hours, which shows as a blank guide. A guide that has any programme is never replaced, including one that only repeats a placeholder such as 'No Event Today': for that, fill in '🧩 Regex: Placeholder Guide Titles' below, or clear the EPG on those channels. The result of every run names the guides that visible channels kept. Off by default.",
+            },
+            {
+                "id": "placeholder_guide_titles",
+                "label": "🧩 Regex: Placeholder Guide Titles",
+                "type": "text",
+                "default": "",
+                "placeholder": "NO EVENT|OFF AIR",
+                "help_text": "Requires '♻️ Replace Guides That Have No Programmes'. Some providers fill an event channel's guide with a placeholder such as 'No Event Today' all day. A guide in which EVERY programme title in the next 24 hours matches this pattern is treated as having no programmes, so the plugin's guide replaces it. A guide with even one title that does not match is never replaced. This is the only regex field that reads guide programme titles; the others read channel names. Case-insensitive regular expression, alternatives separated by the | character. Leave blank to disable.",
             },
             {
                 "id": "dummy_epg_channel_format",
@@ -543,8 +551,9 @@ class Plugin:
                 "label": "📺 Channel Name Event Timezone",
                 "type": "select",
                 "default": self.DEFAULT_DUMMY_EPG_TIMEZONE,
-                "help_text": "The timezone the times inside channel names are written in, for example US/Eastern for a channel named '(4.17 8:30 PM ET)'. This tells the plugin how to READ those times. It is separate from the timezone Dispatcharr displays the guide in.",
-                "options": self._load_timezones_from_file()
+                "help_text": "The timezone the times inside channel names are written in, for example US/Eastern or America/New_York (the same zone) for a channel named '(4.17 8:30 PM ET)'. This tells the plugin how to READ those times. It is separate from the timezone Dispatcharr displays the guide in.",
+                "options": ecm_parsing.timezone_options_with(
+                    self._load_timezones_from_file(), self.DEFAULT_DUMMY_EPG_TIMEZONE)
             },
             {
                 "id": "group_epg_source_map",
@@ -816,7 +825,8 @@ class Plugin:
         patterns_to_check = [
             ("regex_mark_inactive", "Inactive"),
             ("regex_channels_to_ignore", "Ignore"),
-            ("regex_force_visible", "Force Visible")
+            ("regex_force_visible", "Force Visible"),
+            ("placeholder_guide_titles", "Placeholder Guide Titles")
         ]
 
         for setting_key, label in patterns_to_check:
@@ -1022,6 +1032,13 @@ class Plugin:
                 notes.append(problem)
                 logger.warning(f"{LOG_PREFIX} Group mapping problem: {problem}")
 
+            # Two mappings typed on one line parse as one mapping whose source
+            # name is the whole rest of the line. The parser accepts it, because
+            # a source name may contain an equals sign, so say how it was read.
+            for hint in ecm_profiles.one_line_mapping_hints(raw_map):
+                notes.append(hint)
+                logger.warning(f"{LOG_PREFIX} Group mapping problem: {hint}")
+
             # Print what the plugin ACTUALLY read. An omitted form field keeps the
             # value cached on disk, so clearing the box may not appear to take
             # effect, and this line is how the operator sees which value won.
@@ -1071,6 +1088,44 @@ class Plugin:
             else:
                 validation_results.append("✅ Default Event Day: " + ", ".join(
                     f"{g} = {ecm_parsing.WEEKDAY_NAMES[d]}" for g, d in day_map.items()))
+
+        # 5c. Visible in-scope channels that keep a guide this plugin does not
+        # manage. The plugin never replaces a guide that has programmes in it, and
+        # a provider guide of placeholder titles looked like a plugin fault until
+        # this line named it (support case, 2026-11-14). Information, not an
+        # error: keeping a real guide on some channels is a normal setup.
+        if (db_ok and channel_profile_names_str
+                and self._get_bool_setting(settings, "manage_dummy_epg", False)):
+            try:
+                kept_profile_ids = []
+                for pn in [p.strip() for p in channel_profile_names_str.split(',') if p.strip()]:
+                    kept_profile_ids += list(
+                        ChannelProfile.objects.filter(name__iexact=pn).values_list('id', flat=True))
+                kept_scope = {g.strip().casefold()
+                              for g in channel_groups_str.split(',') if g.strip()}
+                kept_seen = set()
+                kept_rows = []
+                for cid, group_name, source_name in ChannelProfileMembership.objects.filter(
+                        channel_profile_id__in=kept_profile_ids, enabled=True,
+                        channel__epg_data__isnull=False
+                ).exclude(
+                        channel__epg_data__epg_source__source_type="dummy"
+                ).values_list("channel_id", "channel__channel_group__name",
+                              "channel__epg_data__epg_source__name"):
+                    if cid in kept_seen:
+                        continue
+                    if kept_scope and (group_name or "").casefold() not in kept_scope:
+                        continue
+                    kept_seen.add(cid)
+                    kept_rows.append({"action": "Visible", "has_epg": "Yes",
+                                      "epg_source": source_name or ""})
+                kept_line = ecm_parsing.kept_guide_line(
+                    ecm_parsing.kept_guide_summary(kept_rows, ()))
+                if kept_line:
+                    validation_results.append(f"ℹ️ Guides: {kept_line}")
+                    logger.info(f"{LOG_PREFIX} {kept_line}")
+            except Exception as e:
+                logger.warning(f"{LOG_PREFIX} Kept-guide check skipped: {e}")
 
         # 6. Validate schedule
         scheduled_times = settings.get("scheduled_times", "").strip()
@@ -3535,7 +3590,9 @@ class Plugin:
         current EPG is a NON-managed, NON-dummy source with NO programme in the next 24h
         (a blank guide). These are eligible to be re-pointed to the managed dummy. Returns
         [] when the toggle is off, the managed source is missing, or nothing qualifies
-        (bug-043). Channels whose linked EPG actually has upcoming programmes are excluded."""
+        (bug-043). Channels whose linked EPG actually has upcoming programmes are excluded,
+        except that with placeholder_guide_titles set, a guide whose every upcoming
+        title matches that pattern counts as blank."""
         if managed_source is None or not self._get_bool_setting(settings, "override_existing_epg", False):
             return []
         try:
@@ -3551,9 +3608,27 @@ class Plugin:
             now = _djtz.now()
             window_end = now + timedelta(hours=24)
             ed_ids = [c.epg_data_id for c in cand]
-            with_progs = set(ProgramData.objects.filter(
-                epg_id__in=ed_ids, start_time__lt=window_end, end_time__gte=now
-            ).values_list("epg_id", flat=True))
+            upcoming = ProgramData.objects.filter(
+                epg_id__in=ed_ids, start_time__lt=window_end, end_time__gte=now)
+            with_progs = set(upcoming.values_list("epg_id", flat=True))
+            # Opt-in within the opt-in: a guide whose every upcoming title matches
+            # the Placeholder Guide Titles pattern counts as having no programmes.
+            # The decision is ecm_parsing.placeholder_only_epg_ids, pure and
+            # unit-tested. An invalid pattern replaces nothing.
+            placeholder_str = str(settings.get("placeholder_guide_titles", "") or "").strip()
+            if placeholder_str and with_progs:
+                try:
+                    placeholder_re = re.compile(placeholder_str, re.IGNORECASE)
+                except re.error as e:
+                    placeholder_re = None
+                    logger.warning(f"{LOG_PREFIX} Placeholder Guide Titles regex is invalid "
+                                   f"and was ignored: {e}")
+                placeholder_only = ecm_parsing.placeholder_only_epg_ids(
+                    upcoming.values_list("epg_id", "title"), placeholder_re)
+                if placeholder_only:
+                    logger.info(f"{LOG_PREFIX} override_existing_epg: {len(placeholder_only)} "
+                                f"linked guide(s) carry only placeholder titles")
+                    with_progs -= placeholder_only
             override = [c.id for c in cand if c.epg_data_id not in with_progs]
             if override:
                 logger.info(f"{LOG_PREFIX} override_existing_epg: {len(override)} visible channel(s) "
@@ -4329,6 +4404,49 @@ class Plugin:
                         f"only, never against a stream name and never against guide "
                         f"programme titles.")
 
+            # Two correct behaviours that used to be silent (support case, 2026-11-14):
+            # a visible channel keeps a guide that has programmes in it, and a Channel
+            # Name Format that reads none of the names makes the guide repeat the
+            # channel name. Both decisions are pure functions with unit tests; only
+            # the list of dummy source names is read here. A failure of that read
+            # costs the warning, never the scan.
+            kept_guide_text = None
+            format_hint_text = None
+            # Short forms for the one-line toast that Dry Run and Run Now show.
+            scan_notices = []
+            if self._get_bool_setting(settings, "manage_dummy_epg", False):
+                try:
+                    from apps.epg.models import EPGSource as _EPGSource
+                    dummy_names = set(_EPGSource.objects.filter(
+                        source_type="dummy").values_list("name", flat=True))
+                    kept_summary = ecm_parsing.kept_guide_summary(results, dummy_names)
+                    kept_guide_text = ecm_parsing.kept_guide_line(kept_summary)
+                    kept_short = ecm_parsing.kept_guide_short(kept_summary)
+                    if kept_short:
+                        scan_notices.append(kept_short)
+                except Exception as e:
+                    logger.warning(f"{LOG_PREFIX} Kept-guide check skipped: {e}")
+                selected_format = str(settings.get(
+                    "dummy_epg_channel_format",
+                    self.DEFAULT_DUMMY_EPG_CHANNEL_FORMAT)).strip().upper()
+                format_hint = ecm_profiles.channel_format_hint(
+                    [r.get("channel_name") for r in results
+                     if r.get("action") in ("Visible", "Show")],
+                    selected_format, ecm_parsing.AT_TITLE_PATTERN)
+                if format_hint:
+                    better, better_count, selected_count = format_hint
+                    format_hint_text = (
+                        f"Channel Name Format is {selected_format}, which reads "
+                        f"{selected_count} visible channel name(s); {better} reads "
+                        f"{better_count}. Set Channel Name Format to {better} if the "
+                        f"guide repeats the channel name.")
+                    scan_notices.append(
+                        f"Channel Name Format {selected_format} reads "
+                        f"{selected_count} names, {better} reads {better_count}")
+                for text in (kept_guide_text, format_hint_text):
+                    if text:
+                        logger.warning(f"{LOG_PREFIX} {text}")
+
             # Export to CSV
             csv_filepath = None
             should_create_csv = False
@@ -4362,6 +4480,10 @@ class Plugin:
                     f"Managed EPG Attached: {len(managed_attached_set)}",
                     f"Managed EPG Detached: {len(managed_detached_set)}",
                 ]
+                if kept_guide_text:
+                    header_lines.append(f"Guides left in place: {kept_guide_text}")
+                if format_hint_text:
+                    header_lines.append(f"Channel Name Format check: {format_hint_text}")
                 if rule_stats:
                     header_lines.append("Rule Effectiveness:")
                     for rule, count in rule_stats:
@@ -4498,6 +4620,10 @@ class Plugin:
                 message_parts.append(
                     f"⚠️ Set but matched nothing: {', '.join(unmatched_regex_fields)}. "
                     f"These read the channel or stream name, never guide programme titles.")
+            if kept_guide_text:
+                message_parts.append(f"ℹ️ {kept_guide_text}")
+            if format_hint_text:
+                message_parts.append(f"⚠️ {format_hint_text}")
             if message_parts:
                 message_parts.append("")
 
@@ -4542,7 +4668,8 @@ class Plugin:
                     "duplicates_hidden": total_duplicates_hidden,
                     "managed_epg_attached": len(managed_attached_set),
                     "managed_epg_detached": len(managed_detached_set),
-                    "csv_file": csv_filepath if csv_filepath else "N/A"
+                    "csv_file": csv_filepath if csv_filepath else "N/A",
+                    "notices": scan_notices
                 }
             }
 
@@ -4583,6 +4710,10 @@ class Plugin:
         csv_file = res.get("csv_file")
         if csv_file and csv_file != "N/A":
             parts.append(f"CSV: {os.path.basename(csv_file)}")
+        # Notices last: the counts and the file name are short, so the whole line
+        # stays well inside the roughly 280 characters a toast shows.
+        for notice in res.get("notices") or []:
+            parts.append(f"ℹ️ {notice}")
         return " | ".join(parts)
 
     def _dry_run_bg(self, settings, logger, result_holder):

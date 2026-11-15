@@ -136,12 +136,23 @@ import ecm_profiles  # noqa: E402
 # stand-in EPGSource, and tests/unit/test_at_channel_format.py, which runs the
 # patterns against 162 captured names. The US and SE branches did not move.
 #
-# The other three remain at their original S2 baseline values and must not be
+# _managed_override_ids, re-recorded 2026-11-14: a provider guide that titled every
+# block "No EVENT Today" kept 39 visible event channels, because the method treats
+# any guide with a programme as real (support case, 2026-11-14). It now reads one
+# new setting, placeholder_guide_titles, and removes from the "has programmes" set
+# the guides whose every upcoming title matches it. With the setting blank, which
+# is the default, the added block does not run and the method returns what it
+# returned before. The decision is ecm_parsing.placeholder_only_epg_ids, covered by
+# tests/unit/test_guide_reporting.py. The method still cannot be executed here,
+# because it queries the database.
+#
+# The other two remain at their original S2 baseline values and must not be
 # touched without the same argument.
 FROZEN_BODIES = {
     "_attach_managed_epg": "b0126debd9231deb49625ca0404952679197b862bff6cd86c618eb46fe3b335e",
     "_detach_managed_epg": "9e8d367e7d0789715e04249dab786a494b7f6919a60d6f9c755029e8261b98ca",
-    "_managed_override_ids": "5d41e55a7146863609792f31f20134469c090b51938c1ab67d0f34399c526d6c",
+    # re-recorded 2026-11-14, see the note above
+    "_managed_override_ids": "845858e0c343b9a0afdcd163f0373161396f12da3213beefbde9de90fd453d73",
     # re-recorded 2026-08-12, 2026-08-14, 2026-08-29, 2026-08-30, twice on 2026-09-05 and 2026-10-09, see the notes above
     "_get_or_create_managed_epg_source": "b26ac09922d3184cc62fad2e2c156b2c0f140592f60d6e32d7af1e40ee2e61c7",
     # re-recorded 2026-08-12 and 2026-09-19, see the notes above

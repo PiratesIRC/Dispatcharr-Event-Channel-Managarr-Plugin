@@ -133,9 +133,15 @@
     },
     {
       "id": "override_existing_epg",
-      "label": "♻️ Override Empty Existing EPG",
+      "label": "♻️ Replace Guides That Have No Programmes",
       "type": "boolean",
       "default": false
+    },
+    {
+      "id": "placeholder_guide_titles",
+      "label": "🧩 Regex: Placeholder Guide Titles",
+      "type": "text",
+      "default": ""
     },
     {
       "id": "dummy_epg_channel_format",

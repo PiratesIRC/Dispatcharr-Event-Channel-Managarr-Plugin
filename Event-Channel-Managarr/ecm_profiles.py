@@ -500,6 +500,91 @@ def parse_group_source_map(raw):
     return mapping, problems
 
 
+def one_line_mapping_hints(raw):
+    """Warn about a mapping line that carries more than one equals sign. Pure.
+
+    A source name may legitimately contain an equals sign, so
+    parse_group_source_map keeps such a line: the first sign separates and the
+    rest stays in the source name. Two mappings typed on one line look exactly
+    the same and produce a source named after the whole rest of the line
+    (support case, 2026-11-14). This returns one plain-language sentence per
+    such line, saying how the line was read, for Validate Configuration to
+    show. It rejects nothing. Never raises.
+    """
+    hints = []
+    try:
+        text = str(raw or "")
+    except Exception:
+        return hints
+    for line in text.splitlines():
+        line = line.strip()
+        if not line or line.startswith("#") or line.count("=") < 2:
+            continue
+        group_part, _, source_part = line.partition("=")
+        group, source = group_part.strip(), source_part.strip()
+        if not group or not source:
+            continue
+        hints.append(
+            f"a line has more than one equals sign and was read as group "
+            f"{group!r} = source {source!r}; if you meant two mappings, put "
+            f"each on its own line")
+    return hints
+
+
+# Detection only. The renderer patterns for SE live in plugin.py; this is the
+# shape that tells an SE name from the other two layouts: at least two pipes and
+# a weekday, a day and a month word.
+_SE_NAME_SHAPE = re.compile(
+    r"\|[^|]+\|.*\b(?:Mon|Tue|Wed|Thu|Fri|Sat|Sun)\s+\d{1,2}\s+"
+    r"(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)\b")
+
+CHANNEL_FORMATS = ("US", "SE", "AT")
+
+
+def channel_format_counts(names, at_title_pattern):
+    """How many of ``names`` each Channel Name Format can read. Pure.
+
+    Returns ``{"US": n, "SE": n, "AT": n}``. ``at_title_pattern`` is passed in
+    because it lives in ecm_parsing and this module imports nothing from it.
+    Values that are not text are skipped. Never raises.
+    """
+    counts = {key: 0 for key in CHANNEL_FORMATS}
+    try:
+        us = re.compile(to_python_named(US_ET.title_pattern))
+        at = re.compile(to_python_named(at_title_pattern))
+    except (re.error, TypeError):
+        return counts
+    for name in names or ():
+        if not isinstance(name, str) or not name.strip():
+            continue
+        if us.search(name):
+            counts["US"] += 1
+        if _SE_NAME_SHAPE.search(name):
+            counts["SE"] += 1
+        if at.search(name):
+            counts["AT"] += 1
+    return counts
+
+
+def channel_format_hint(names, selected, at_title_pattern, min_matches=3):
+    """Say when another Channel Name Format reads the names far better. Pure.
+
+    Returns ``(better_format, its_count, selected_count)`` when a format other
+    than ``selected`` reads at least ``min_matches`` names and more than twice
+    as many as the selected one, otherwise None. With the wrong format the
+    guide repeats the channel name all day and nothing says why.
+    """
+    chosen = str(selected or "").strip().upper()
+    counts = channel_format_counts(names, at_title_pattern)
+    selected_count = counts.get(chosen, 0)
+    best = max(CHANNEL_FORMATS, key=lambda key: counts[key])
+    if best == chosen or counts[best] < min_matches:
+        return None
+    if counts[best] <= 2 * selected_count:
+        return None
+    return best, counts[best], selected_count
+
+
 # Prefix on every group profile key. It contains a colon, which no key defined in
 # code uses and which cannot appear in the UNCLAIMED sentinel, so a mapped source
 # named "us_et" or "__unclaimed__" still produces a distinct key. That matters:
