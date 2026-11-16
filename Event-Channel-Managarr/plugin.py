@@ -4431,7 +4431,7 @@ class Plugin:
                     self.DEFAULT_DUMMY_EPG_CHANNEL_FORMAT)).strip().upper()
                 format_hint = ecm_profiles.channel_format_hint(
                     [r.get("channel_name") for r in results
-                     if r.get("action") in ("Visible", "Show")],
+                     if ecm_parsing.is_visible_after_run(r.get("action"))],
                     selected_format, ecm_parsing.AT_TITLE_PATTERN)
                 if format_hint:
                     better, better_count, selected_count = format_hint

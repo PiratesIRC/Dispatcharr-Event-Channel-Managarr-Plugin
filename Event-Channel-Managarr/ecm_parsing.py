@@ -968,11 +968,25 @@ def hide_rule_tag(reason):
     return reason[1:end]
 
 
+# Every scan-result action that leaves a channel visible after the run. The two
+# forced labels come from the Force Visible regex (plugin.py writes
+# "Visible (Forced)" for a channel already visible and "Forced Visible" for one
+# it shows). Leaving them out made the kept-guide notice and the Channel Name
+# Format hint skip force-visible channels (applied run in the dev container,
+# 2026-11-15).
+VISIBLE_AFTER_RUN_ACTIONS = frozenset(("Visible", "Show", "Visible (Forced)", "Forced Visible"))
+
+
+def is_visible_after_run(action):
+    """True when a scan-result row's ``action`` leaves the channel visible."""
+    return action in VISIBLE_AFTER_RUN_ACTIONS
+
+
 def kept_guide_summary(rows, dummy_source_names):
     """Count the channels that stay visible on a guide this plugin does not manage.
 
     ``rows`` are the per-channel result rows of a scan. A row counts when the
-    channel is visible after the run (action ``Visible`` or ``Show``), is linked
+    channel is visible after the run (``is_visible_after_run``), is linked
     to a guide, was not taken over by the managed source in this run, and its
     source is not one of ``dummy_source_names`` (every dummy source, whoever
     made it). Returns ``[(source_name, count)]``, largest count first and then
@@ -986,7 +1000,7 @@ def kept_guide_summary(rows, dummy_source_names):
     dummy = set(dummy_source_names or ())
     counts = {}
     for row in rows or ():
-        if row.get("action") not in ("Visible", "Show"):
+        if not is_visible_after_run(row.get("action")):
             continue
         if row.get("has_epg") != "Yes" or row.get("managed_epg_assigned"):
             continue

@@ -36,6 +36,22 @@ def test_kept_guide_ignores_hidden_and_unlinked_and_taken_over_channels():
     assert ecm_parsing.kept_guide_summary(rows, set()) == [("Infinity", 1)]
 
 
+def test_kept_guide_counts_channels_kept_visible_by_the_force_visible_regex():
+    # Found by an applied run in the dev container, 2026-11-15: two force-visible
+    # channels kept their XMLTV guide and the toast said nothing, while Validate's
+    # Guides line counted them. plugin.py writes these two labels for them.
+    rows = [_row("Visible (Forced)", "Yes", "Infinity"),
+            _row("Forced Visible", "Yes", "Infinity")]
+    assert ecm_parsing.kept_guide_summary(rows, set()) == [("Infinity", 2)]
+
+
+def test_visible_after_run_covers_every_label_that_leaves_a_channel_visible():
+    for action in ("Visible", "Show", "Visible (Forced)", "Forced Visible"):
+        assert ecm_parsing.is_visible_after_run(action), action
+    for action in ("Hide", "No change", "Ignored", "", None):
+        assert not ecm_parsing.is_visible_after_run(action), action
+
+
 def test_kept_guide_orders_by_count_then_name_and_matches_dummy_names_exactly():
     rows = ([_row("Visible", "Yes", "B")] * 2 + [_row("Visible", "Yes", "A")] * 2
             + [_row("Visible", "Yes", "C")] * 5 + [_row("Visible", "Yes", "ecm")])
