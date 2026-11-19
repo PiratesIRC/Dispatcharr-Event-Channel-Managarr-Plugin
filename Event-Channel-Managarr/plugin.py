@@ -583,7 +583,7 @@ class Plugin:
                 "label": "📄 Enable Scheduled CSV Export",
                 "type": "boolean",
                 "default": self.DEFAULT_SCHEDULED_CSV_EXPORT,
-                "help_text": "Writes a CSV of the results to /data/exports every time a SCHEDULED run finishes. This controls scheduled runs only: Run Now and Dry Run always write a CSV whatever it is set to.",
+                "help_text": "Writes a CSV of the results to /data/exports every time a SCHEDULED run or an automatic rescan after an M3U refresh finishes. Each automatic rescan then names its CSV, by full path, in the run history of 'Auto-rescan after M3U refresh' under Tasks. Run Now and Dry Run always write a CSV whatever this is set to.",
             },
             {
                 "id": "csv_retention_days",
@@ -643,13 +643,38 @@ class Plugin:
         without unknown field types. The layout is ``ecm_fields.sectioned_fields``.
         The loader does not catch an exception raised here, so any failure falls
         back to the flat form rather than breaking discovery of the plugin.
+
+        Six text settings are drawn as pick lists and tables under new ids
+        (``ecm_fields.pick_list_fields``). ``_uses_pick_lists`` tells ``run`` to
+        write those back into the old text settings; it stays False on 0.33,
+        which never calls this, and on the flat fallback.
         """
+        self._uses_pick_lists = False
         flat = self.fields
         try:
-            return ecm_fields.sectioned_fields(flat)
+            settings = (context or {}).get("settings") or {}
+            profiles, groups = self._pick_list_names()
+            fields = ecm_fields.sectioned_fields(
+                ecm_fields.pick_list_fields(flat, settings, profiles, groups))
+            self._uses_pick_lists = True
+            return fields
         except Exception as exc:
             LOGGER.warning(f"{LOG_PREFIX} Sectioned settings form failed, using the flat form: {exc}")
             return flat
+
+    @staticmethod
+    def _pick_list_names():
+        """Channel profile names, and names of groups that hold a channel, for the
+        settings pick lists. Read once when the plugin loads. Never raises: on a
+        database error the lists are empty and the saved values still show."""
+        try:
+            profiles = list(ChannelProfile.objects.values_list("name", flat=True))
+            groups = list(Channel.objects.exclude(channel_group__isnull=True)
+                          .values_list("channel_group__name", flat=True).distinct())
+            return profiles, groups
+        except Exception as exc:
+            LOGGER.warning(f"{LOG_PREFIX} Could not read profiles and groups for the settings lists: {exc}")
+            return [], []
 
     # Actions for Dispatcharr UI
     # Actions metadata mirrors plugin.json (which drives the Dispatcharr UI).
@@ -776,6 +801,11 @@ class Plugin:
             # Params may contain action-specific overrides
             if params:
                 merged_settings.update(params)
+
+            # On Dispatcharr 0.34 the form edits pick lists and tables under new
+            # ids; write them back into the text settings every reader parses.
+            if getattr(self, "_uses_pick_lists", False):
+                merged_settings = ecm_fields.legacy_settings(merged_settings)
 
             action_map = {
                 "validate_configuration": self.validate_configuration_action,
@@ -1342,6 +1372,8 @@ class Plugin:
         """The scheduler's scan, reported once when it ends on every path. Consent is read from
         the database (settings None), not from the settings dict the scheduler holds."""
         try:
+            if getattr(self, "_uses_pick_lists", False):
+                settings = ecm_fields.legacy_settings(settings)
             return self._scan_and_update_channels(settings, logger, dry_run=False, is_scheduled_run=True)
         finally:
             self._report_usage(None, logger)
@@ -4704,12 +4736,13 @@ class Plugin:
                 except OSError:
                     pass
 
-    def _compact_scan_summary(self, label, result):
+    def _compact_scan_summary(self, label, result, full_csv_path=False):
         """Build a single-line toast-sized summary from a scan result dict.
 
         The full multi-line `message` returned by `_scan_and_update_channels`
         is kept in logs and in the CSV header; the short form below is what
-        the Dispatcharr notification window shows.
+        the Dispatcharr notification window shows. `full_csv_path` names the
+        CSV by its full path, for the task history, which has room for it.
         """
         if not isinstance(result, dict) or result.get("status") != "success":
             return None
@@ -4726,7 +4759,7 @@ class Plugin:
             parts.append(f"EPG +{attached}/-{detached}")
         csv_file = res.get("csv_file")
         if csv_file and csv_file != "N/A":
-            parts.append(f"CSV: {os.path.basename(csv_file)}")
+            parts.append(f"CSV: {csv_file if full_csv_path else os.path.basename(csv_file)}")
         # Notices last: the counts and the file name are short, so the whole line
         # stays well inside the roughly 280 characters a toast shows.
         for notice in res.get("notices") or []:
@@ -4831,9 +4864,15 @@ class Plugin:
         )
 
         if isinstance(result, dict):
-            summary = self._compact_scan_summary("M3U Rescan", result)
+            summary = self._compact_scan_summary("M3U Rescan", result, full_csv_path=True)
             if summary:
                 result["message"] = summary
+            # Dispatcharr's task history shows this message for every run and
+            # puts the whole result in its Download output file; neither can link
+            # to a file, so both carry the CSV's full path.
+            csv_file = (result.get("results") or {}).get("csv_file")
+            if csv_file and csv_file != "N/A":
+                result["file"] = csv_file
         return result
 
     def remove_epg_from_hidden_action(self, settings, logger):

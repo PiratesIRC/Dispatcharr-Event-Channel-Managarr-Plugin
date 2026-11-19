@@ -156,7 +156,7 @@ def test_a_disabled_m3u_event_sends_nothing(plugin, usage):
 def test_an_enabled_m3u_event_that_scans_reports_once(plugin, usage, monkeypatch):
     settings = {"event": "m3u_refresh", "auto_rescan_on_m3u_refresh": True}
     monkeypatch.setattr(plugin, "_scan_and_update_channels", lambda *a, **k: {"status": "success", "message": "ok"})
-    monkeypatch.setattr(plugin, "_compact_scan_summary", lambda label, result: None)
+    monkeypatch.setattr(plugin, "_compact_scan_summary", lambda label, result, **_kw: None)
     result = plugin.run("on_m3u_refresh", {}, {"settings": settings, "logger": LOGGER})
     assert result["status"] == "success"
     assert usage.calls == [(settings, False)]
