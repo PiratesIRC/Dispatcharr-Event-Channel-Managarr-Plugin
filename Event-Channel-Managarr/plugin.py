@@ -54,8 +54,15 @@ _EVENT_TS_RE = ecm_parsing.EVENT_TS_RE
 
 # Background scheduling globals
 _bg_thread = None
-_stop_event = threading.Event()
 _scheduler_lock = threading.Lock()  # Prevent concurrent scheduler starts
+
+# Every scheduler thread carries its own stop event on the thread object, under
+# this attribute name, and is found by SCHEDULER_THREAD_NAME. A Plugins page
+# refresh imports this module afresh, so a module global cannot reach the thread
+# the previous copy started; threading.enumerate() can, and it sees every thread
+# in the process whichever copy of the module started it.
+SCHEDULER_THREAD_NAME = "event-channel-managarr-scheduler"
+SCHEDULER_STOP_ATTR = "_ecm_stop_event"
 
 
 class PluginConfig:
@@ -2330,11 +2337,14 @@ class Plugin:
             settings["timezone"] = self._dispatcharr_timezone()
             # --- This worker's scheduler thread ---
             worker_pid = os.getpid()
-            scheduler_threads = [t for t in threading.enumerate() if "event-channel-managarr-scheduler" in t.name]
+            scheduler_threads = [t for t in threading.enumerate() if SCHEDULER_THREAD_NAME in t.name]
             running = bool(_bg_thread and _bg_thread.is_alive())
             n = len(scheduler_threads)
             if n > 1:
+                old = sum(1 for t in scheduler_threads if getattr(t, SCHEDULER_STOP_ATTR, None) is None)
                 thread_state = f"⚠️ {n} threads in one worker (leak)"
+                if old:
+                    thread_state += f", {old} from an older plugin version (cleared by a restart)"
             elif running:
                 thread_state = "running"
             else:
@@ -2516,7 +2526,11 @@ class Plugin:
                 LOGGER.info("No valid scheduled times, scheduler not started")
                 return
 
-            # Start new scheduler thread
+            # Start new scheduler thread. Its stop event is local to it and is
+            # attached to the thread object below, so a later copy of this
+            # module can find and stop it (see SCHEDULER_STOP_ATTR).
+            _stop_event = threading.Event()
+
             def scheduler_loop():
                 import pytz
                 thread_id = threading.current_thread().name
@@ -2617,26 +2631,40 @@ class Plugin:
 
                 LOGGER.info(f"[{thread_id}] Scheduler thread exiting")
 
-            _bg_thread = threading.Thread(target=scheduler_loop, name="event-channel-managarr-scheduler", daemon=True)
+            _bg_thread = threading.Thread(target=scheduler_loop, name=SCHEDULER_THREAD_NAME, daemon=True)
+            setattr(_bg_thread, SCHEDULER_STOP_ATTR, _stop_event)
             _bg_thread.start()
             LOGGER.info(f"Background scheduler started for times: {[t.strftime('%H:%M') for t in scheduled_times]}")
 
 
 
     def _stop_background_scheduler(self):
-        """Stop background scheduler thread"""
-        global _bg_thread
-        if _bg_thread and _bg_thread.is_alive():
-            LOGGER.info(f"Stopping background scheduler (thread: {_bg_thread.name})")
-            _stop_event.set()
-            _bg_thread.join(timeout=self.SCHEDULER_STOP_TIMEOUT)
+        """Stop every scheduler thread in this process, including ones started by
+        an earlier copy of this module before a Plugins page refresh.
 
-            if _bg_thread.is_alive():
+        A thread is stopped through the event attached to it (SCHEDULER_STOP_ATTR).
+        A thread with no such event was started by a plugin version older than
+        this mechanism; nothing can stop it short of a process restart, so it is
+        reported in the log and left running.
+        """
+        threads = ecm_parsing.scheduler_threads_to_stop(
+            threading.enumerate(), SCHEDULER_THREAD_NAME, SCHEDULER_STOP_ATTR,
+            threading.current_thread())
+        for thread, stop_event in threads:
+            if stop_event is None:
+                LOGGER.warning(
+                    f"{LOG_PREFIX} A scheduler thread from an older plugin version is still "
+                    f"running in this process and cannot be stopped until the process "
+                    f"restarts (thread {thread.ident}). Scans stay single through the scan "
+                    f"lock and the shared last-run file.")
+                continue
+            LOGGER.info(f"Stopping background scheduler (thread: {thread.name} {thread.ident})")
+            stop_event.set()
+            thread.join(timeout=self.SCHEDULER_STOP_TIMEOUT)
+            if thread.is_alive():
                 LOGGER.warning("Background scheduler thread did not stop within timeout - may still be running!")
             else:
                 LOGGER.info("Background scheduler stopped successfully")
-
-            _stop_event.clear()
 
     def _field_defaults(self):
         """What each setting falls back to when nothing is stored, from the LIVE

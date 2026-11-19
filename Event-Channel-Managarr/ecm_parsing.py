@@ -1615,3 +1615,24 @@ def wrong_day_hides(named_day, default_day, today, tolerance):
     tolerance = max(0, min(WRONG_DAY_MAX_TOLERANCE, int(tolerance)))
     distance = min((day - today) % 7, (today - day) % 7)
     return distance > tolerance, day, source
+
+
+def scheduler_threads_to_stop(threads, name, stop_attr, current=None):
+    """Which scheduler threads to stop, each with its stop event. Pure, never raises.
+
+    Returns ``[(thread, stop_event_or_None), ...]`` for every live thread named
+    ``name`` other than ``current``. A thread started by a plugin version older
+    than the per-thread stop event has no ``stop_attr`` and is returned with
+    None, so the caller can report it rather than mistake it for a stopped one.
+    """
+    found = []
+    for thread in threads or ():
+        try:
+            if thread is current or getattr(thread, "name", None) != name:
+                continue
+            if not thread.is_alive():
+                continue
+            found.append((thread, getattr(thread, stop_attr, None)))
+        except Exception:
+            continue
+    return found

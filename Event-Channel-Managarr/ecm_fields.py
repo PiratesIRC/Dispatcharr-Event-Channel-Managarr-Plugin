@@ -70,6 +70,52 @@ NEW_FIELDS = {
     },
 }
 
+# Dispatcharr draws help text as one plain paragraph: no line breaks, no
+# Markdown. In the 0.34 form a long help text is cut to its first sentences and
+# the rest follows as titled info fields, one topic each, right below the field.
+# Keyed by the field id in the 0.34 form. Each value is (short help, [(title,
+# paragraph), ...]). The flat form keeps the full text.
+HELP_PARAGRAPHS = {
+    "hide_rules_priority": (
+        "The rules that hide a channel, written as comma-separated tags. They are read left to right and the first tag that matches hides the channel, so put the rules you trust most first. A tag left out of this list is never applied.",
+        [
+            ("Available tags", "[NoEPG], [BlankName], [WrongDayOfWeek], [NoEventPattern], [EmptyPlaceholder], [ShortDescription], [ShortChannelName], [NumberOnly], [PastDate:days], [FutureDate:days], [PreEvent], [UndatedAge:days], [UndatedEnded], [InactiveRegex]."),
+            ("Tags that take a number", "A number goes after a colon, for example [PastDate:0] or [UndatedAge:2]. The forms are [PastDate:days], [PastDate:days:Xh], [FutureDate:days], [UndatedAge:days], [WrongDayOfWeek:days], [ShortDescription:chars], [ShortChannelName:chars], [PreEvent:minutes] and [UndatedEnded:hours]. [ShortDescription] uses 15 characters and [ShortChannelName] 25 unless you give them a number."),
+            ("[PreEvent]", "Applies to a name that carries a date and a clock time: it hides the channel until that many minutes before the event starts, 15 unless you give it a number, read in the Channel Name Event Timezone. It is not in the default list."),
+            ("[UndatedEnded]", "Applies to a name that carries a clock time but no date: it hides the channel once the first-seen date plus that time plus the event duration plus the grace period has passed, and uses the Undated Event Grace Period setting unless you give it a number of hours."),
+            ("[WrongDayOfWeek]", "Allows one day either side of the named day unless you give it a number; [WrongDayOfWeek:0] means that day only."),
+        ],
+    ),
+    "stream_name_group_list": (
+        "Channel groups that read the stream name whatever Name Source says, for a provider that keeps the channel names fixed and puts each week's events in the stream names. Each group must also be in Channel Groups. Leave empty to change nothing.",
+        [
+            ("The guide for these groups", "If such a group is mapped to its own source in Per-Group EPG Sources, the plugin creates that source set to read the stream name, so the guide follows the stream too. A source that already exists is not changed: set its Name Source to Stream Name in Dispatcharr's EPG source editor."),
+        ],
+    ),
+    "manage_dummy_epg": (
+        "Attaches a dummy EPG source, managed by this plugin, to every visible channel that has no EPG assigned. This is the setting that CREATES guide data. '🔌 Auto-Remove EPG on Hide' above only clears it.",
+        [
+            ("What the guide shows", "The event read out of the channel name during its time window, 'Upcoming at <time>: <event>' before it, and 'Ended at <time>: <event>' after it. When no time can be read from the name, the guide shows the channel name for the whole day instead."),
+        ],
+    ),
+    "override_existing_epg": (
+        "Requires '🗓️ Manage Dummy EPG'. Off by default. Turn this on to ALSO replace the guide on a visible channel whose linked EPG source has no programmes in the next 24 hours, which shows as a blank guide.",
+        [
+            ("Without this setting", "The plugin's guide is attached only to visible channels that have NO EPG at all."),
+            ("Placeholder guides", "A guide that has any programme is never replaced, including one that only repeats a placeholder such as 'No Event Today': for that, fill in '🧩 Regex: Placeholder Guide Titles' below, or clear the EPG on those channels. The result of every run names the guides that visible channels kept."),
+        ],
+    ),
+    "group_epg_source_rows_about": (
+        "Gives a channel group its own dummy EPG source, so groups needing different timezones, durations or title patterns do not have to share one. Add one row per group and type the source name. A group you do not list keeps the shared source, so an empty table changes nothing.",
+        [
+            ("Who edits the source", "The plugin creates a listed source and seeds it from the settings above, then never writes to it again: from that point its timezone, duration, patterns and templates are yours to edit in Dispatcharr's own EPG source editor."),
+            ("Scan scope", "The group must also be in scan scope, meaning it is picked in Channel Groups above or that field is empty, or the mapping creates a source and moves nothing."),
+            ("Removing a row", "Removing a row moves those channels back to the shared source on the next applied run. Run Validate Configuration after editing this table."),
+        ],
+    ),
+}
+HELP_SUFFIX = "_help_"
+
 # The ``info`` fields that head each group of settings in the flat form.
 SECTION_PREFIX = "_section_"
 
@@ -318,4 +364,24 @@ def sectioned_fields(flat_fields):
         if item.get("type") == "text" and item.get("id") in TEXT_ROWS:
             item["rows"] = TEXT_ROWS[item["id"]]
         out.append(item)
+        out.extend(_split_help(item, current))
     return out
+
+
+def _split_help(item, section):
+    """Cut a long help text to its short form (in place) and return the rest as
+    titled info fields that follow the field. An info field's text is in
+    ``description``; any other field's is in ``help_text``."""
+    spec = HELP_PARAGRAPHS.get(item.get("id"))
+    if not spec:
+        return []
+    short, paragraphs = spec
+    item["description" if item.get("type") == "info" else "help_text"] = short
+    extra = []
+    for number, (title, text) in enumerate(paragraphs, start=1):
+        info = {"id": f"{item['id']}{HELP_SUFFIX}{number}", "label": title,
+                "type": "info", "description": text}
+        if section is not None:
+            info["section"] = section
+        extra.append(info)
+    return extra

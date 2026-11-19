@@ -208,3 +208,30 @@ def test_manifest_declares_version_1_and_the_capabilities_the_plugin_uses():
     assert manifest["capabilities"] == ["outbound_network", "filesystem_write"]
     # The sectioned form is reached through get_fields, so older Dispatcharr keeps working.
     assert manifest["min_dispatcharr_version"] == "v0.20.0"
+
+
+def test_long_help_texts_are_split_into_titled_paragraphs_below_the_field(bare_plugin, names):
+    fields = bare_plugin.get_fields({})
+    ids = [f["id"] for f in fields]
+    for fid, (short, paragraphs) in ecm_fields.HELP_PARAGRAPHS.items():
+        assert fid in ids, fid
+        at = ids.index(fid)
+        field = fields[at]
+        assert (field.get("help_text") or field.get("description")) == short
+        follow = fields[at + 1: at + 1 + len(paragraphs)]
+        assert [(f["label"], f["description"]) for f in follow] == paragraphs
+        assert all(f["type"] == "info" and f["section"] == field["section"] for f in follow)
+
+
+def test_the_split_hide_rules_help_keeps_every_tag_the_full_text_names(bare_plugin):
+    import re
+    full = next(f for f in bare_plugin.fields if f["id"] == "hide_rules_priority")["help_text"]
+    short, paragraphs = ecm_fields.HELP_PARAGRAPHS["hide_rules_priority"]
+    split = " ".join([short] + [t + " " + p for t, p in paragraphs])
+    tags = set(re.findall(r"\[[A-Za-z]+(?::[a-zA-Z0-9]+)*\]", full))
+    assert tags and tags <= set(re.findall(r"\[[A-Za-z]+(?::[a-zA-Z0-9]+)*\]", split))
+
+
+def test_the_flat_form_keeps_the_full_help_text(bare_plugin):
+    full = next(f for f in bare_plugin.fields if f["id"] == "hide_rules_priority")["help_text"]
+    assert len(full) > len(ecm_fields.HELP_PARAGRAPHS["hide_rules_priority"][0]) * 3
