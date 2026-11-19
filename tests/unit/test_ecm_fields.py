@@ -254,6 +254,23 @@ def test_a_successful_scan_with_notices_is_reported_as_partial():
         assert repr(out) == before
 
 
+def test_a_warning_result_is_reported_as_partial():
+    # Validate Configuration returns "warning" when it finds problems; 0.34
+    # draws an unknown status green and records it as ok.
+    import ecm_parsing
+    out = ecm_parsing.status_for_dispatcharr({"status": "warning", "message": "2 problems"})
+    assert out["status"] == "partial"
+    assert ecm_parsing.status_for_dispatcharr({"status": "warning", "results": {}})["status"] == "partial"
+
+
+def test_placeholder_regex_notice_names_only_an_invalid_pattern():
+    import ecm_parsing
+    notice = ecm_parsing.placeholder_regex_notice("No Event (Today")
+    assert notice and "Placeholder Guide Titles" in notice
+    for fine in ("", "   ", None, "^No Event Today$", r"\bTBA\b"):
+        assert ecm_parsing.placeholder_regex_notice(fine) is None
+
+
 def test_run_returns_partial_only_after_its_own_success_checks(bare_plugin, monkeypatch):
     sent = []
     result = {"status": "success", "message": "Dry run: 3 channels", "results": {"notices": ["n"]}}

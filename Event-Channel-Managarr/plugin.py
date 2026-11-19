@@ -4492,6 +4492,13 @@ class Plugin:
             format_hint_text = None
             # Short forms for the one-line toast that Dry Run and Run Now show.
             scan_notices = []
+            # An invalid Placeholder Guide Titles pattern replaces no guide; say so
+            # in the toast, not only in the log (ecm_parsing.placeholder_regex_notice).
+            placeholder_notice = ecm_parsing.placeholder_regex_notice(
+                settings.get("placeholder_guide_titles", ""))
+            if placeholder_notice:
+                scan_notices.append(placeholder_notice)
+                logger.warning(f"{LOG_PREFIX} {placeholder_notice}")
             if self._get_bool_setting(settings, "manage_dummy_epg", False):
                 try:
                     from apps.epg.models import EPGSource as _EPGSource

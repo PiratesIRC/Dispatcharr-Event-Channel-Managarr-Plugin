@@ -1639,19 +1639,46 @@ def scheduler_threads_to_stop(threads, name, stop_attr, current=None):
 
 
 def status_for_dispatcharr(result):
-    """Mark a successful scan that ended with notices as "partial". Pure, never raises.
+    """Mark a successful scan that ended with notices, and a "warning" result,
+    as "partial". Pure, never raises.
 
     Dispatcharr 0.34 draws a "partial" result as an orange notification and a
     yellow badge in the action's run history, so a run whose summary carries a
     notice (a setting that matched nothing, kept guides, a better name format)
-    no longer looks like a plain success. 0.33 shows no status, so nothing
-    changes there. Apply this only where a result leaves the plugin: code
-    inside the plugin tests for "success". Returns ``result``, changed in place.
+    no longer looks like a plain success. 0.34 knows no "warning" status: it
+    draws one green and records it as ok, so Validate Configuration finding
+    problems looked like a pass. 0.33 shows no status, so nothing changes
+    there. Apply this only where a result leaves the plugin: code inside the
+    plugin tests for "success". Returns ``result``, changed in place.
     """
     try:
-        if (isinstance(result, dict) and result.get("status") == "success"
+        if not isinstance(result, dict):
+            return result
+        if result.get("status") == "warning":
+            result["status"] = "partial"
+        elif (result.get("status") == "success"
                 and (result.get("results") or {}).get("notices")):
             result["status"] = "partial"
     except Exception:
         pass
     return result
+
+
+def placeholder_regex_notice(text):
+    """The short toast notice for an invalid Placeholder Guide Titles pattern,
+    or None when the setting is empty or compiles. Pure, never raises.
+
+    The pattern is compiled the way the override check compiles it
+    (case-insensitive). An invalid pattern replaces no guide, which used to be
+    reported only in the log and by Validate Configuration.
+    """
+    try:
+        pattern = str(text or "").strip()
+        if not pattern:
+            return None
+        re.compile(pattern, re.IGNORECASE)
+        return None
+    except re.error as exc:
+        return f"Placeholder Guide Titles regex is invalid and was ignored ({exc})"
+    except Exception:
+        return None
