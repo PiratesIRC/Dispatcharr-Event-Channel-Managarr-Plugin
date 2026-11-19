@@ -38,6 +38,7 @@ import sys as _sys
 _PLUGIN_DIR = os.path.dirname(os.path.abspath(__file__))
 if _PLUGIN_DIR not in _sys.path:
     _sys.path.insert(0, _PLUGIN_DIR)
+import ecm_fields
 import ecm_parsing
 import ecm_profiles
 try:
@@ -633,6 +634,22 @@ class Plugin:
             "help_text": _USAGE_HELP,
         })
         return fields_list
+
+    def get_fields(self, context=None):
+        """The settings form for Dispatcharr 0.34 and later, in collapsible sections.
+
+        Dispatcharr 0.34 calls this at discovery instead of reading ``fields``;
+        0.33 and earlier never call it and keep the flat form, which draws there
+        without unknown field types. The layout is ``ecm_fields.sectioned_fields``.
+        The loader does not catch an exception raised here, so any failure falls
+        back to the flat form rather than breaking discovery of the plugin.
+        """
+        flat = self.fields
+        try:
+            return ecm_fields.sectioned_fields(flat)
+        except Exception as exc:
+            LOGGER.warning(f"{LOG_PREFIX} Sectioned settings form failed, using the flat form: {exc}")
+            return flat
 
     # Actions for Dispatcharr UI
     # Actions metadata mirrors plugin.json (which drives the Dispatcharr UI).

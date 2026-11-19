@@ -118,7 +118,7 @@ in `/data/exports` lists every setting you had under `Settings:` in its header l
 
 ## Settings Reference
 
-Settings are grouped into six sections in the UI.
+Settings are grouped into seven sections in the UI. On Dispatcharr 0.34 and later each section can be collapsed; Duplicates, Scheduling & Export, Advanced and Anonymous Usage Counts start collapsed, so expand them to see their settings.
 
 ### 📍 Scope
 
