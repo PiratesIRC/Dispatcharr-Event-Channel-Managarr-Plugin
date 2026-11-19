@@ -499,6 +499,8 @@ clashes with a non-dummy source, and prints the mapping in use.
 | **💾 Save Schedule** | Filled green | Save all settings and update/activate the scheduled run times. |
 | **👁️ Dry Run** | Outline cyan | Preview which channels would be hidden or shown without making any changes. Pure preview: never creates/modifies the managed dummy EPG source. Runs synchronously; the button's loading spinner covers the busy state and a single notification appears on completion with a compact one-line summary (`Dry run: N channels \| X hide / Y show \| EPG +A/-D \| CSV: <file>`). Full details land in the CSV header and logs. |
 | **▶️ Run Now** | Filled green, with confirm | Immediately scan and apply visibility updates based on the current EPG data. Same synchronous + compact-notification behavior as Dry Run. |
+
+On Dispatcharr 0.34 and later, a Dry Run, Run Now or automatic rescan after an M3U refresh that ends with a notice, such as a setting that matched nothing or guides that visible channels kept, is reported as partial: the notification is orange instead of green, and its entry in the run history under Tasks carries a yellow partial badge. The notice text is at the end of the summary line.
 | **🧹 Remove EPG from Hidden** | Filled red, with confirm | Delete all EPG data from channels that are currently hidden/disabled in the selected profile(s). Destructive; requires confirmation. |
 | **🗑️ Clear CSV Exports** | Filled red, with confirm | Delete all CSV export files created by this plugin to free up disk space. Requires confirmation. |
 | **🧼 Cleanup Orphaned Tasks** | Outline orange, with confirm | Remove any orphaned Celery periodic tasks from old plugin versions. Requires confirmation. |

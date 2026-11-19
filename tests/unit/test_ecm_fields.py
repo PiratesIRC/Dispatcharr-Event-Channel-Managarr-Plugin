@@ -235,3 +235,33 @@ def test_the_split_hide_rules_help_keeps_every_tag_the_full_text_names(bare_plug
 def test_the_flat_form_keeps_the_full_help_text(bare_plugin):
     full = next(f for f in bare_plugin.fields if f["id"] == "hide_rules_priority")["help_text"]
     assert len(full) > len(ecm_fields.HELP_PARAGRAPHS["hide_rules_priority"][0]) * 3
+
+
+def test_a_successful_scan_with_notices_is_reported_as_partial():
+    import ecm_parsing
+    with_notice = {"status": "success", "message": "m", "results": {"notices": ["Set but matched nothing: X"]}}
+    assert ecm_parsing.status_for_dispatcharr(with_notice)["status"] == "partial"
+    for unchanged in (
+        {"status": "success", "results": {"notices": []}},
+        {"status": "success", "results": {}},
+        {"status": "success"},
+        {"status": "error", "results": {"notices": ["n"]}},
+        None,
+        "text",
+    ):
+        before = repr(unchanged)
+        out = ecm_parsing.status_for_dispatcharr(unchanged)
+        assert repr(out) == before
+
+
+def test_run_returns_partial_only_after_its_own_success_checks(bare_plugin, monkeypatch):
+    sent = []
+    result = {"status": "success", "message": "Dry run: 3 channels", "results": {"notices": ["n"]}}
+    monkeypatch.setattr(bare_plugin, "_call_action", lambda *a: dict(result), raising=False)
+    monkeypatch.setattr(bare_plugin, "saved_settings", {}, raising=False)
+    import ecm_plugin_under_test as module
+    monkeypatch.setattr(module, "send_websocket_update", lambda *a: sent.append(a[2]["message"]))
+    out = bare_plugin.run("dry_run", {}, {"settings": {}})
+    assert out["status"] == "partial"
+    # The plugin's own notification still saw "success" and used the success mark.
+    assert sent and sent[0].startswith("[+]")

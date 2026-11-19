@@ -1636,3 +1636,22 @@ def scheduler_threads_to_stop(threads, name, stop_attr, current=None):
         except Exception:
             continue
     return found
+
+
+def status_for_dispatcharr(result):
+    """Mark a successful scan that ended with notices as "partial". Pure, never raises.
+
+    Dispatcharr 0.34 draws a "partial" result as an orange notification and a
+    yellow badge in the action's run history, so a run whose summary carries a
+    notice (a setting that matched nothing, kept guides, a better name format)
+    no longer looks like a plain success. 0.33 shows no status, so nothing
+    changes there. Apply this only where a result leaves the plugin: code
+    inside the plugin tests for "success". Returns ``result``, changed in place.
+    """
+    try:
+        if (isinstance(result, dict) and result.get("status") == "success"
+                and (result.get("results") or {}).get("notices")):
+            result["status"] = "partial"
+    except Exception:
+        pass
+    return result

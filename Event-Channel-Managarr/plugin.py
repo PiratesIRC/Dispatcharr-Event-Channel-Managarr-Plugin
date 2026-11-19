@@ -849,7 +849,8 @@ class Plugin:
                     "message": f"[{emoji}] {notify_msg}"
                 })
 
-            return result
+            # Last, so every check above and inside the scan still sees "success".
+            return ecm_parsing.status_for_dispatcharr(result)
 
         except Exception as e:
             LOGGER.error(f"{LOG_PREFIX} Error in plugin run: {str(e)}")
