@@ -2,7 +2,8 @@
 
 Dispatcharr 0.34.0 added collapsible ``section`` fields and a ``rows`` height
 for ``text`` fields. Both need ``manifest_version`` 1 in ``plugin.json``, and
-Dispatcharr 0.33 and earlier draw an unknown field type as a text box. So the
+Dispatcharr 0.33 and earlier drop a field of any type they do not know, with
+only a log warning (0.33.0 ``loader.py`` ``_normalize_fields``). So the
 plugin keeps its flat form in ``Plugin.fields``, which every version reads, and
 builds the sectioned copy here for ``Plugin.get_fields``, which only 0.34 and
 later call. The 0.34 form also draws six text settings as pick lists and tables
