@@ -25,10 +25,10 @@ A Dispatcharr plugin that automatically manages channel visibility based on EPG 
 
 ## Features
 
-**Decides visibility from the channel name.** A prioritised, fully customisable
-rule list decides what to hide and in what order, with the first matching rule
-winning. Rules cover a past date, a date too far ahead, a name that never carries a
-date at all, a name too short to describe an event, the wrong day of the week, a
+**Decides visibility from the channel name.** A fully customisable rule list
+decides what to hide: a channel that matches any rule in it is hidden, and the
+first rule that matches is named as the reason. Rules cover a past date, a date
+too far ahead, a name that never carries a date at all, a name too short to describe an event, the wrong day of the week, a
 blank or placeholder name, and a pattern you supply yourself. A name carrying a
 clock time but no date is hidden once that event's inferred end, plus a grace
 period you set, has passed.

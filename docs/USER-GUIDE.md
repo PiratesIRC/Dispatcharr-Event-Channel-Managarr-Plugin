@@ -120,7 +120,7 @@ in `/data/exports` lists every setting you had under `Settings:` in its header l
 
 Settings are grouped into seven sections in the UI. On Dispatcharr 0.34 and later each section can be collapsed; Duplicates, Scheduling & Export, Advanced and Anonymous Usage Counts start collapsed, so expand them to see their settings.
 
-On Dispatcharr 0.34 and later, six settings are picked from lists instead of typed: **Channel Profiles**, **Channel Groups**, **Stream Name Groups** and **Scheduled Run Times** are pick lists, and **Default Event Day by Group** and **Per-Group EPG Sources** are tables with one row per group. The first time you open the form, they show what you had typed before. The profile and group lists are read when the plugin loads, and the group list holds only groups that contain at least one channel; after creating a profile or adding channels to a new group, press the refresh control on the Plugins page to see it. Scheduled Run Times offers every five minutes. On Dispatcharr 0.33 and earlier these six settings stay text boxes, written as the tables below describe.
+On Dispatcharr 0.34 and later, seven settings are picked from lists instead of typed: **Channel Profiles**, **Channel Groups**, **Stream Name Groups** and **Scheduled Run Times** are pick lists, **Default Event Day by Group** and **Per-Group EPG Sources** are tables with one row per group, and **Hide Rules Priority** is a table with one row per rule. The first time you open the form, they show what you had typed before. The profile and group lists are read when the plugin loads, and the group list holds only groups that contain at least one channel; after creating a profile or adding channels to a new group, press the refresh control on the Plugins page to see it. Scheduled Run Times offers every five minutes. On Dispatcharr 0.33 and earlier these seven settings stay text boxes, written as the tables below describe.
 
 ### 📍 Scope
 
@@ -136,7 +136,7 @@ On Dispatcharr 0.34 and later, six settings are picked from lists instead of typ
 
 | Setting | Type | Default | Description |
 | :--- | :--- | :--- | :--- |
-| **📜 Hide Rules Priority** | `text` | (see default) | Define rules for hiding channels in priority order. First match wins. See "Hide Rule Logic" below. |
+| **📜 Hide Rules Priority** | table (0.34+), `text` (0.33) | (see default) | The rules that hide a channel. On 0.34, one row per rule: pick the **Rule**, and optionally a **Number** and, for `[PastDate]` only, **Grace hours**; leaving a number on **Default** uses the rule's own default. On 0.33, comma-separated tags such as `[PastDate:0:4h]`. A channel that matches any rule is hidden; the order only decides which rule is named as the reason. An empty table or text box applies the default rules. See "Hide Rule Logic" below. |
 | **🚫 Regex: Channel Names to Ignore** | `text` | - | Regular expression to match channel names that should be skipped entirely. |
 | **💤 Regex: Mark Channel as Inactive** | `text` | - | Regular expression to hide channels. Processed as part of the `[InactiveRegex]` hide rule. For example, `CANCELL?ED` hides a channel whose name contains CANCELLED or CANCELED, in any case. Before v1.26.2621024 a backslash sequence such as `\b` (word boundary) never matched in this one field, so a pattern like `\bCANCELLED\b` hid nothing; it now behaves as it does in the other two regex fields. |
 | **✅ Regex: Force Visible Channels** | `text` | - | Regular expression to match channels that should ALWAYS be visible, overriding any hide rules. Use this for year-round channels that sit in an event group, such as a league's RedZone or Network feed, which carry no date and are otherwise hidden by `[UndatedAge:N]`. |
@@ -203,7 +203,9 @@ Two exports are covered, because the plugin writes two kinds: the scan reports n
 | **📊 Share Anonymous Usage Counts** | `boolean` | on | Sends this plugin's Visibility Changes total and a random id to the plugin author's counter. See [Anonymous Usage Counts](#anonymous-usage-counts). |
 
 ## Hide Rule Logic
-The plugin checks channels against the **Hide Rules Priority** list in the order you define. The first rule that matches is applied, and the channel is marked to be hidden. If no rules match, the channel is marked to be shown.
+The plugin checks each channel against the **Hide Rules Priority** rules in the order you define. A channel that matches any rule is marked to be hidden; if no rule matches, it is marked to be shown. Every rule can only hide a channel, so the order never changes which channels are hidden: it decides only which rule is named as the reason in the CSV `reason` column and the run summary, because checking stops at the first rule that matches.
+
+On Dispatcharr 0.34 and later the rules are a table with one row per rule. **Rule** picks the tag, **Number** is the number a tag takes after its colon (leave it on **Default** for the rule's own default), and **Grace hours** is the `Xh` part of `[PastDate:days:Xh]`, used by `[PastDate]` only. The table cannot move a row up or down: to change the order, change the **Rule** in each row. The first time you open the form, the table shows the tags you had typed before.
 
 **Default Rules:**
 `[InactiveRegex],[BlankName],[WrongDayOfWeek],[NoEventPattern],[EmptyPlaceholder],[PastDate:0],[FutureDate:2],[UndatedEnded],[UndatedAge:2],[ShortDescription],[ShortChannelName]`

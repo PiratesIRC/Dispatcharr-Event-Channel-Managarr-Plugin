@@ -175,11 +175,10 @@ def test_section_explanations_are_kept_at_the_top_of_their_section(bare_plugin):
 
 def test_short_text_fields_get_a_smaller_starting_height(bare_plugin):
     rows = {f["id"]: f.get("rows") for f in bare_plugin.get_fields({}) if f["type"] == "text"}
-    assert rows["hide_rules_priority"] == 3
     assert rows["regex_force_visible"] == 2
     assert rows["placeholder_guide_titles"] == 2
     assert rows["regex_channels_to_ignore"] == 2
-    # The six settings drawn as pick lists and tables are no longer text fields.
+    # The seven settings drawn as pick lists and tables are no longer text fields.
     assert not set(rows) & set(ecm_fields.NEW_ID_BY_OLD_ID)
 
 
@@ -223,18 +222,120 @@ def test_long_help_texts_are_split_into_titled_paragraphs_below_the_field(bare_p
         assert all(f["type"] == "info" and f["section"] == field["section"] for f in follow)
 
 
-def test_the_split_hide_rules_help_keeps_every_tag_the_full_text_names(bare_plugin):
+def test_every_tag_the_flat_help_names_is_offered_in_the_hide_rules_table(bare_plugin, names):
     import re
     full = next(f for f in bare_plugin.fields if f["id"] == "hide_rules_priority")["help_text"]
-    short, paragraphs = ecm_fields.HELP_PARAGRAPHS["hide_rules_priority"]
-    split = " ".join([short] + [t + " " + p for t, p in paragraphs])
-    tags = set(re.findall(r"\[[A-Za-z]+(?::[a-zA-Z0-9]+)*\]", full))
-    assert tags and tags <= set(re.findall(r"\[[A-Za-z]+(?::[a-zA-Z0-9]+)*\]", split))
+    named = set(re.findall(r"\[([A-Za-z]+)(?::[a-zA-Z0-9]+)*\]", full))
+    table = {f["id"]: f for f in bare_plugin.get_fields({})}["hide_rule_rows"]
+    offered = {o["value"] for o in table["columns"][0]["options"]}
+    assert named and named == {name for name, _ in ecm_fields.HIDE_RULE_TAGS} == offered
 
 
 def test_the_flat_form_keeps_the_full_help_text(bare_plugin):
     full = next(f for f in bare_plugin.fields if f["id"] == "hide_rules_priority")["help_text"]
-    assert len(full) > len(ecm_fields.HELP_PARAGRAPHS["hide_rules_priority"][0]) * 3
+    assert len(full) > len(ecm_fields.HELP_PARAGRAPHS["hide_rule_rows_about"][0]) * 3
+
+
+def test_no_help_text_claims_the_first_rule_decides_whether_a_channel_hides(bare_plugin):
+    full = next(f for f in bare_plugin.fields if f["id"] == "hide_rules_priority")["help_text"]
+    short, paragraphs = ecm_fields.HELP_PARAGRAPHS["hide_rule_rows_about"]
+    for text in [full, short] + [p for _, p in paragraphs]:
+        assert "trust most" not in text
+        assert "first tag that matches hides" not in text
+
+
+# The hide rules table on Dispatcharr 0.34.
+
+DEFAULT_RULES = "[InactiveRegex],[BlankName],[WrongDayOfWeek],[NoEventPattern],[EmptyPlaceholder],[PastDate:0],[FutureDate:2],[UndatedEnded],[UndatedAge:2],[ShortDescription],[ShortChannelName]"
+
+
+def _parsed(bare_plugin, text):
+    return bare_plugin._parse_hide_rules(text, logging.getLogger("test"))
+
+
+@pytest.mark.parametrize("text", [
+    DEFAULT_RULES,
+    "[PastDate:0:4h],[FutureDate:7],[PreEvent:30],[UndatedEnded:3],[NoEPG]",
+    "[WrongDayOfWeek:0], [ShortDescription:20] ,[ShortChannelName:40]",
+    "[BlankName]\n[PastDate:1]\n[NumberOnly]",  # the old newline form
+    "[FutureDate:x],[PastDate:1:2:3],[Unknown:5],junk,[InactiveRegex]",  # what the parser skips stays skipped
+])
+def test_rules_written_back_from_the_table_parse_the_same_as_the_text(bare_plugin, text):
+    rows = ecm_fields.rows_from_hide_rules(text)
+    assert _parsed(bare_plugin, ecm_fields.hide_rules_from_rows(rows)) == _parsed(bare_plugin, text)
+
+
+def test_hide_rule_rows_keep_order_number_and_grace_hours():
+    rows = ecm_fields.rows_from_hide_rules("[InactiveRegex],[PastDate:0:4h],[FutureDate:2],junk")
+    assert rows == [
+        {"rule": "InactiveRegex", "number": "default", "hours": "default"},
+        {"rule": "PastDate", "number": "0", "hours": "4"},
+        {"rule": "FutureDate", "number": "2", "hours": "default"},
+    ]
+
+
+def test_hide_rules_from_rows_drops_what_a_rule_cannot_use():
+    rows = [
+        {"rule": "PastDate", "number": "default", "hours": "6"},  # hours with no days: days 0
+        {"rule": "FutureDate", "number": "3", "hours": "6"},  # hours only for PastDate
+        {"rule": "NoEPG", "number": "5"},  # takes no number
+        {"rule": "UndatedAge"},  # a row added in the form has no number keys
+        {"rule": "ShortDescription", "number": None, "hours": None},
+        {"rule": "", "number": "4"},  # no rule: dropped
+        {},
+    ]
+    assert ecm_fields.hide_rules_from_rows(rows) == (
+        "[PastDate:0:6h],[FutureDate:3],[NoEPG],[UndatedAge],[ShortDescription]")
+    assert ecm_fields.hide_rules_from_rows([]) == ""  # the parser then applies the defaults
+
+
+def test_hide_rules_table_defaults_to_the_saved_text(bare_plugin, names):
+    fields = {f["id"]: f for f in bare_plugin.get_fields(
+        {"settings": {"hide_rules_priority": "[PastDate:1:3h],[Custom:9],[FutureDate:999]"}})}
+    assert "hide_rules_priority" not in fields
+    table = fields["hide_rule_rows"]
+    assert table["type"] == "table" and table["label"] == ""
+    assert table["default"] == [
+        {"rule": "PastDate", "number": "1", "hours": "3"},
+        {"rule": "Custom", "number": "9", "hours": "default"},
+        {"rule": "FutureDate", "number": "999", "hours": "default"},
+    ]
+    rule, number, hours = table["columns"]
+    assert [c["type"] for c in table["columns"]] == ["select", "select", "select"]
+    # A saved value that is not offered is added, or Dispatcharr refuses the save.
+    assert "Custom" in {o["value"] for o in rule["options"]}
+    assert {o["label"] for o in rule["options"]} >= {"[PastDate] (days)", "[NoEPG]"}
+    number_values = [o["value"] for o in number["options"]]
+    assert number_values[0] == "default" and "999" in number_values and "1440" in number_values
+    assert number_values.index("60") < number_values.index("999")
+    assert [o["value"] for o in hours["options"]][:3] == ["default", "0", "1"]
+    about = fields["hide_rule_rows_about"]
+    assert about["type"] == "info" and about["label"].endswith("Hide Rules Priority")
+
+
+def test_a_blank_saved_text_shows_the_default_rules(bare_plugin, names):
+    table = {f["id"]: f for f in bare_plugin.get_fields(
+        {"settings": {"hide_rules_priority": "  "}})}["hide_rule_rows"]
+    assert ecm_fields.hide_rules_from_rows(table["default"]) == bare_plugin.DEFAULT_HIDE_RULES
+
+
+def test_a_row_saved_in_the_table_is_offered_in_its_pick_lists(bare_plugin, names):
+    table = {f["id"]: f for f in bare_plugin.get_fields({"settings": {
+        "hide_rule_rows": [{"rule": "Gone", "number": "7777", "hours": "500"}]}})}["hide_rule_rows"]
+    rule, number, hours = table["columns"]
+    assert "Gone" in {o["value"] for o in rule["options"]}
+    assert "7777" in {o["value"] for o in number["options"]}
+    assert "500" in {o["value"] for o in hours["options"]}
+
+
+def test_legacy_settings_writes_the_hide_rules_table_back_into_the_text():
+    out = ecm_fields.legacy_settings({
+        "hide_rule_rows": [{"rule": "BlankName"}, {"rule": "PastDate", "number": "0", "hours": "4"}],
+        "hide_rules_priority": "stale",
+    })
+    assert out["hide_rules_priority"] == "[BlankName],[PastDate:0:4h]"
+    untouched = ecm_fields.legacy_settings({"hide_rule_rows": "oops", "hide_rules_priority": "[NoEPG]"})
+    assert untouched["hide_rules_priority"] == "[NoEPG]"
 
 
 def test_a_successful_scan_with_notices_is_reported_as_partial():

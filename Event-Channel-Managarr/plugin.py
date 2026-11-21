@@ -435,7 +435,7 @@ class Plugin:
                 "type": "text",
                 "default": self.DEFAULT_HIDE_RULES,
                 "placeholder": "[BlankName],[NoEventPattern],[EmptyPlaceholder],[PastDate:0],[FutureDate:2],[UndatedAge:2],[ShortDescription],[ShortChannelName]",
-                "help_text": "The rules that hide a channel, written as comma-separated tags. They are read left to right and the first tag that matches hides the channel, so put the rules you trust most first. A tag left out of this list is never applied. Some tags take a number after a colon, for example [PastDate:0] or [UndatedAge:2]. Available tags: [NoEPG], [BlankName], [WrongDayOfWeek], [WrongDayOfWeek:days], [NoEventPattern], [EmptyPlaceholder], [ShortDescription], [ShortDescription:chars], [ShortChannelName], [ShortChannelName:chars], [NumberOnly], [PastDate:days], [PastDate:days:Xh], [FutureDate:days], [PreEvent], [PreEvent:minutes], [UndatedAge:days], [UndatedEnded], [UndatedEnded:hours], [InactiveRegex]. [PreEvent] applies to a name that carries a date and a clock time: it hides the channel until that many minutes before the event starts, 15 unless you give it a number, read in the Channel Name Event Timezone. It is not in the default list. [UndatedEnded] applies to a name that carries a clock time but no date: it hides the channel once the first-seen date plus that time plus the event duration plus the grace period has passed, and uses the Undated Event Grace Period setting unless you give it a number of hours. [ShortDescription] uses 15 characters and [ShortChannelName] 25 unless you give them a number. [WrongDayOfWeek] allows one day either side of the named day unless you give it a number; [WrongDayOfWeek:0] means that day only.",
+                "help_text": "The rules that hide a channel, written as comma-separated tags. A channel that matches any tag in the list is hidden, whatever the order; the order decides only which tag is named as the reason in the CSV and the run summary, because the first tag that matches is the one reported. A tag left out of this list is never applied. Some tags take a number after a colon, for example [PastDate:0] or [UndatedAge:2]. Available tags: [NoEPG], [BlankName], [WrongDayOfWeek], [WrongDayOfWeek:days], [NoEventPattern], [EmptyPlaceholder], [ShortDescription], [ShortDescription:chars], [ShortChannelName], [ShortChannelName:chars], [NumberOnly], [PastDate:days], [PastDate:days:Xh], [FutureDate:days], [PreEvent], [PreEvent:minutes], [UndatedAge:days], [UndatedEnded], [UndatedEnded:hours], [InactiveRegex]. [PreEvent] applies to a name that carries a date and a clock time: it hides the channel until that many minutes before the event starts, 15 unless you give it a number, read in the Channel Name Event Timezone. It is not in the default list. [UndatedEnded] applies to a name that carries a clock time but no date: it hides the channel once the first-seen date plus that time plus the event duration plus the grace period has passed, and uses the Undated Event Grace Period setting unless you give it a number of hours. [ShortDescription] uses 15 characters and [ShortChannelName] 25 unless you give them a number. [WrongDayOfWeek] allows one day either side of the named day unless you give it a number; [WrongDayOfWeek:0] means that day only.",
             },
             {
                 "id": "regex_channels_to_ignore",
@@ -651,7 +651,7 @@ class Plugin:
         The loader does not catch an exception raised here, so any failure falls
         back to the flat form rather than breaking discovery of the plugin.
 
-        Six text settings are drawn as pick lists and tables under new ids
+        Seven text settings are drawn as pick lists and tables under new ids
         (``ecm_fields.pick_list_fields``). ``_uses_pick_lists`` tells ``run`` to
         write those back into the old text settings; it stays False on 0.33,
         which never calls this, and on the flat fallback.
@@ -2214,7 +2214,8 @@ class Plugin:
         """Check if channel should be hidden based on hide rules priority. Returns (should_hide, reason)"""
         channel_name = self._get_effective_name(channel, settings, logger)
 
-        # Process rules in order - first match wins
+        # Process rules in order. Every rule only hides, so the order changes the
+        # reported reason (the first match), never whether the channel is hidden.
         for rule_name, rule_param in hide_rules:
             matches, reason = self._check_hide_rule(rule_name, rule_param, channel, channel_name, logger, settings)
             if matches:
