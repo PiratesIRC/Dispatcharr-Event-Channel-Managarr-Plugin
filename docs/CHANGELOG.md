@@ -7,6 +7,27 @@ they are the authoritative record; this page is an index.
 Versions are calendar-based: `Major.YY.DDDHHMM`, where `DDD` is the day of the year
 and `HHMM` the UTC time of the version bump. A higher version is always later.
 
+## 1.26.3251903 (2026-11-21)
+
+### Added
+
+- **A settings form built for Dispatcharr 0.34.** On 0.34 and later the settings are grouped into seven sections that open and close; Duplicates, Scheduling & Export, Advanced and Anonymous Usage Counts start closed. Channel Profiles, Channel Groups, Stream Name Groups and Scheduled Run Times are picked from lists instead of typed, and Default Event Day by Group, Per-Group EPG Sources and Hide Rules Priority are tables. Hide Rules Priority has one row per rule: pick the Rule, and optionally a Number and, for `[PastDate]` only, Grace hours; Default uses the rule's own default. The first time you open the form it shows what you had typed before. The long help texts are split into short titled paragraphs. On Dispatcharr 0.33 and earlier the form is unchanged.
+- **A new setting, Regex: Placeholder Guide Titles.** With Replace Guides That Have No Programmes on, a guide whose every title in the next 24 hours matches this pattern, such as `No Event Today`, is treated as blank and replaced. An invalid pattern is named in the Dry Run and Run Now notification.
+- **The run result names the guides that visible channels kept.** The result, the CSV header and Validate Configuration list the EPG sources that visible channels still use instead of the plugin's dummy guide, including channels kept visible by Regex Force Visible. A hint also appears when another Channel Name Format would read your channel names far better, and Validate warns about a Per-Group EPG Sources line that holds more than one `=`.
+
+### Changed
+
+- **On Dispatcharr 0.34, a result with a warning is reported as partial.** A Dry Run, Run Now or automatic rescan after an M3U refresh that ends with a notice, and a Validate Configuration that finds a problem, show an orange notification and a yellow partial badge in the run history instead of a plain success.
+- **The automatic rescan after an M3U refresh names its CSV by full path** in its result, so the run history on 0.34 shows where the file is when scheduled CSV export is on.
+- **Override Empty Existing EPG is now labelled Replace Guides That Have No Programmes**, which is what it does. The setting id is unchanged, so your value is kept.
+- **The help text says what the order of the hide rules does.** A channel that matches any rule is hidden whatever the order; the order decides only which rule is named as the reason in the CSV and the run summary. The earlier text said to put the rules you trust most first, which changed nothing about which channels were hidden.
+- **Installing from the Plugin Hub now needs Dispatcharr 0.34.0 or later**, because the plugin declares the 0.34 manifest format. On 0.33 and earlier, install the zip from the GitHub release page instead; there the plugin keeps the earlier settings form.
+
+### Fixed
+
+- **A plugin refresh no longer leaves an extra scheduler running.** Each refresh on the Plugins page used to start a new scheduler thread while the old one kept running the old code, so after two refreshes one worker held three. The old thread is now stopped. A thread left over from an earlier version is named by Check Scheduler and goes away when the container restarts.
+- **The timezone dropdown includes the default, US/Eastern.**
+
 ## 1.26.3111512 (2026-11-07)
 
 ### Fixed
