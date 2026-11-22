@@ -303,7 +303,39 @@ UK_LONDON = Profile(
     release_unclaimed=True,
 )
 
-PROFILES = (DAZN_GMT, UK_LONDON, US_ET)
+# PDC darts, played in England, named by one provider as
+# "PDC 04 | 2026 Grand Slam of Darts | Day 9 Evening Session Board 2 | Sun 22nd Nov 7:00PM".
+# The clock time is UK time with no "UK" next to it, so UK_LONDON does not claim it and
+# the shared US source drew it five hours late (measured 2026-11-22). A placeholder such
+# as "PDC 05: No Event Scheduled" has no pipe and no clock time, so it is not claimed and
+# release_unclaimed sends a reused slot back to the shared source.
+_PDC_MONTH = (r"Jan(?:uary)?|Feb(?:ruary)?|Mar(?:ch)?|Apr(?:il)?|May|June?|July?"
+              r"|Aug(?:ust)?|Sep(?:t(?:ember)?)?|Oct(?:ober)?|Nov(?:ember)?|Dec(?:ember)?")
+
+PDC_LONDON = Profile(
+    key="pdc_london",
+    source_name="ECM UK Darts Dummy",
+    selector=rf"^\s*PDC\s*\d+\s*\|.*\|.*\b{_UK_CLOCK}(?![A-Za-z])",
+    # Everything between the slot label and the last pipe, so the event and the
+    # session both reach the guide.
+    title_pattern=r"^\s*PDC\s*\d+\s*\|\s*(?<title>.+?)\s*\|[^|]*$",
+    # "22nd Nov": Dispatcharr's dummy renderer accepts a month name or abbreviation.
+    date_pattern=rf"\b(?<day>\d{{1,2}})(?:st|nd|rd|th)?\s+(?<month>{_PDC_MONTH})\b",
+    time_pattern=US_ET.time_pattern,
+    timezone="Europe/London",
+    output_timezone="America/Chicago",
+    program_duration_minutes=300,
+    include_date=False,
+    title_template="{title}",
+    upcoming_title_template="Upcoming at {starttime}: {title}",
+    ended_title_template="Ended at {endtime}: {title}",
+    fallback_title_template="",
+    fallback_description_template=_FALLBACK_DESCRIPTION,
+    is_default=False,
+    release_unclaimed=True,
+)
+
+PROFILES = (DAZN_GMT, UK_LONDON, PDC_LONDON, US_ET)
 
 
 # --- settings and timezone resolution (pure) ------------------------------------
@@ -417,7 +449,8 @@ def claimed_targets(names, profiles):
 # lifecycle a mapped source gets) would strand every group that is NOT mapped.
 # The second is owned by the code profile above and is selected by a channel-name
 # regex, so pointing a group at it would give one source two different owners.
-RESERVED_SOURCE_NAMES = ("ECM Managed Dummy", "DAZN PPV Dummy (GMT)", "ECM UK Dummy")
+RESERVED_SOURCE_NAMES = ("ECM Managed Dummy", "DAZN PPV Dummy (GMT)", "ECM UK Dummy",
+                         "ECM UK Darts Dummy")
 
 
 def parse_group_source_map(raw):

@@ -37,6 +37,7 @@ def test_no_profile_key_collides_with_the_unclaimed_sentinel():
     ("us_et", "ECM Managed Dummy"),
     ("dazn_gmt", "DAZN PPV Dummy (GMT)"),
     ("uk_london", "ECM UK Dummy"),
+    ("pdc_london", "ECM UK Darts Dummy"),
 ])
 def test_source_names_are_pinned(key, expected_name):
     """EPGSource.name is unique=True and is how sources are looked up. A changed
@@ -206,7 +207,8 @@ def test_us_et_title_does_not_claim_an_ordinary_numeric_channel_name(name):
 
 def test_route_returns_a_bucket_per_profile_plus_unclaimed():
     result = ecm_profiles.route(["PPV EVENT 01: Something"])
-    assert set(result) == {"dazn_gmt", "uk_london", "us_et", ecm_profiles.UNCLAIMED}
+    assert set(result) == {"dazn_gmt", "uk_london", "pdc_london", "us_et",
+                           ecm_profiles.UNCLAIMED}
 
 
 def test_dazn_bucket_is_exactly_the_gmt_bearing_names():
