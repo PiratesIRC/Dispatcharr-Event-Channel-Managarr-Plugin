@@ -9,11 +9,10 @@
 """
 from datetime import date, datetime
 
-import pytest
-import pytz
-
 import ecm_parsing
 import ecm_profiles
+import pytest
+import pytz
 
 CENTRAL = pytz.timezone("America/Chicago")
 SUNDAY = 6
