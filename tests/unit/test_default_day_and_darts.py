@@ -133,3 +133,14 @@ def test_the_committed_fixture_is_not_claimed_by_the_darts_profile():
     fixture = Path(__file__).resolve().parents[1] / "fixtures" / "us_ppv_channel_names.txt"
     names = fixture.read_text(encoding="utf-8").splitlines()
     assert ecm_profiles.route(names)["pdc_london"] == []
+
+
+def test_the_age_count_from_the_event_day_keeps_sunday_games_visible():
+    """[UndatedAge:4] on the Sunday run: from first seen (Tuesday) the age is 5 and
+    hides; from the anchored event day (that Sunday) it is 0."""
+    first_seen = date(2026, 11, 17)
+    today = date(2026, 11, 22)
+    anchor = ecm_parsing.resolve_default_day_date(
+        first_seen, SUNDAY, 13, 0, "US/Eastern", _seen(2026, 11, 17, 19, 56))
+    assert (today - first_seen).days > 4
+    assert (today - anchor).days == 0

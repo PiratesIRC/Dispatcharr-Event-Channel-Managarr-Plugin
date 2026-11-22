@@ -336,3 +336,20 @@ def test_the_rule_reads_the_group_default_event_day():
     assert "group_default_event_day" in branch
     assert "resolve_default_day_date" in branch
     assert "first_seen_at" in branch
+
+
+def test_the_age_rule_counts_from_the_event_day():
+    """Any matching tag hides a channel, so [UndatedAge:N] must also anchor a
+    dayless name on the group's Default Event Day, or the slate first seen on a
+    Tuesday is still hidden on Sunday (5 days > 4, measured 2026-11-22)."""
+    branch = _rule_branch("UndatedAge")
+    assert "group_default_event_day" in branch
+    assert "resolve_default_day_date" in branch
+    assert "resolve_named_day_date" in branch
+    body = _rule_branch_nodes("UndatedAge")
+    assigned = _assignments(body)
+    age_values = assigned.get("age_days", [])
+    assert age_values, "the rule no longer computes age_days"
+    names = {n.id for v in age_values for n in ast.walk(v) if isinstance(n, ast.Name)}
+    assert "event_date" in names and "first_seen" not in names, (
+        "age_days must be counted from the anchored event_date, not first_seen")

@@ -2029,9 +2029,50 @@ class Plugin:
                     local_tz = pytz.timezone(self.DEFAULT_TIMEZONE)
                 today = datetime.now(local_tz).date()
 
-            age_days = (today - first_seen).days
+            # Count the age from the event's day when one can be worked out: the day
+            # the name states, or else the channel group's Default Event Day, resolved
+            # by the same ecm_parsing helpers [UndatedEnded] uses. Counting from the
+            # first-seen date alone hid a whole NFL slate on game day: first seen on
+            # Tuesday, five days old on Sunday, past [UndatedAge:4] (2026-11-22). Any
+            # matching tag hides a channel, so fixing [UndatedEnded] alone left it hidden.
+            event_date = first_seen
+            named_day = ecm_parsing.extract_named_day_of_week(channel_name)
+            anchored_date = None
+            if named_day is not None:
+                anchored_date = ecm_parsing.resolve_named_day_date(first_seen, named_day)
+            else:
+                default_days, _problems = ecm_parsing.parse_group_default_days(
+                    settings.get("group_default_event_day"))
+                group = getattr(getattr(channel, "channel_group", None), "name", None)
+                default_day = (default_days.get(str(group).strip().casefold())
+                               if group and default_days else None)
+                if default_day is not None:
+                    time_pattern, tz_name, _duration = self._undated_event_properties(
+                        channel, settings, logger)
+                    parsed_time = ecm_parsing.extract_time_of_day(channel_name, time_pattern)
+                    seen_at = None
+                    try:
+                        if entry.get('first_seen_at'):
+                            seen_at = datetime.fromisoformat(entry['first_seen_at'])
+                    except (TypeError, ValueError):
+                        seen_at = None
+                    if parsed_time is not None:
+                        anchored_date = ecm_parsing.resolve_default_day_date(
+                            first_seen, default_day, parsed_time[0], parsed_time[1],
+                            tz_name, seen_at)
+                    else:
+                        anchored_date = ecm_parsing.resolve_named_day_date(
+                            first_seen, default_day)
+            if anchored_date is not None and anchored_date > first_seen:
+                event_date = anchored_date
+
+            age_days = (today - event_date).days
             if age_days > threshold:
-                return True, f"[UndatedAge:{threshold}] No date in name; first seen {first_seen.isoformat()} ({age_days} days ago, threshold: {threshold})"
+                anchor_note = ("" if event_date == first_seen
+                               else f", event day {event_date.isoformat()}")
+                return True, (f"[UndatedAge:{threshold}] No date in name; first seen "
+                              f"{first_seen.isoformat()}{anchor_note} ({age_days} days ago, "
+                              f"threshold: {threshold})")
             return False, None
 
         elif rule_name == "UndatedEnded":
