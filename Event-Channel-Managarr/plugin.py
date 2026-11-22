@@ -2098,6 +2098,28 @@ class Plugin:
                 anchored_date = ecm_parsing.resolve_named_day_date(first_seen, named_day)
                 if anchored_date is not None:
                     event_date = anchored_date
+            else:
+                # No day in the name: the channel group's Default Event Day, the same
+                # setting [WrongDayOfWeek] reads, anchors the event. Without it every
+                # game of an NFL slate first seen on a Tuesday was judged finished by
+                # Saturday and hidden on the Sunday it was played (2026-11-22).
+                default_days, _problems = ecm_parsing.parse_group_default_days(
+                    settings.get("group_default_event_day"))
+                group = getattr(getattr(channel, "channel_group", None), "name", None)
+                default_day = (default_days.get(str(group).strip().casefold())
+                               if group and default_days else None)
+                if default_day is not None:
+                    seen_at = None
+                    try:
+                        if entry.get('first_seen_at'):
+                            seen_at = datetime.fromisoformat(entry['first_seen_at'])
+                    except (TypeError, ValueError):
+                        seen_at = None
+                    anchored_date = ecm_parsing.resolve_default_day_date(
+                        first_seen, default_day, parsed_time[0], parsed_time[1],
+                        tz_name, seen_at)
+                    if anchored_date is not None:
+                        event_date = anchored_date
 
             window = ecm_parsing.infer_undated_event_window(
                 event_date, parsed_time[0], parsed_time[1], tz_name,
@@ -2135,8 +2157,12 @@ class Plugin:
 
             if ecm_parsing.undated_event_has_ended(
                     datetime.now(local_tz), hide_after, first_seen_at):
-                anchor_note = ("" if event_date == first_seen else
-                               f", day read from the name as {event_date.isoformat()}")
+                if event_date == first_seen:
+                    anchor_note = ""
+                elif named_day is not None:
+                    anchor_note = f", day read from the name as {event_date.isoformat()}"
+                else:
+                    anchor_note = f", group default day {event_date.isoformat()}"
                 return True, (
                     f"[UndatedEnded] No date in name; first seen {first_seen.isoformat()}"
                     f"{anchor_note}, "

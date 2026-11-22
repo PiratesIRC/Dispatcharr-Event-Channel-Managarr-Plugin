@@ -327,3 +327,12 @@ def test_the_named_day_helpers_are_declared_in_the_parsing_module():
     parsing = (ROOT / "Event-Channel-Managarr" / "ecm_parsing.py").read_text(encoding="utf-8")
     assert "def extract_named_day_of_week(" in parsing
     assert "def resolve_named_day_date(" in parsing
+
+
+def test_the_rule_reads_the_group_default_event_day():
+    """A name with no day must be anchored on its group's Default Event Day
+    (2026-11-22: the NFL slate was hidden all Sunday because it was not)."""
+    branch = _rule_branch("UndatedEnded")
+    assert "group_default_event_day" in branch
+    assert "resolve_default_day_date" in branch
+    assert "first_seen_at" in branch

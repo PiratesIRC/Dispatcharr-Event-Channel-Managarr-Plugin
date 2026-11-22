@@ -600,6 +600,41 @@ def resolve_named_day_date(first_seen_date, weekday):
     return first_seen_date + timedelta(days=(weekday - first_seen_date.weekday()) % 7)
 
 
+def resolve_default_day_date(first_seen_date, weekday, hour, minute, tz_name,
+                             first_seen_at=None):
+    """The event date [UndatedEnded] uses for a name that states no day but whose
+    channel group has a Default Event Day, or None.
+
+    It is the first `weekday` on or after the first-seen date, as for a day named in
+    the name, with one difference: when that day's start time had already passed at
+    the moment the channel was first seen, the name is for the FOLLOWING week. A
+    provider posts next Sunday's NFL slate on Sunday afternoon, after that day's
+    games; anchoring it on the same Sunday judged next week's games finished before
+    they were announced (measured 2026-11-22: every game of that day's slate, first
+    seen on the Tuesday, stayed hidden all Sunday because the rule ignored the
+    group's default day).
+
+    Monotonic like resolve_named_day_date: the anchor moves at most thirteen days
+    past the first-seen date and then stops, so a channel the provider never renames
+    still retires. Returns None for anything it cannot use, and the plain forward
+    date when the first-seen moment or the timezone cannot be read.
+    """
+    anchored = resolve_named_day_date(first_seen_date, weekday)
+    if anchored is None or first_seen_at is None:
+        return anchored
+    try:
+        import pytz
+        event_tz = pytz.timezone(str(tz_name).strip())
+        start = event_tz.localize(datetime.combine(
+            anchored, time(hour=int(hour), minute=int(minute))))
+        seen = first_seen_at if first_seen_at.tzinfo else event_tz.localize(first_seen_at)
+    except Exception:
+        return anchored
+    if start <= seen:
+        return anchored + timedelta(days=7)
+    return anchored
+
+
 def infer_undated_event_window(first_seen_date, hour, minute, tz_name,
                                duration_minutes, grace_hours):
     """Build (start, hide_after) for an event whose name carries a time but no date.
