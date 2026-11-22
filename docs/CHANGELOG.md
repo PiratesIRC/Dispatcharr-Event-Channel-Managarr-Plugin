@@ -7,6 +7,17 @@ they are the authoritative record; this page is an index.
 Versions are calendar-based: `Major.YY.DDDHHMM`, where `DDD` is the day of the year
 and `HHMM` the UTC time of the version bump. A higher version is always later.
 
+## 1.26.3262214 (2026-11-22)
+
+### Fixed
+
+- **NFL games are no longer hidden on game day.** A channel name with a kickoff time and no day, such as "NFL | 08 - 1pm Ravens at Panthers", was dated from the day the plugin first saw it. A slate posted on a Tuesday was judged finished by Saturday, so `[UndatedEnded]` and `[UndatedAge]` hid every game on the Sunday it was played. Both rules now use the channel group's Default Event Day when the name states no day. When that day's kickoff had already passed as the name appeared, as with next Sunday's slate posted on Sunday afternoon, the game counts for the following week. `[UndatedAge]` also counts from a day written in the name, such as MNF.
+- **PDC darts channels show their real time in the guide.** Names such as "PDC 04 | 2026 Grand Slam of Darts | Day 9 Evening Session Board 2 | Sun 22nd Nov 7:00PM" carry a UK time with no "UK" beside it, so the guide drew them five hours late. They now move to a new dummy source, ECM UK Darts Dummy, which reads London time, and their guide title is the event and session. A slot whose name changes to "No Event Scheduled" goes back to the shared source.
+
+### Changed
+
+- **Report file names use Dispatcharr's time zone** instead of UTC.
+
 ## 1.26.3251903 (2026-11-21)
 
 ### Added

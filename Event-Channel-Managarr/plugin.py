@@ -68,7 +68,7 @@ SCHEDULER_STOP_ATTR = "_ecm_stop_event"
 class PluginConfig:
     """Centralized configuration constants for Event Channel Managarr."""
 
-    PLUGIN_VERSION = "1.26.3251903"
+    PLUGIN_VERSION = "1.26.3262214"
 
     # Fallback timezone when Dispatcharr's global time zone is unset/invalid.
     DEFAULT_TIMEZONE = "UTC"
