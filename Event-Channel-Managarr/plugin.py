@@ -2478,6 +2478,16 @@ class Plugin:
             LOGGER.debug(f"{LOG_PREFIX} Could not read Dispatcharr timezone, using UTC: {e}")
             return "UTC"
 
+    def _report_timestamp(self):
+        """Return the stamp that names a report file, in Dispatcharr's timezone.
+
+        Plugin actions run in a Celery worker on Dispatcharr 0.34 whose clock is
+        UTC, so a bare datetime.now() stamped file names five hours ahead of the
+        Central time the operator sees. The zone comes from _dispatcharr_timezone,
+        which falls back to UTC on any failure.
+        """
+        return datetime.now(pytz.timezone(self._dispatcharr_timezone())).strftime("%Y%m%d_%H%M%S")
+
     def _get_system_timezone(self, settings):
         """Get the system timezone from settings"""
         # First check if user specified a timezone in plugin settings
@@ -4543,7 +4553,7 @@ class Plugin:
                 should_create_csv = True
 
             if should_create_csv:
-                timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+                timestamp = self._report_timestamp()
                 csv_filename = f"event_channel_managarr_{'dryrun' if dry_run else 'applied'}_{timestamp}.csv"
 
                 # Calculate statistics by rule
@@ -5031,7 +5041,7 @@ class Plugin:
             channels_set_to_dummy = len(channels_to_bulk_clear)
 
             # Export results to CSV
-            timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+            timestamp = self._report_timestamp()
             csv_filename = f"epg_removal_{timestamp}.csv"
             fieldnames = ['channel_id', 'channel_name', 'channel_number', 'epg_entries_removed', 'status']
             # This report had NO preamble at all, so it did not say what it was, when
