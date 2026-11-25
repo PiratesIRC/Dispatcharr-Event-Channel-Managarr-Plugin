@@ -78,16 +78,16 @@ These names were checked against the source on 2026-09-02. An earlier version of
 table listed four methods that do not exist (`get_fields`, `_action_map`,
 `_hide_rule_engine`, `_scheduler`), so confirm a name before relying on it.
 
-ECM state files (inside the container at `/data/`):
+ECM state files. The data folder is `/data/plugins/_data/event-channel-managarr/` (inside the container); the last-run record and the scan lock sit beside it in `/data/plugins/_data/`. Where each file goes, and what the copy from the old `/data` names does, is in the README section "Where Event Channel Managarr keeps its files". The constants are `PluginConfig` in `plugin.py`, rebound by `storage.bind`; the `/data` literals stay there as `LEGACY_PATHS`.
 
-- `event_channel_managarr_results.json`: last scan output
-- `event_channel_managarr_settings.json`: saved settings (on-disk cache)
-- `event_channel_managarr_last_run.json`: last-run timestamp
-- `event_channel_managarr_undated_first_seen.json`: per-channel first-seen record for channels whose names carry no date. Each entry holds the channel name, the date it was first seen and, for entries written by version `1.26.2450117` or later, the exact moment. `[UndatedAge:days]` uses the date; `[UndatedEnded]` uses the moment as well, to reject an inferred event window that closed before the channel existed.
-- `event_channel_managarr_ledger.jsonl`: one line per applied run, recording how many channels changed visibility. The anonymous usage count sums it. The README badges read the plugin-stats Worker, which sums every opted-in install; the gist pipeline was retired 2026-10-10 and the gist itself is no longer updated.
-- `/data/plugin_stats/event-channel-managarr/`: anonymous usage count state (install_id, sent, backoff, disabled, delete_backoff, lock)
-- `event_channel_managarr_scan.lock`: guards against two scans running at once
-- `event_channel_managarr_version_check.json`: cache for the version check
+- `results.json`: last scan output
+- `settings.json`: saved settings (on-disk cache of the settings row)
+- `last_run.json` (beside the data folder, `/data/plugins/_data/event-channel-managarr.last_run.json`): last-run timestamp per scheduled time
+- `undated_first_seen.json`: per-channel first-seen record for channels whose names carry no date. Each entry holds the channel name, the date it was first seen and, for entries written by version `1.26.2450117` or later, the exact moment. `[UndatedAge:days]` uses the date; `[UndatedEnded]` uses the moment as well, to reject an inferred event window that closed before the channel existed.
+- `ledger.jsonl`: one line per applied run, recording how many channels changed visibility. The anonymous usage count sums it. The README badges read the plugin-stats Worker, which sums every opted-in install; the gist pipeline was retired 2026-10-10 and the gist itself is no longer updated.
+- `usage/event-channel-managarr/`: anonymous usage count state (install_id, sent, backoff, disabled, delete_backoff, lock)
+- `/data/plugins/_data/event-channel-managarr.scan.lock`: guards against two scans running at once (taken together with the old `/data/event_channel_managarr_scan.lock` while the rollout keeps it)
+- `group_sources.json`: the dummy EPG sources the plugin created for each group mapping. Never lose it.
 
 Channel visibility is per-profile via `ChannelProfileMembership.enabled`, not a flag on `Channel` itself.
 
@@ -200,7 +200,7 @@ Running `docker exec` or `docker cp` with absolute container paths (e.g. `/data/
 
 1. **Prefix with `MSYS_NO_PATHCONV=1`**: suppresses MSYS conversion for that command:
    ```bash
-   MSYS_NO_PATHCONV=1 docker exec dispatcharr cat /data/event_channel_managarr_results.json
+   MSYS_NO_PATHCONV=1 docker exec dispatcharr cat /data/plugins/_data/event-channel-managarr/results.json
    ```
 
 2. **Pipe scripts via stdin**: avoids passing the script path as an argument at all:
@@ -237,7 +237,7 @@ docker exec -i dispatcharr sh -c "cd /app && python3 manage.py shell" < query.py
 saved JSON file  <  live DB (cfg.settings)  <  action params
 ```
 
-The DB value wins over the on-disk JSON. If you write directly to `/data/event_channel_managarr_settings.json`, that does NOT affect the active merged_settings unless `_load_settings()` is called again. To test a toggle ON/OFF, update `cfg.settings` in the DB:
+The DB value wins over the on-disk JSON. If you write directly to `/data/plugins/_data/event-channel-managarr/settings.json`, that does NOT affect the active merged_settings unless `_load_settings()` is called again. To test a toggle ON/OFF, update `cfg.settings` in the DB:
 
 ```python
 # Run inside the Django shell

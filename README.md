@@ -137,9 +137,38 @@ it takes effect when the next action or scheduled scan finishes; the plugin then
 asks the server to delete this install's figures. Once the server confirms the
 delete, the plugin forgets its id, and ticking the setting again later starts a
 new one; if the delete could not reach the server, the plugin keeps the id and
-retries. The plugin keeps that id and the timing of its reports in
-/data/plugin_stats/event-channel-managarr/ (install_id, sent, backoff, disabled,
-delete_backoff, lock). To start a new id, untick the setting and let an action run so the server deletes this install's figures; deleting that folder while the setting is ticked leaves the old figures on the server, and the new id then sends the full total again, so the badge counts it twice.
+retries. The plugin keeps that id and the timing of its reports in the folder
+usage/event-channel-managarr/ of its data folder (install_id, sent, backoff, disabled,
+delete_backoff, lock); see [Where Event Channel Managarr keeps its files](#where-event-channel-managarr-keeps-its-files). To start a new id, untick the setting and let an action run so the server deletes this install's figures; deleting that folder while the setting is ticked leaves the old figures on the server, and the new id then sends the full total again, so the badge counts it twice.
+
+## Where Event Channel Managarr keeps its files
+
+The plugin keeps its private files in its data folder, `/data/plugins/_data/event-channel-managarr/`. Dispatcharr creates that folder and names it for the plugin's key, `event-channel-managarr`. On the first start after an upgrade the plugin copies the files it used to keep under `/data` into that folder. The copy never deletes, renames or edits an old file, and a file already in the data folder is left as it is. The copy is recorded in `migrated.json` in the data folder.
+
+Inside the data folder:
+
+- `settings.json`: a copy of the saved settings. Dispatcharr's database row is the source of truth; this file is a cache of it.
+- `results.json`: the output of the last scan.
+- `undated_first_seen.json`: the first-seen record that `[UndatedAge:N]` and `[UndatedEnded]` read.
+- `group_sources.json`: the record of the dummy EPG sources the plugin created for each group mapping. The plugin uses it to move a channel back off a source later. Keep it: if it is lost, channels stay where they are and nothing is moved back.
+- `ledger.jsonl`: the run ledger, one line per applied run that changed a channel. It is append only and rotates once to `ledger.jsonl.1` at 5 MB. `ledger.offsets.json` and `ledger.lock` are bookkeeping for the copy of the ledger.
+- `usage/event-channel-managarr/`: the anonymous usage counter's install id and send record.
+- `migrated.json`: when the copy ran, which files it copied and which it could not.
+
+Beside the data folder, in `/data/plugins/_data/`:
+
+- `event-channel-managarr.last_run.json`: the last run of each scheduled time. Every worker reads it, so it sits beside the folder rather than inside it.
+- `event-channel-managarr.scan.lock`: the lock that keeps two scans from running at once.
+
+Outside both:
+
+- `/data/exports/`: the CSV exports. Seven plugins share this folder, and the plugin deletes only its own exports from it.
+
+Dispatcharr's **Delete data** option on uninstall removes the data folder. It does not remove the two files beside it.
+
+During the release that moves the files, a worker still running the previous release keeps writing the old files under `/data`. The new release reads both copies of the last-run record and takes both locks, so a scheduled run or a scan that the old worker has started or claimed is not repeated. The old files are safe to delete only when `migrated.json` has an empty `failed` list and none of the old files has changed since the time recorded in it. An old file that still changes means a worker on the previous release is still running.
+
+The old `/data` files were `event_channel_managarr_settings.json`, `event_channel_managarr_results.json`, `event_channel_managarr_undated_first_seen.json`, `event_channel_managarr_group_sources.json`, `event_channel_managarr_ledger.jsonl` (and `.1`), `event_channel_managarr_last_run.json`, `event_channel_managarr_scan.lock` and the folder `/data/plugin_stats/event-channel-managarr/`. Nothing reads `event_channel_managarr_version_check.json` any more, since the update check was removed, so it is not moved.
 
 ## Disclaimer
 
@@ -155,7 +184,7 @@ it never reads a stream URL. **Its only outbound network request is the anonymou
 once called the GitHub releases API was removed in `1.26.2251616`, along with the code behind it.
 
 What it writes is confined to your own Dispatcharr database and its data directory: channel
-visibility in the profiles you select, bindings to a dummy EPG source it manages, and CSV exports, plus one small folder for the anonymous usage count, /data/plugin_stats/event-channel-managarr/ (see [Anonymous usage counts](#anonymous-usage-counts)).
+visibility in the profiles you select, bindings to a dummy EPG source it manages, and CSV exports, plus one small folder for the anonymous usage count (see [Anonymous usage counts](#anonymous-usage-counts) and [Where Event Channel Managarr keeps its files](#where-event-channel-managarr-keeps-its-files)).
 The main scan has a **Dry Run** that writes nothing and exports what it *would* do to CSV. Run that
 first. The other actions that change data (**Run Now**, **Remove EPG from Hidden Channels**, **Clear
 CSV Exports**, **Cleanup Orphaned Tasks**) each ask for confirmation before they act.
