@@ -97,3 +97,7 @@ event_channel_managarr_*.csv
 # INNER folder (git archive HEAD:Event-Channel-Managarr), so nothing at the
 # repo root is ever packaged. Versioning them is the point -- a design that
 # only exists in a scratch directory is knowledge waiting to be lost.
+
+# Plugin data-dir move (branch feat/plugin-data-dir): a local Linux test runner and the CHANGELOG draft
+docs/superpowers/linux-pytest.sh
+docs/superpowers/plans/*-changelog-draft.md

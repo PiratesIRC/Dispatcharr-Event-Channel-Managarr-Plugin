@@ -42,6 +42,10 @@ import ecm_fields
 import ecm_parsing
 import ecm_profiles
 try:
+    from . import storage  # data-dir layout and the carry-over from /data (bound below)
+except ImportError:  # loaded as a bare module, as tests/conftest.py allows
+    import storage
+try:
     from .usage_client import UsageReporter, jsonl_sum, load_plugin_settings, with_usage_field
 except ImportError:  # loaded as a top-level module by tests/conftest.py, which has no parent package
     from usage_client import UsageReporter, jsonl_sum, load_plugin_settings, with_usage_field
@@ -69,6 +73,10 @@ class PluginConfig:
     """Centralized configuration constants for Event Channel Managarr."""
 
     PLUGIN_VERSION = "1.26.3262214"
+
+    # Dispatcharr's registry key for this plugin. storage.py names the data directory and the
+    # files beside it with it, so it must match the folder name Dispatcharr installs under.
+    PLUGIN_DB_KEY = "event-channel-managarr"
 
     # Fallback timezone when Dispatcharr's global time zone is unset/invalid.
     DEFAULT_TIMEZONE = "UTC"
@@ -159,10 +167,42 @@ class PluginConfig:
     # run this is decades away and the reader globs both files.
     LEDGER_FILE = "/data/event_channel_managarr_ledger.jsonl"
     LEDGER_MAX_BYTES = 5 * 1024 * 1024
+    # The anonymous usage counter keeps its own folder, one subfolder per plugin.
+    USAGE_DATA_DIR = "/data/plugin_stats"
+    # Set by storage.bind below: the STORAGE_LAYOUT of this process, the STORAGE_MIGRATION of the
+    # carry-over (None in legacy mode), and LEGACY_PATHS, the /data literals above by name.
+    STORAGE_LAYOUT = None
+    STORAGE_MIGRATION = None
+    LEGACY_PATHS = {}
 
 
-_LAST_RUN_FILE = PluginConfig.LAST_RUN_FILE
-_SCAN_LOCK_FILE = PluginConfig.SCAN_LOCK_FILE
+# Bind the state paths to the plugin data directory, once per import. The literals above are the
+# legacy /data paths: storage.bind records them in LEGACY_PATHS, then rebinds each constant (legacy
+# mode, or a failed carry-over, leaves every one of them as it is). Runs before USAGE is built.
+storage.bind(PluginConfig, __file__, LOGGER)
+
+
+def _rollout_old_path(name):
+    """The old /data path of a state constant, while this release still honours it.
+
+    Only when storage.ROLLOUT_DUAL_PATHS is on, the process is not in legacy mode and the old
+    path differs from the current one. Otherwise None, and the caller uses the one path.
+    """
+    layout = getattr(PluginConfig, "STORAGE_LAYOUT", None)
+    if not storage.ROLLOUT_DUAL_PATHS or layout is None or layout.legacy:
+        return None
+    old = (getattr(PluginConfig, "LEGACY_PATHS", None) or {}).get(name)
+    if not old or old == getattr(PluginConfig, name, None):
+        return None
+    return old
+
+
+def _state_paths(name):
+    """The paths a coordination file is read and written at: the old /data path first while the
+    rollout keeps it, then the current path. Old first is also the order of every lock taken."""
+    old = _rollout_old_path(name)
+    current = getattr(PluginConfig, name)
+    return [current] if old is None else [old, current]
 
 # Reports the Visibility Changes total and a random install id to the plugin-stats Worker, so
 # the README badges count each install that keeps the setting ticked and runs (README,
@@ -174,7 +214,13 @@ USAGE = UsageReporter(
     label="Visibility Changes",
     total_fn=lambda: jsonl_sum(PluginConfig.LEDGER_FILE + "*", fields=["shown", "hidden"]),
     settings_fn=lambda: load_plugin_settings("event-channel-managarr"),
+    data_dir=PluginConfig.USAGE_DATA_DIR,
 )
+if PluginConfig.STORAGE_MIGRATION is not None and PluginConfig.STORAGE_MIGRATION.install_id_blocked:
+    # The old install id could not be carried over. A fresh one minted here would be a second
+    # install, so this process reports nothing. A settings_fn cannot do this: report() prefers
+    # the settings argument, so an opt-out would still reach the delete path.
+    USAGE.report = lambda *args, **kwargs: None
 _USAGE_HELP = with_usage_field([], USAGE)[0]["help_text"]
 
 
@@ -263,27 +309,61 @@ class SmartRateLimiter:
 
 
 def _read_last_run():
-    """Read the last-run tracker from disk (shared across all uwsgi workers)."""
-    try:
-        if os.path.exists(_LAST_RUN_FILE):
-            with open(_LAST_RUN_FILE, 'r') as f:
-                return json.load(f)
-    except (json.JSONDecodeError, OSError):
-        pass
-    return {}
+    """Read the last-run tracker (shared across all uwsgi workers) as one merged view.
+
+    While the rollout keeps the old /data record, both records are read and each slot keeps the
+    later date, so a slot claimed by a worker on the previous release counts as ran here. A file
+    that is missing, unreadable or not a dict contributes nothing.
+    """
+    merged = {}
+    for path in _state_paths("LAST_RUN_FILE"):
+        try:
+            if not os.path.exists(path):
+                continue
+            with open(path, 'r') as f:
+                data = json.load(f)
+        except (json.JSONDecodeError, OSError):
+            continue
+        if not isinstance(data, dict):
+            continue
+        for key, value in data.items():
+            if isinstance(value, str) and value > merged.get(key, ""):
+                merged[key] = value
+    return merged
 
 
 def _write_last_run(data):
-    """Write the last-run tracker to disk (shared across all uwsgi workers).
+    """Write the last-run tracker to every path it is kept at (the old /data one too, while the
+    rollout keeps it), so a worker on the previous release sees a slot claimed here.
     Must only be called while holding the scan lock.
     Uses atomic write (temp + rename) to prevent corruption from crashes."""
-    tmp_file = _LAST_RUN_FILE + ".tmp"
-    try:
-        with open(tmp_file, 'w') as f:
-            json.dump(data, f)
-        os.replace(tmp_file, _LAST_RUN_FILE)
-    except OSError as e:
-        LOGGER.error(f"Failed to write last-run file: {e}")
+    for path in _state_paths("LAST_RUN_FILE"):
+        try:
+            storage.atomic_write_json(path, data)
+        except OSError as e:
+            LOGGER.error(f"Failed to write last-run file: {e}")
+
+
+class _ScanLockHold:
+    """The scan lock's flock files, old path first while the rollout keeps it.
+
+    fileno() is the current path's descriptor, the one the scan's finally block unlocks. close()
+    closes every descriptor, which releases each flock.
+    """
+
+    def __init__(self, handles):
+        self.handles = handles
+
+    def fileno(self):
+        return self.handles[-1].fileno()
+
+    def close(self):
+        for handle in reversed(self.handles):
+            try:
+                handle.close()
+            except OSError:
+                pass
+
 
 class Plugin:
     """Event Channel Managarr Plugin"""
@@ -759,6 +839,7 @@ class Plugin:
             # Get live settings from context and params
             live_settings = context.get("settings", {})
             logger = context.get("logger", LOGGER)
+            storage.check_context(PluginConfig.STORAGE_LAYOUT, context, LOGGER)
 
             # Log settings for debugging cached values issue
             if action == "update_schedule":
@@ -1240,8 +1321,7 @@ class Plugin:
             if "rate_limiting" not in settings:
                 settings["rate_limiting"] = self.DEFAULT_RATE_LIMITING
 
-            with open(self.settings_file, 'w') as f:
-                json.dump(settings, f, indent=2)
+            storage.atomic_write_json(self.settings_file, settings)
             self.saved_settings = settings
             LOGGER.info(f"Settings saved successfully to {self.settings_file}")
             LOGGER.info(f"  Final value of enable_scheduled_csv_export: {settings.get('enable_scheduled_csv_export')}")
@@ -1407,6 +1487,9 @@ class Plugin:
             # other signal looked healthy. Every other file path in this class is
             # reached the same way; follow it.
             path = PluginConfig.LEDGER_FILE
+            # Copy any lines an old-code worker appended to the old ledger since the carry-over,
+            # before this line goes in, so the tally keeps its order and no line is counted twice.
+            storage.sync_tally_tail(PluginConfig.STORAGE_LAYOUT, path, LOGGER)
             try:
                 if os.path.getsize(path) >= PluginConfig.LEDGER_MAX_BYTES:
                     os.replace(path, path + ".1")
@@ -2396,8 +2479,10 @@ class Plugin:
         thread. `threading.enumerate()` only sees threads in the single worker that
         handled this HTTP request, so the "Threads in this worker" count below is
         per-worker, not container-wide. Coordination across workers is via the
-        shared files /data/event_channel_managarr_last_run.json (pre-run check)
-        and /data/event_channel_managarr_scan.lock (flock during scan) — those
+        shared files event-channel-managarr.last_run.json and
+        event-channel-managarr.scan.lock in /data/plugins/_data/ (pre-run check and
+        flock during scan; see "Where Event Channel Managarr keeps its files" in the
+        README); those
         guarantee each scheduled time fires exactly once no matter how many
         worker threads exist.
         """
@@ -2453,8 +2538,10 @@ class Plugin:
             )
 
             # --- Scan lock probe ---
-            scan_lock_path = PluginConfig.SCAN_LOCK_FILE
-            if os.path.exists(scan_lock_path) and fcntl:
+            lock_str = "none"
+            for scan_lock_path in _state_paths("SCAN_LOCK_FILE"):
+                if not (os.path.exists(scan_lock_path) and fcntl):
+                    continue
                 try:
                     with open(scan_lock_path, 'r') as probe:
                         fcntl.flock(probe, fcntl.LOCK_EX | fcntl.LOCK_NB)
@@ -2462,8 +2549,7 @@ class Plugin:
                     lock_str = "free"
                 except (OSError, IOError):
                     lock_str = "HELD"
-            else:
-                lock_str = "none"
+                    break
 
             return {
                 "status": "success",
@@ -3998,7 +4084,24 @@ class Plugin:
             return None
 
     def _acquire_scan_lock(self, logger):
-        """Acquire the cross-worker scan flock, breaking a stale/leaked lock.
+        """Acquire the cross-worker scan lock: every path in _state_paths("SCAN_LOCK_FILE").
+
+        While the rollout keeps the old /data lock, both are taken, old first (the order the
+        previous release uses, so the two cannot deadlock). A holder of either stops this scan,
+        and a failure on the second releases the first. Returns a _ScanLockHold on success, or None.
+        """
+        held = []
+        for path in _state_paths("SCAN_LOCK_FILE"):
+            fd = self._acquire_one_scan_lock(path, logger)
+            if fd is None:
+                for handle in reversed(held):
+                    handle.close()
+                return None
+            held.append(fd)
+        return _ScanLockHold(held)
+
+    def _acquire_one_scan_lock(self, path, logger):
+        """Acquire one scan flock, breaking a stale/leaked lock.
 
         Returns an open, flock-held file object on success, or None if a *live*
         scan currently holds the lock. If the lock is held but its file mtime is
@@ -4012,7 +4115,6 @@ class Plugin:
         not touch mtime), so a failed acquire by a waiter does NOT reset the
         staleness clock. On success we stamp mtime to mark this holder's start.
         """
-        path = PluginConfig.SCAN_LOCK_FILE
         for attempt in (1, 2):
             try:
                 fd = open(path, 'a')

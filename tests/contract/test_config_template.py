@@ -1,6 +1,6 @@
 """The committed settings template must be restorable AND credential-free.
 
-/data/event_channel_managarr_settings.json holds a plaintext dispatcharr_password
+The plugin's settings cache (plugin data folder, settings.json) holds a plaintext dispatcharr_password
 and dispatcharr_username. This repository is public.
 """
 

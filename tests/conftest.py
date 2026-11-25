@@ -75,6 +75,36 @@ def plugin_source():
 
 
 @pytest.fixture(autouse=True)
+def _sandbox_plugin_data_paths(plugin_module, tmp_path, monkeypatch):
+    """Redirect every /data path in PluginConfig into the test's tmp dir.
+
+    Nothing under test may touch a path outside tmp_path. storage.bind keeps the legacy literals
+    in LEGACY_PATHS, so those are redirected the same way, and the vendored layer refuses any
+    /data path outright (REFUSE_REAL_DATA) in case a redirect is missed.
+    """
+    cfg = plugin_module.PluginConfig
+    sandbox = tmp_path / "data"
+    sandbox.mkdir(exist_ok=True)
+    for name in dir(cfg):
+        if name.startswith("_"):
+            continue
+        value = getattr(cfg, name)
+        if isinstance(value, str) and value.startswith("/data"):
+            monkeypatch.setattr(
+                cfg, name, str(sandbox / value[len("/data/"):].lstrip("/")), raising=False
+            )
+    legacy = getattr(cfg, "LEGACY_PATHS", None)
+    if isinstance(legacy, dict):
+        redirected = {
+            name: str(sandbox / value[len("/data/"):].lstrip("/")) if value.startswith("/data") else value
+            for name, value in legacy.items()
+        }
+        monkeypatch.setattr(cfg, "LEGACY_PATHS", redirected, raising=False)
+    monkeypatch.setattr(plugin_module.storage._ps, "REFUSE_REAL_DATA", True)
+    yield
+
+
+@pytest.fixture(autouse=True)
 def _no_usage_report_leaves_the_test(plugin_module, monkeypatch, tmp_path):
     """No test may send a usage report or write /data/plugin_stats.
 

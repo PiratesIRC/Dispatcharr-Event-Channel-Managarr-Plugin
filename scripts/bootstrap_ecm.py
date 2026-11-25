@@ -49,7 +49,7 @@ from apps.epg.models import EPGData, EPGSource  # noqa: E402
 from apps.plugins.models import PluginConfig  # noqa: E402
 
 PLUGIN_KEY = "event-channel-managarr"
-SETTINGS_FILE = Path("/data/event_channel_managarr_settings.json")
+SETTINGS_FILE = Path("/data/plugins/_data/event-channel-managarr/settings.json")
 APPLY = os.environ.get("ECM_BOOTSTRAP_APPLY") == "1"
 
 # MUST match ecm_profiles.DAZN_GMT.source_name. Cross-artifact drift is covered
