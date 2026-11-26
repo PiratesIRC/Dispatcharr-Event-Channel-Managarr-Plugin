@@ -7,6 +7,18 @@ they are the authoritative record; this page is an index.
 Versions are calendar-based: `Major.YY.DDDHHMM`, where `DDD` is the day of the year
 and `HHMM` the UTC time of the version bump. A higher version is always later.
 
+## 1.26.3302104 (2026-11-26)
+
+This release answers the Plugin Hub storage audit, issue #619.
+
+### Fixed
+
+- **The upgrade copy of your files is more complete.** The rotated run ledger (`ledger.jsonl.1`) now moves with the other files, so the Visibility Changes total stays right after an upgrade.
+- **The upgrade copy recovers from a failed first copy.** Old tally lines are counted once, and a failed copy is retried in the same run instead of waiting for a restart.
+- **Scheduled runs read the newer settings file.** A settings save made by the previous version after the upgrade is no longer missed by the scheduled run. The warning about a missing settings file appears once per start, not on every load.
+- **The plugin's private files are owner-only.** Files it writes in its data folder, including temporary files, are readable by the Dispatcharr user only, and new folders are created with an explicit permission mode.
+- **The undated tracker and the group source record are written atomically.** A crash mid-write can no longer leave a half-written file behind.
+
 ## 1.26.3301557 (2026-11-26)
 
 ### Changed
