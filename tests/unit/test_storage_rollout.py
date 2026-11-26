@@ -333,3 +333,36 @@ def test_with_the_rollout_off_only_the_new_settings_file_arms_the_scheduler(roll
     _write(rollout["old"] / "settings.json", {"scheduled_times": "0400"})
     _plugin_obj, armed, _log = _settings_load(rollout, monkeypatch)
     assert armed == []
+
+
+def _point_settings(r, monkeypatch):
+    cfg = r["cfg"]
+    monkeypatch.setattr(cfg, "SETTINGS_FILE", str(r["data"] / "settings.json"))
+    monkeypatch.setitem(cfg.LEGACY_PATHS, "SETTINGS_FILE", str(r["old"] / "settings.json"))
+    plugin = _plugin(r)
+    plugin.settings_file = cfg.SETTINGS_FILE
+    return plugin
+
+
+def test_the_scheduled_run_reads_the_newer_old_code_save(rollout, monkeypatch):
+    plugin = _point_settings(rollout, monkeypatch)
+    _write(rollout["data"] / "settings.json", {"enable_scheduled_csv_export": False})
+    _write(rollout["old"] / "settings.json", {"enable_scheduled_csv_export": True})
+    _set_mtime(rollout["data"] / "settings.json", 1_000_000)
+    _set_mtime(rollout["old"] / "settings.json", 2_000_000)
+    settings, source = plugin._scheduled_settings({"enable_scheduled_csv_export": "memory"})
+    assert settings == {"enable_scheduled_csv_export": True}
+    assert source == str(rollout["old"] / "settings.json")
+
+
+def test_the_scheduled_run_falls_back_to_memory_when_no_file_exists(rollout, monkeypatch):
+    plugin = _point_settings(rollout, monkeypatch)
+    fallback = {"enable_scheduled_csv_export": "memory"}
+    assert plugin._scheduled_settings(fallback) == (fallback, None)
+
+
+def test_constructing_the_plugin_twice_warns_once(rollout, monkeypatch):
+    monkeypatch.setattr(rollout["plugin"], "_NEITHER_SETTINGS_WARNED", False)
+    _plugin_obj, _armed, first = _settings_load(rollout, monkeypatch)
+    _plugin_obj, _armed, second = _settings_load(rollout, monkeypatch)
+    assert len(first.warnings) + len(second.warnings) == 1, "one WARNING for two constructions"

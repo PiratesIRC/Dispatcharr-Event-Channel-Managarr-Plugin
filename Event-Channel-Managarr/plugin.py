@@ -367,6 +367,10 @@ class _ScanLockHold:
                 pass
 
 
+# Set once the "neither settings file" WARNING has been logged in this module (see _load_settings).
+_NEITHER_SETTINGS_WARNED = False
+
+
 class Plugin:
     """Event Channel Managarr Plugin"""
 
@@ -840,13 +844,27 @@ class Plugin:
             return None
         return max(found, key=lambda item: item[0])[1]
 
+    def _scheduled_settings(self, fallback):
+        """The settings a scheduled run uses: the newer settings file (see _settings_source).
+
+        Returns (settings, path). With no file, returns (fallback, None). The scheduler thread calls
+        this on every due tick, so an old-code save after the carry-over reaches the run.
+        """
+        path = self._settings_source()
+        if path is None:
+            return fallback, None
+        with open(path, 'r') as f:
+            return json.load(f), path
+
     def _load_settings(self):
         """Load saved settings from disk and arm the scheduler from them (see _settings_source)."""
+        global _NEITHER_SETTINGS_WARNED
         try:
             path = self._settings_source()
             if path is None:
                 self.saved_settings = {}
-                if storage.ROLLOUT_DUAL_PATHS:
+                if storage.ROLLOUT_DUAL_PATHS and not _NEITHER_SETTINGS_WARNED:
+                    _NEITHER_SETTINGS_WARNED = True
                     LOGGER.warning(f"{LOG_PREFIX} No settings file found in the data directory or at "
                                    f"the old /data path; the schedule is not armed until Settings are saved.")
                 return
@@ -2760,13 +2778,12 @@ class Plugin:
                                     # Reload settings from disk to get the latest configuration
                                     # This ensures changes made via "Update Schedule" or "Validate" are picked up
                                     try:
-                                        if os.path.exists(self.settings_file):
-                                            with open(self.settings_file, 'r') as f:
-                                                current_settings = json.load(f)
-                                            LOGGER.info(f"[{thread_id}] Reloaded settings from disk: {self.settings_file}")
+                                        current_settings, source = self._scheduled_settings(
+                                            self.saved_settings.copy() if self.saved_settings else settings)
+                                        if source is not None:
+                                            LOGGER.info(f"[{thread_id}] Reloaded settings from disk: {source}")
                                             LOGGER.info(f"[{thread_id}]   enable_scheduled_csv_export from file: {current_settings.get('enable_scheduled_csv_export', 'NOT SET')}")
                                         else:
-                                            current_settings = self.saved_settings.copy() if self.saved_settings else settings
                                             LOGGER.info(f"[{thread_id}] Settings file not found, using in-memory settings")
                                             LOGGER.info(f"[{thread_id}]   enable_scheduled_csv_export from memory: {current_settings.get('enable_scheduled_csv_export', 'NOT SET')}")
                                     except Exception as e:
