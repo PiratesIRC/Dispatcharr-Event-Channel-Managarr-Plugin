@@ -23,6 +23,7 @@ ALLOWED = {
     "/data/event_channel_managarr_undated_first_seen.json",
     "/data/event_channel_managarr_group_sources.json",
     "/data/event_channel_managarr_ledger.jsonl",
+    "/data/event_channel_managarr_ledger.jsonl.1",
     "/data/plugin_stats",
     # Kept as they are: the shared exports folder, which seven plugins use.
     "/data/exports",

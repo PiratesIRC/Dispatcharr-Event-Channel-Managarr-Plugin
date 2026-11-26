@@ -174,6 +174,34 @@ def test_the_ledger_tally_tail_appends_old_lines_once(world):
     assert storage.sync_tally_tail(world["layout"], new_ledger, world["log"]) == 0
 
 
+def test_the_rotated_ledger_is_carried_over_byte_identical(world):
+    # Non-ASCII bytes on purpose: the rotated file is copied whole, never re-serialised.
+    record = b'{"shown": 4, "hidden": 1}\n\xc3\xa9\n'
+    with open(world["legacy"]["LEDGER_ROTATED_FILE"], "wb") as fh:
+        fh.write(record)
+    result = _migrate(world)
+    assert result.failed == []
+    rotated = world["data"] / "ledger.jsonl.1"
+    assert rotated.read_bytes() == record
+    assert str(rotated) in result.copied
+
+
+def test_an_absent_rotated_ledger_is_not_a_failure(world):
+    result = _migrate(world)
+    assert result.failed == []
+    assert not (world["data"] / "ledger.jsonl.1").exists()
+
+
+def test_the_visibility_total_counts_the_rotated_ledger(world, plugin_module, monkeypatch):
+    with open(world["legacy"]["LEDGER_ROTATED_FILE"], "wb") as fh:
+        fh.write(b'{"shown": 4, "hidden": 1}\n')
+    with open(world["legacy"]["LEDGER_FILE"], "wb") as fh:
+        fh.write(b'{"shown": 2, "hidden": 0}\n')
+    _migrate(world)
+    monkeypatch.setattr(world["cfg"], "LEDGER_FILE", str(world["data"] / "ledger.jsonl"))
+    assert plugin_module.USAGE.total_fn() == 7, "the total globs the rotated file too"
+
+
 def test_a_legacy_layout_migrates_nothing(world):
     storage = world["storage"]
     legacy_layout = storage.Layout(True, None, None, KEY, "test")

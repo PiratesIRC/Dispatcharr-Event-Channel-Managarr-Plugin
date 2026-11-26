@@ -255,3 +255,81 @@ def test_a_ledger_line_lands_after_the_old_tail_in_order(rollout, monkeypatch):
 
 def _old_ledger(r):
     return r["cfg"].LEGACY_PATHS["LEDGER_FILE"]
+
+
+# ---------------------------------------------------------------------------
+# The settings cache: the scheduler is armed from the newer of the two files
+# ---------------------------------------------------------------------------
+
+
+def _settings_load(r, monkeypatch):
+    """Run _load_settings against the old and new settings files; return (plugin, armed, log)."""
+    cfg = r["cfg"]
+    log = Log()
+    monkeypatch.setattr(r["plugin"], "LOGGER", log)
+    monkeypatch.setattr(cfg, "SETTINGS_FILE", str(r["data"] / "settings.json"))
+    monkeypatch.setitem(cfg.LEGACY_PATHS, "SETTINGS_FILE", str(r["old"] / "settings.json"))
+    armed = []
+    plugin = _plugin(r)
+    plugin.settings_file = cfg.SETTINGS_FILE
+    plugin._start_background_scheduler = lambda settings: armed.append(dict(settings))
+    plugin._load_settings()
+    return plugin, armed, log
+
+
+def _set_mtime(path, when):
+    os.utime(path, (when, when))
+
+
+def test_the_scheduler_is_armed_from_the_new_settings_file(rollout, monkeypatch):
+    _write(rollout["data"] / "settings.json", {"scheduled_times": "0300"})
+    plugin, armed, _log = _settings_load(rollout, monkeypatch)
+    assert armed == [{"scheduled_times": "0300"}]
+    assert plugin.saved_settings == {"scheduled_times": "0300"}
+
+
+def test_a_failed_copy_still_arms_the_scheduler_from_the_old_file(rollout, monkeypatch):
+    # The carry-over did not copy the file, so only the old /data file exists.
+    _write(rollout["old"] / "settings.json", {"scheduled_times": "0400"})
+    _plugin_obj, armed, log = _settings_load(rollout, monkeypatch)
+    assert armed == [{"scheduled_times": "0400"}]
+    assert log.warnings == []
+
+
+def test_an_old_code_save_newer_than_the_copy_wins(rollout, monkeypatch):
+    _write(rollout["data"] / "settings.json", {"scheduled_times": "0300"})
+    _write(rollout["old"] / "settings.json", {"scheduled_times": "0500"})
+    _set_mtime(rollout["data"] / "settings.json", 1_000_000)
+    _set_mtime(rollout["old"] / "settings.json", 2_000_000)
+    _plugin_obj, armed, _log = _settings_load(rollout, monkeypatch)
+    assert armed == [{"scheduled_times": "0500"}]
+
+
+def test_the_new_file_wins_when_it_is_newer(rollout, monkeypatch):
+    _write(rollout["data"] / "settings.json", {"scheduled_times": "0300"})
+    _write(rollout["old"] / "settings.json", {"scheduled_times": "0500"})
+    _set_mtime(rollout["data"] / "settings.json", 2_000_000)
+    _set_mtime(rollout["old"] / "settings.json", 1_000_000)
+    _plugin_obj, armed, _log = _settings_load(rollout, monkeypatch)
+    assert armed == [{"scheduled_times": "0300"}]
+
+
+def test_neither_file_warns_once_and_arms_nothing(rollout, monkeypatch):
+    _plugin_obj, armed, log = _settings_load(rollout, monkeypatch)
+    assert armed == []
+    assert len(log.warnings) == 1
+    assert "not armed" in log.warnings[0][0]
+
+
+def test_the_warning_and_log_never_carry_the_settings_contents(rollout, monkeypatch):
+    _write(rollout["old"] / "settings.json", {"admin_password": "SECRET-VALUE-123"})
+    _plugin_obj, _armed, log = _settings_load(rollout, monkeypatch)
+    text = repr(log.infos) + repr(log.warnings) + repr(log.errors)
+    assert "SECRET-VALUE-123" not in text
+
+
+def test_with_the_rollout_off_only_the_new_settings_file_arms_the_scheduler(rollout, monkeypatch):
+    monkeypatch.setattr(rollout["storage"], "ROLLOUT_DUAL_PATHS", False)
+    _write(rollout["old"] / "settings.json", {"scheduled_times": "0400"})
+    _plugin_obj, armed, _log = _settings_load(rollout, monkeypatch)
+    assert armed == []

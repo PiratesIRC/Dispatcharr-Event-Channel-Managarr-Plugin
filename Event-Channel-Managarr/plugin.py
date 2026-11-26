@@ -166,6 +166,8 @@ class PluginConfig:
     # means real work. Rotation keeps one predecessor; at a few hundred bytes per
     # run this is decades away and the reader globs both files.
     LEDGER_FILE = "/data/event_channel_managarr_ledger.jsonl"
+    # The file the last rotation moved the ledger to. Carried over whole (never a tally).
+    LEDGER_ROTATED_FILE = "/data/event_channel_managarr_ledger.jsonl.1"
     LEDGER_MAX_BYTES = 5 * 1024 * 1024
     # The anonymous usage counter keeps its own folder, one subfolder per plugin.
     USAGE_DATA_DIR = "/data/plugin_stats"
@@ -816,17 +818,43 @@ class Plugin:
         LOGGER.debug(f"  {type(val).__name__} value {val!r} -> {result}")
         return result
 
+    def _settings_source(self):
+        """The settings file the scheduler is armed from, or None when neither file exists.
+
+        While ROLLOUT_DUAL_PATHS is on, the old /data file is a candidate too, and the newer
+        file wins. A failed carry-over leaves only the old file, and an old-code save after the
+        carry-over writes only the old file, so the newer one is the last save whichever code made it.
+        A tie keeps the new file.
+        """
+        candidates = [self.settings_file]
+        old = _rollout_old_path("SETTINGS_FILE")
+        if old:
+            candidates.append(old)
+        found = []
+        for path in candidates:
+            try:
+                found.append((os.path.getmtime(path), path))
+            except OSError:
+                continue
+        if not found:
+            return None
+        return max(found, key=lambda item: item[0])[1]
+
     def _load_settings(self):
-        """Load saved settings from disk"""
+        """Load saved settings from disk and arm the scheduler from them (see _settings_source)."""
         try:
-            if os.path.exists(self.settings_file):
-                with open(self.settings_file, 'r') as f:
-                    self.saved_settings = json.load(f)
-                    LOGGER.info("Loaded saved settings")
-                    # Start background scheduler with loaded settings
-                    self._start_background_scheduler(self.saved_settings)
-            else:
+            path = self._settings_source()
+            if path is None:
                 self.saved_settings = {}
+                if storage.ROLLOUT_DUAL_PATHS:
+                    LOGGER.warning(f"{LOG_PREFIX} No settings file found in the data directory or at "
+                                   f"the old /data path; the schedule is not armed until Settings are saved.")
+                return
+            with open(path, 'r') as f:
+                self.saved_settings = json.load(f)
+            LOGGER.info(f"Loaded saved settings from {path}")
+            # Start background scheduler with loaded settings
+            self._start_background_scheduler(self.saved_settings)
         except Exception as e:
             LOGGER.error(f"Error loading settings: {e}")
             self.saved_settings = {}
@@ -1347,11 +1375,8 @@ class Plugin:
     def _save_undated_tracker(self, tracker, logger):
         """Atomically save the undated-channel first-seen tracker to disk. Returns True on success."""
         path = PluginConfig.UNDATED_FIRST_SEEN_FILE
-        tmp_path = f"{path}.tmp"
         try:
-            with open(tmp_path, 'w') as f:
-                json.dump(tracker, f, indent=2, sort_keys=True)
-            os.replace(tmp_path, path)
+            storage.atomic_write_json(path, tracker)
             return True
         except OSError as e:
             logger.error(f"{LOG_PREFIX} Failed to save undated tracker: {e}")
@@ -1386,11 +1411,8 @@ class Plugin:
     def _save_group_source_record(self, record, logger):
         """Atomically save the group source record. Returns True on success."""
         path = PluginConfig.GROUP_SOURCE_RECORD_FILE
-        tmp_path = f"{path}.tmp"
         try:
-            with open(tmp_path, 'w') as f:
-                json.dump(record, f, indent=2, sort_keys=True)
-            os.replace(tmp_path, path)
+            storage.atomic_write_json(path, record)
             return True
         except OSError as e:
             logger.error(f"{LOG_PREFIX} Failed to save group source record: {e}")
@@ -1492,7 +1514,7 @@ class Plugin:
             storage.sync_tally_tail(PluginConfig.STORAGE_LAYOUT, path, LOGGER)
             try:
                 if os.path.getsize(path) >= PluginConfig.LEDGER_MAX_BYTES:
-                    os.replace(path, path + ".1")
+                    os.replace(path, PluginConfig.LEDGER_ROTATED_FILE)
             except OSError:
                 pass  # Missing file on the first run, or an unreadable size.
 

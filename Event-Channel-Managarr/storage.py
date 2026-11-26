@@ -29,6 +29,7 @@ _BIND_TABLE = (
     ("UNDATED_FIRST_SEEN_FILE", "file", "undated_first_seen.json"),
     ("GROUP_SOURCE_RECORD_FILE", "file", "group_sources.json"),
     ("LEDGER_FILE", "tally", "ledger.jsonl"),
+    ("LEDGER_ROTATED_FILE", "file", "ledger.jsonl.1"),
     ("USAGE_DATA_DIR", "usage_dir", "usage"),
     ("LAST_RUN_FILE", "beside", None),
     ("SCAN_LOCK_FILE", "nocopy", None),

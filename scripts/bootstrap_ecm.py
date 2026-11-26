@@ -49,7 +49,7 @@ from apps.epg.models import EPGData, EPGSource  # noqa: E402
 from apps.plugins.models import PluginConfig  # noqa: E402
 
 PLUGIN_KEY = "event-channel-managarr"
-SETTINGS_FILE = Path("/data/plugins/_data/event-channel-managarr/settings.json")
+PLUGINS_DIR = Path("/data/plugins")
 APPLY = os.environ.get("ECM_BOOTSTRAP_APPLY") == "1"
 
 # MUST match ecm_profiles.DAZN_GMT.source_name. Cross-artifact drift is covered
@@ -134,6 +134,21 @@ def _report_deltas(merged, existing):
                 print(f"[bootstrap]     {k}: {existing.get(k)!r} -> {merged.get(k)!r}")
 
 
+def data_dir_for(cfg):
+    """The plugin's data directory, as Dispatcharr's sandbox.stable_plugin_data_path names it.
+
+    The storage key is the PluginConfig slug when a Hub install set one, else the plugin key, so
+    a slug change moves the directory and this script must follow it. cfg is the PluginConfig row
+    (None when there is none); the caller reports a missing row.
+    """
+    slug = getattr(cfg, "slug", None) if cfg is not None else None
+    return PLUGINS_DIR / "_data" / (slug or PLUGIN_KEY)
+
+
+def settings_file_path():
+    return data_dir_for(PluginConfig.objects.filter(key=PLUGIN_KEY).first()) / "settings.json"
+
+
 def restore_plugin_settings(template):
     if template is None:
         return "skipped"
@@ -157,12 +172,13 @@ def restore_plugin_settings(template):
 def mirror_settings_file(template):
     if template is None:
         return "skipped"
+    settings_file = settings_file_path()
     existing = {}
-    if SETTINGS_FILE.exists():
+    if settings_file.exists():
         try:
-            existing = json.loads(SETTINGS_FILE.read_text(encoding="utf-8"))
+            existing = json.loads(settings_file.read_text(encoding="utf-8"))
         except Exception as exc:
-            print(f"[bootstrap] WARNING: could not parse {SETTINGS_FILE}: {exc}")
+            print(f"[bootstrap] WARNING: could not parse {settings_file}: {exc}")
 
     merged, changed = merge_settings(existing, template, os.environ)
     if not changed:
@@ -170,8 +186,8 @@ def mirror_settings_file(template):
     if not APPLY:
         _report_deltas(merged, existing)
         return "DRY-RUN would update"
-    SETTINGS_FILE.parent.mkdir(parents=True, exist_ok=True)
-    SETTINGS_FILE.write_text(json.dumps(merged, indent=2), encoding="utf-8")
+    settings_file.parent.mkdir(parents=True, exist_ok=True)
+    settings_file.write_text(json.dumps(merged, indent=2), encoding="utf-8")
     return "updated"
 
 
@@ -244,7 +260,7 @@ def main():
 
     template = load_template()
     print(f"[bootstrap] PluginConfig.settings: {restore_plugin_settings(template)}")
-    print(f"[bootstrap] {SETTINGS_FILE}: {mirror_settings_file(template)}")
+    print(f"[bootstrap] {settings_file_path()}: {mirror_settings_file(template)}")
 
     source, status = restore_dazn_source()
     sid = source.id if source else "n/a"
