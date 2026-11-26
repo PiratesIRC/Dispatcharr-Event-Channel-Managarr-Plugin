@@ -7,6 +7,16 @@ they are the authoritative record; this page is an index.
 Versions are calendar-based: `Major.YY.DDDHHMM`, where `DDD` is the day of the year
 and `HHMM` the UTC time of the version bump. A higher version is always later.
 
+## 1.26.3301557 (2026-11-26)
+
+### Changed
+
+- **Event Channel Managarr keeps its private files in Dispatcharr's per-plugin data folder,** `/data/plugins/_data/event-channel-managarr/`. The settings cache, the last scan results, the undated first-seen record, the group source record, the run ledger and the anonymous usage counter's folder move there. The scheduler's last-run record and the scan lock sit beside that folder in `/data/plugins/_data/`. The README section "Where Event Channel Managarr keeps its files" and the user guide list every file.
+- On the first start after the upgrade the plugin copies the old files into the new folder. It never deletes or edits an old file, and a file already in the new folder is kept. The copy is recorded in `migrated.json` in the new folder.
+- While a worker still runs the previous version, it can keep writing the old last-run record and scan lock. The plugin reads and takes both, so a scheduled run or a scan that the old worker started is not repeated.
+- The settings cache is written atomically.
+- The CSV exports in `/data/exports` stay where they are.
+
 ## 1.26.3262214 (2026-11-22)
 
 ### Fixed

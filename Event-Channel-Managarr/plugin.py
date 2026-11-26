@@ -72,7 +72,7 @@ SCHEDULER_STOP_ATTR = "_ecm_stop_event"
 class PluginConfig:
     """Centralized configuration constants for Event Channel Managarr."""
 
-    PLUGIN_VERSION = "1.26.3262214"
+    PLUGIN_VERSION = "1.26.3301557"
 
     # Dispatcharr's registry key for this plugin. storage.py names the data directory and the
     # files beside it with it, so it must match the folder name Dispatcharr installs under.
