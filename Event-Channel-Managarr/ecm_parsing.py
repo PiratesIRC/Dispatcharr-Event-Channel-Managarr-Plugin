@@ -377,10 +377,14 @@ _DASH_PRESENT_RE = re.compile(r"\s-\s")
 
 
 def short_description_match(channel_name, threshold=SHORT_DESCRIPTION_DEFAULT):
-    """Return (separator, length) when the text after a separator is too short.
+    """Return (separator, length) when the text after the first separator is too short.
 
     Returns None when the name has no separator, or when the description after
-    every separator present is at least ``threshold`` characters long.
+    the FIRST separator in the name is at least ``threshold`` characters long.
+    Only the first one counts: a colon, pipe or dash after it is part of the
+    description. Measuring every separator hid "LIVE EVENT 05 - 1pm Cage
+    Warriors 214: Unplugged" on the day of the event, because the colon inside
+    the title left 9 characters (measured live, 2026-11-27).
 
     The threshold used to be written into the rule body as a bare 15, so a
     channel called "NCAAF 25: FS1 [1080p]" was hidden (11 characters after the
@@ -388,15 +392,18 @@ def short_description_match(channel_name, threshold=SHORT_DESCRIPTION_DEFAULT):
     was no way to move the line except to stop using the rule. Callers pass the
     number from the rule tag, for example [ShortDescription:20].
     """
+    first = None
     for label, pattern in (("colon", _COLON_SEPARATOR_RE),
                            ("pipe", _PIPE_SEPARATOR_RE),
                            ("dash", _DASH_SEPARATOR_RE)):
         match = pattern.search(channel_name or "")
-        if match:
-            length = len(match.group(1).strip())
-            if length < threshold:
-                return label, length
-    return None
+        if match and (first is None or match.start() < first[1].start()):
+            first = (label, match)
+    if first is None:
+        return None
+    label, match = first
+    length = len(match.group(1).strip())
+    return (label, length) if length < threshold else None
 
 
 def short_channel_name_match(channel_name, threshold=SHORT_CHANNEL_NAME_DEFAULT):

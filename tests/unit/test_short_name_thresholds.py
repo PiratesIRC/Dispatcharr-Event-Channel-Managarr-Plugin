@@ -73,6 +73,43 @@ def test_exactly_at_the_threshold_is_long_enough():
 
 
 # ---------------------------------------------------------------------------
+# Only the FIRST separator in the name divides it from its description
+# ---------------------------------------------------------------------------
+#
+# Measured live on 2026-11-27: "LIVE EVENT 05 - 1pm Cage Warriors 214: Unplugged"
+# was hidden on the day of the event. The rule measured every separator in the
+# name and hid on the first short one, so the colon INSIDE the event title left
+# "Unplugged" (9 characters) while the 33 characters after the dash were never the
+# deciding count. A separator after the first one is part of the description.
+
+@pytest.mark.parametrize("name", [
+    "LIVE EVENT 05 - 1pm Cage Warriors 214: Unplugged",
+    "PPV 20 |  EVENTS 09: PRELIMS JONES VS. PETTUS (11.20 5:00 PM ET) DAZN",
+    "UFC 02: UFC FREEDOM 250: TOPURIA VS GAETHJE start:2026-06-15 01:55:00",
+    "LIVE EVENT 04 - 11am Mix Fight 59 | Zakarian v Mohamad",
+    "PDC 04 | 2026 Grand Slam of Darts | Day 9 | Sun 22nd",
+])
+def test_a_separator_inside_the_description_does_not_hide_the_channel(name):
+    assert short_description_match(name, 15) is None
+
+
+@pytest.mark.parametrize("name,separator,length", [
+    ("NCAAF 25: FS1 [1080p]", "colon", 11),
+    ("PPV 12 - UFC: Main Card Prelims Tonight", "dash", 30),
+    ("Boxing 1 | BKb 61 7PM", "pipe", 10),
+    ("PPV 12: UFC - Main Card Prelims Tonight", "colon", 31),
+])
+def test_the_first_separator_is_the_one_measured(name, separator, length):
+    assert short_description_match(name, 100) == (separator, length)
+
+
+def test_a_short_first_description_still_hides_whatever_follows_it_later():
+    """A name whose text after its first separator is short stays matched."""
+    assert short_description_match("PPV 12: UFC", 15) == ("colon", 3)
+    assert short_description_match("NCAAF 25: FS1 [1080p]") == ("colon", 11)
+
+
+# ---------------------------------------------------------------------------
 # [ShortChannelName:N]
 # ---------------------------------------------------------------------------
 

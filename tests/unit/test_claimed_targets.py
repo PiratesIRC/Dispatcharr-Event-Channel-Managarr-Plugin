@@ -56,10 +56,14 @@ def test_claim_count_on_the_real_corpus():
     fixture capture and the live measurement. This test is fixture-scoped and must
     stay 48; a LIVE count belongs in the in-container gate, never here."""
     claims = ecm_profiles.claimed_targets(_names(), _profiles())
-    assert len(claims) == 48
-    assert set(claims.values()) == {"dazn_gmt"}
+    # 48 DAZN names plus, since 2026-11-27, the 9 distinct UFC names that carry a
+    # start: stamp (ufc_stamp profile). Nothing else moved.
+    assert len(claims) == 57
+    assert set(claims.values()) == {"dazn_gmt", "ufc_stamp"}
     # Ground truth is the name itself, not the arithmetic.
-    assert set(claims) == {n for n in _names() if "(GMT)" in n}
+    assert {n for n, k in claims.items() if k == "dazn_gmt"} == {n for n in _names() if "(GMT)" in n}
+    assert {n for n, k in claims.items() if k == "ufc_stamp"} == {
+        n for n in _names() if n.startswith("UFC") and "start:" in n}
 
 
 def test_empty_input_and_default_only_profiles_yield_no_claims():
@@ -235,15 +239,16 @@ def test_with_no_mapping_the_name_routing_is_unchanged():
     names = _names()
 
     old = ecm_profiles.claimed_targets(names, _profiles())
-    assert len(old) == 48, "the pinned corpus claim count moved; fixture changed?"
-    assert set(old.values()) == {"dazn_gmt"}
+    assert len(old) == 57, "the pinned corpus claim count moved; fixture changed?"
+    assert set(old.values()) == {"dazn_gmt", "ufc_stamp"}
 
-    dazn_source = next(p.source_name for p in _profiles() if p.key == "dazn_gmt")
+    source_for = {p.key: p.source_name for p in _profiles()}
     new = ecm_profiles.routing_destinations(
         [_binding(i, name=n) for i, n in enumerate(names)],
         (), _profiles(), SHARED, True)
 
-    expected_ids = {i for i, n in enumerate(names) if old.get(n) == "dazn_gmt"}
-    assert set(new) == expected_ids
-    assert set(new.values()) == {dazn_source}
-    assert len(new) == 48
+    expected = {i: source_for[old[n]] for i, n in enumerate(names) if n in old}
+    assert new == expected
+    assert set(new.values()) == {source_for["dazn_gmt"], source_for["ufc_stamp"]}
+    # 48 DAZN rows and 36 UFC rows (9 UFC names recur four times each).
+    assert len(new) == 84

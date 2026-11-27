@@ -146,6 +146,16 @@ import ecm_profiles  # noqa: E402
 # tests/unit/test_guide_reporting.py. The method still cannot be executed here,
 # because it queries the database.
 #
+# _get_or_create_managed_epg_source was re-recorded an EIGHTH time on 2026-11-27.
+# Its us_title_pattern literal reads "Boxing N" as a slot label, like "LIVE EVENT
+# N". Measured live that day: "Boxing 1 | BKb 61 7PM" matched nothing and got the
+# renderer's fallback block all day. The superseded pattern joined stock_patterns
+# as _prev_us_title_no_boxing so existing sources upgrade. Covered by
+# tests/unit/test_ecm_profiles.py (Boxing names parse; the bug-146 guard still
+# holds for names without a keyword) and tests/contract/test_us_pattern_parity.py
+# (the two copies stay equal and the superseded pattern stays listed). Nothing else
+# in the method moved.
+#
 # The other two remain at their original S2 baseline values and must not be
 # touched without the same argument.
 FROZEN_BODIES = {
@@ -153,8 +163,8 @@ FROZEN_BODIES = {
     "_detach_managed_epg": "9e8d367e7d0789715e04249dab786a494b7f6919a60d6f9c755029e8261b98ca",
     # re-recorded 2026-11-14, see the note above
     "_managed_override_ids": "845858e0c343b9a0afdcd163f0373161396f12da3213beefbde9de90fd453d73",
-    # re-recorded 2026-08-12, 2026-08-14, 2026-08-29, 2026-08-30, twice on 2026-09-05 and 2026-10-09, see the notes above
-    "_get_or_create_managed_epg_source": "b26ac09922d3184cc62fad2e2c156b2c0f140592f60d6e32d7af1e40ee2e61c7",
+    # re-recorded 2026-08-12, 2026-08-14, 2026-08-29, 2026-08-30, twice on 2026-09-05, 2026-10-09 and 2026-11-27, see the notes above
+    "_get_or_create_managed_epg_source": "15c26a92ac97009fbcba0fd54259a0c74c1991ed05b501445a2fc89f34916eeb",
     # re-recorded 2026-08-12 and 2026-09-19, see the notes above
     "_localized_template_props": "b5d1608dcdd70292a004b519a4d13264fc3014ba51eaa747bd4238f7b7a8af53",
 }

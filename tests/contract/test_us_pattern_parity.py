@@ -129,3 +129,16 @@ def test_the_superseded_pattern_is_still_listed_as_a_stock_default():
         "stock defaults, so installations still carrying it will keep the "
         "pattern that does not match bare-numbered event names"
     )
+
+
+def test_the_pattern_without_the_boxing_keyword_is_still_listed_as_a_stock_default():
+    """Superseded 2026-11-27, when "Boxing N" became a slot label.
+
+    Every live ECM Managed Dummy source carries this pattern until its next applied
+    run, and that run only replaces it if it is listed as one of the plugin's own.
+    """
+    source = PLUGIN_PY.read_text(encoding="utf-8")
+    assert 'r"(?=(?:PPV|LIVE|EVENT)|"' in source
+    assert "_prev_us_title_no_boxing, _py_named(_prev_us_title_no_boxing)," in source, (
+        "the pattern without the Boxing keyword is no longer a stock default, so "
+        "installations carrying it never read Boxing slot names")

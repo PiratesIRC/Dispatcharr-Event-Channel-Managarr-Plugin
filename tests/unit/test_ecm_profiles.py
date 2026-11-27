@@ -38,6 +38,7 @@ def test_no_profile_key_collides_with_the_unclaimed_sentinel():
     ("dazn_gmt", "DAZN PPV Dummy (GMT)"),
     ("uk_london", "ECM UK Dummy"),
     ("pdc_london", "ECM UK Darts Dummy"),
+    ("ufc_stamp", "ECM UFC Dummy"),
 ])
 def test_source_names_are_pinned(key, expected_name):
     """EPGSource.name is unique=True and is how sources are looked up. A changed
@@ -207,7 +208,7 @@ def test_us_et_title_does_not_claim_an_ordinary_numeric_channel_name(name):
 
 def test_route_returns_a_bucket_per_profile_plus_unclaimed():
     result = ecm_profiles.route(["PPV EVENT 01: Something"])
-    assert set(result) == {"dazn_gmt", "uk_london", "pdc_london", "us_et",
+    assert set(result) == {"dazn_gmt", "uk_london", "pdc_london", "ufc_stamp", "us_et",
                            ecm_profiles.UNCLAIMED}
 
 
@@ -271,7 +272,9 @@ def test_fixture_era_counts_for_the_record():
     result = ecm_profiles.route(_fixture_names())
     assert len(result["dazn_gmt"]) == 48
     assert len(result["us_et"]) == 104
-    assert len(result[ecm_profiles.UNCLAIMED]) == 126
+    # 2026-11-27: the 36 stamped UFC rows moved from UNCLAIMED (126) to ufc_stamp.
+    assert len(result["ufc_stamp"]) == 36
+    assert len(result[ecm_profiles.UNCLAIMED]) == 90
 
 
 # --- route() contract ----------------------------------------------------------
@@ -411,11 +414,11 @@ def test_resolve_output_timezone_degrades_without_raising(src, sys_tz):
 # This is the same failure bug-051 describes, reached through the keyword-less
 # branch added in 1.26.2261346. Such a name has no parseable slot, so the correct
 # outcome is no match at all, which leaves the channel on the renderer fallback
-# exactly as it was before that release.
+# exactly as it was before that release. The two "Boxing N" names that were here
+# moved to test_a_boxing_slot_label_is_read_like_live_event on 2026-11-27, when
+# "Boxing" became a slot keyword: they now parse at the label, not at the time.
 
 @pytest.mark.parametrize("name", [
-    "Boxing 3 : MOSES vs HRGOVIC  4:00pm",
-    "Boxing 1 : MOSES vs HRGOVIC  4:00pm",
     "Fight Night 7 : Smith vs Jones 10:30pm",
     "Wrestling : Main Card 8:15 PM",
 ])
@@ -439,6 +442,26 @@ def test_us_et_title_does_not_start_a_match_inside_a_clock_time(name):
 ])
 def test_the_clock_time_guard_leaves_real_event_names_alone(name, expected):
     """The guard must not cost any name that parsed correctly before it."""
+    us = next(p for p in ecm_profiles.PROFILES if p.key == "us_et")
+    rx = ecm_profiles.compile_pattern(us.title_pattern)
+    m = rx.search(name)
+    assert m, f"no match for {name!r}"
+    assert m.group("title") == expected
+
+
+# "Boxing N" is a slot label like "LIVE EVENT N". Without the keyword, the
+# provider's "Boxing 1 | BKb 61 7PM" got the renderer's fallback block all day
+# (measured live 2026-11-27), and the bug-146 names above matched nothing. With
+# it, the match starts at the keyword, so it can no longer start inside the time.
+@pytest.mark.parametrize("name,expected", [
+    ("Boxing 1 | BKb 61 7PM", "BKb 61"),
+    ("Boxing 3 : MOSES vs HRGOVIC  4:00pm", "MOSES vs HRGOVIC"),
+    ("Boxing 1 : MOSES vs HRGOVIC  4:00pm", "MOSES vs HRGOVIC"),
+    ("Boxing  05  :  Jake Paul vs Anthony Joshua 9pm", "Jake Paul vs Anthony Joshua"),
+    ("BOXING 2 - 8/14 7pm Smith vs Jones", "Smith vs Jones"),
+])
+def test_a_boxing_slot_label_is_read_like_live_event(name, expected):
+    """The title is the text between the slot label and the air time."""
     us = next(p for p in ecm_profiles.PROFILES if p.key == "us_et")
     rx = ecm_profiles.compile_pattern(us.title_pattern)
     m = rx.search(name)

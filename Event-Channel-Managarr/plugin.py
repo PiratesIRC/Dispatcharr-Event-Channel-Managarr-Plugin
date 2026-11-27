@@ -1702,7 +1702,8 @@ class Plugin:
         than just the calendar date (issue #22). Delegates to ecm_parsing."""
         return ecm_parsing.name_has_stop_timestamp(channel_name)
 
-    def _extract_date_from_channel_name(self, channel_name, logger, settings=None, prefer="start"):
+    def _extract_date_from_channel_name(self, channel_name, logger, settings=None, prefer="start",
+                                        wall_tz=None):
         """Extract date from channel name using various patterns, including hour if present.
 
         When a name carries both `start:` and `stop:` timestamps, `prefer` selects which one
@@ -1710,11 +1711,18 @@ class Plugin:
         how far out is it" ([FutureDate], [UndatedAge], NoEPG); `prefer="stop"` for [PastDate],
         which asks "has the event ended?" (issue #22). Falls back to the other prefix when the
         preferred one is absent, so single-timestamp names are unaffected.
+
+        A UFC stamp is UTC+1 (ecm_profiles.UFC_STAMP), so it is converted to a wall time in
+        `wall_tz`, the zone the calling rule reads naive times in: Dispatcharr's own timezone
+        unless the caller says otherwise. Every other name is returned as extracted.
         """
-        date_format = (settings or {}).get("date_format", "Auto")
-        return ecm_parsing.extract_date_from_channel_name(
+        settings = settings or {}
+        date_format = settings.get("date_format", "Auto")
+        extracted = ecm_parsing.extract_date_from_channel_name(
             channel_name, date_format=date_format, prefer=prefer, logger=logger
         )
+        return ecm_profiles.stamp_wall_time(
+            channel_name, extracted, wall_tz or self._get_system_timezone(settings))
 
 
     def _warn_undated_once(self, logger, key, message):
@@ -2106,11 +2114,10 @@ class Plugin:
             if isinstance(rule_param, tuple):
                 return False, None
             minutes = ecm_parsing.PRE_EVENT_DEFAULT_MINUTES if rule_param is None else rule_param
-            extracted_date = self._extract_date_from_channel_name(channel_name, logger, settings)
-            window = ecm_parsing.pre_event_window(
-                extracted_date,
-                settings.get("dummy_epg_event_timezone", self.DEFAULT_DUMMY_EPG_TIMEZONE),
-                minutes)
+            event_tz = settings.get("dummy_epg_event_timezone", self.DEFAULT_DUMMY_EPG_TIMEZONE)
+            extracted_date = self._extract_date_from_channel_name(channel_name, logger, settings,
+                                                                  wall_tz=event_tz)
+            window = ecm_parsing.pre_event_window(extracted_date, event_tz, minutes)
             if window is None:
                 return False, None
             start_aware, visible_from = window
@@ -3496,12 +3503,15 @@ class Plugin:
         # name carries no parseable slot, so no match is the correct outcome and the
         # renderer fallback handles it.
         #
+        # "Boxing N" is read as a slot label like "LIVE EVENT N" (2026-11-27), so
+        # "Boxing 1 | BKb 61 7PM" gets an event at 7 PM instead of the fallback block.
+        #
         # This literal is duplicated as ecm_profiles.US_ET.title_pattern; the renderer
         # reads THIS one. tests/contract/test_us_pattern_parity.py keeps them equal.
         us_title_pattern = (
-            r"(?=(?:PPV|LIVE|EVENT)|"
+            r"(?=(?:PPV|LIVE|EVENT|Boxing|BOXING)|"
             r"\d+\s*[:|\-]\s*(?:\d{1,2}[./]\d{1,2}|\d{1,2}(?::\d{2})?\s*[AaPp][Mm]))"
-            r"(?:(?:PPV|LIVE)\s*(?:EVENT\s*)?|EVENT\s*)?"
+            r"(?:(?:PPV|LIVE)\s*(?:EVENT\s*)?|EVENT\s*|(?:Boxing|BOXING)\s*)?"
             r"(?!\d{1,2}:\d{2}\s*[AaPp][Mm])\d+\s*[:|\-\s]\s*"
             r"(?:(?<datepart>\d{1,2}[./]\d{1,2}(?:[./]\d{2,4})?)\s+)?"
             r"(?:(?<leading_time>\d{1,2}(?::\d{2})?\s*[AaPp][Mm])\s+)?"
@@ -3664,6 +3674,21 @@ class Plugin:
             r"\s+(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)\s+\d+|$)"
         )
 
+        # Superseded on 2026-11-27: did not read "Boxing N" as a slot label, so
+        # "Boxing 1 | BKb 61 7PM" matched nothing. Listed here so sources still
+        # carrying it auto-upgrade.
+        _prev_us_title_no_boxing = (
+            r"(?=(?:PPV|LIVE|EVENT)|"
+            r"\d+\s*[:|\-]\s*(?:\d{1,2}[./]\d{1,2}|\d{1,2}(?::\d{2})?\s*[AaPp][Mm]))"
+            r"(?:(?:PPV|LIVE)\s*(?:EVENT\s*)?|EVENT\s*)?"
+            r"(?!\d{1,2}:\d{2}\s*[AaPp][Mm])\d+\s*[:|\-\s]\s*"
+            r"(?:(?<datepart>\d{1,2}[./]\d{1,2}(?:[./]\d{2,4})?)\s+)?"
+            r"(?:(?<leading_time>\d{1,2}(?::\d{2})?\s*[AaPp][Mm])\s+)?"
+            r"(?<title>.+?)"
+            r"(?=\s*\(|\s+\d{1,2}(?::\d{2})?\s*[AaPp][Mm]|"
+            r"\s+(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)\s+\d+|$)"
+        )
+
         stock_patterns = {
             "title_pattern": {us_title_pattern, _py_named(us_title_pattern),
                               _py_named(us_title_pattern).replace(r"[:|\-\s]", r"[:|\s]"),
@@ -3672,6 +3697,7 @@ class Plugin:
                               _py_named(_prev_us_title_keyword_required),
                               _prev_us_title_unguarded_clock_time,
                               _py_named(_prev_us_title_unguarded_clock_time),
+                              _prev_us_title_no_boxing, _py_named(_prev_us_title_no_boxing),
                               se_title_pattern, _py_named(se_title_pattern),
                               ecm_parsing.AT_TITLE_PATTERN, _py_named(ecm_parsing.AT_TITLE_PATTERN)},
             "time_pattern": {us_time_pattern, _py_named(us_time_pattern), _orig_time,

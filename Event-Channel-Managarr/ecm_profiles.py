@@ -250,10 +250,13 @@ US_ET = Profile(
     # The negative lookahead before the slot number stops the match beginning INSIDE an
     # air time. Without it "Boxing 3 : MOSES vs HRGOVIC  4:00pm" matched at the time
     # rather than at the slot number and captured the title "00pm" (bug-146).
+    #
+    # "Boxing N" is a slot label too (added 2026-11-27): "Boxing 1 | BKb 61 7PM"
+    # otherwise matched nothing and got the renderer's fallback block all day.
     title_pattern=(
-        r"(?=(?:PPV|LIVE|EVENT)|"
+        r"(?=(?:PPV|LIVE|EVENT|Boxing|BOXING)|"
         r"\d+\s*[:|\-]\s*(?:\d{1,2}[./]\d{1,2}|\d{1,2}(?::\d{2})?\s*[AaPp][Mm]))"
-        r"(?:(?:PPV|LIVE)\s*(?:EVENT\s*)?|EVENT\s*)?"
+        r"(?:(?:PPV|LIVE)\s*(?:EVENT\s*)?|EVENT\s*|(?:Boxing|BOXING)\s*)?"
         r"(?!\d{1,2}:\d{2}\s*[AaPp][Mm])\d+\s*[:|\-\s]\s*"
         r"(?:(?<datepart>\d{1,2}[./]\d{1,2}(?:[./]\d{2,4})?)\s+)?"
         r"(?:(?<leading_time>\d{1,2}(?::\d{2})?\s*[AaPp][Mm])\s+)?"
@@ -335,7 +338,65 @@ PDC_LONDON = Profile(
     release_unclaimed=True,
 )
 
-PROFILES = (DAZN_GMT, UK_LONDON, PDC_LONDON, US_ET)
+# UFC slots, named by one provider with their own stamps:
+#   "UFC 02: UFC FREEDOM 250: TOPURIA VS GAETHJE start:2026-06-15 01:55:00 stop:..."
+#   "UFC event: 1 name: UFC FIGHT NIGHT: PROCHAZKA VS STIRLING  start:2026-11-21 18:55:00 stop:..."
+# The shared US source matched none of them, so the guide repeated the whole name
+# all day (measured 2026-11-27). The stamps are read at a fixed UTC+1. That zone is
+# INFERRED from published broadcast times, not measured: prelims stamped to stop at
+# 03:00 on 2026-10-04 and at 04:00 on 2025-12-07 both end at 10 PM Eastern, the
+# usual main-card start, only at UTC+1, so neither London nor Paris (whose offsets
+# change between those dates) nor plain UTC fits. "Etc/GMT-1" IS UTC+1: the sign in
+# Etc zone names is inverted. tests/unit/test_ufc_profile.py writes the arithmetic down.
+# Only the start stamp is read; the event length is the global duration setting,
+# because Dispatcharr's dummy renderer takes one duration per source.
+# Two slot labels: "UFC 02:" / "UFC 01 :" and "UFC event: 1 name:".
+_UFC_SLOT = r"^\s*UFC\s*(?:event:\s*\d+\s*name:|\d+\s*:)\s*"
+
+UFC_STAMP = Profile(
+    key="ufc_stamp",
+    source_name="ECM UFC Dummy",
+    selector=_UFC_SLOT + r".*\bstart:\d{4}-\d{2}-\d{2}\s+\d{1,2}:\d{2}",
+    title_pattern=_UFC_SLOT + r"(?<title>.+?)\s+start:",
+    date_pattern=r"start:(?<year>\d{4})-(?<month>\d{2})-(?<day>\d{2})\b",
+    time_pattern=r"start:\d{4}-\d{2}-\d{2}\s+(?<hour>\d{1,2}):(?<minute>\d{2})",
+    timezone="Etc/GMT-1",
+    output_timezone="America/Chicago",
+    program_duration_minutes=240,
+    include_date=False,
+    title_template="{title}",
+    upcoming_title_template="Upcoming at {starttime}: {title}",
+    ended_title_template="Ended at {endtime}: {title}",
+    fallback_title_template="",
+    fallback_description_template=_FALLBACK_DESCRIPTION,
+    is_default=False,
+    release_unclaimed=True,
+)
+
+PROFILES = (DAZN_GMT, UK_LONDON, PDC_LONDON, UFC_STAMP, US_ET)
+
+
+def stamp_wall_time(channel_name, naive, wall_tz_name):
+    """A UFC stamp read at UFC_STAMP.timezone, as a naive wall time in `wall_tz_name`. Pure.
+
+    The hide rules read every extracted date as a wall-clock time in one zone
+    (Dispatcharr's own for most rules, the event timezone for [PreEvent]). A UFC
+    stamp is UTC+1, so it is converted here, once, using the same zone the guide
+    source reads it in. Names the UFC profile does not claim come back unchanged,
+    as do a missing time and an unusable zone name. Never raises: it runs on the
+    scan path for every channel.
+    """
+    if naive is None or not wall_tz_name:
+        return naive
+    selector = compile_pattern(UFC_STAMP.selector)
+    if selector is None or not selector.search(str(channel_name or "")):
+        return naive
+    try:
+        from zoneinfo import ZoneInfo
+        aware = naive.replace(tzinfo=ZoneInfo(UFC_STAMP.timezone))
+        return aware.astimezone(ZoneInfo(str(wall_tz_name))).replace(tzinfo=None)
+    except Exception:
+        return naive
 
 
 # --- settings and timezone resolution (pure) ------------------------------------
@@ -450,7 +511,7 @@ def claimed_targets(names, profiles):
 # The second is owned by the code profile above and is selected by a channel-name
 # regex, so pointing a group at it would give one source two different owners.
 RESERVED_SOURCE_NAMES = ("ECM Managed Dummy", "DAZN PPV Dummy (GMT)", "ECM UK Dummy",
-                         "ECM UK Darts Dummy")
+                         "ECM UK Darts Dummy", "ECM UFC Dummy")
 
 
 def parse_group_source_map(raw):
